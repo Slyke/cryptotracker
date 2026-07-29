@@ -28,7 +28,7 @@ Focused tools accept named route parameters directly (for example `id`), optiona
 
 Dry-run and applied MCP writes are recorded in the sidecar’s bounded redacted history. Applied API mutations are also recorded by the API’s database audit log. Named client keys have independent read, write, and destructive fixed-window limits. Set the sidecar’s `readOnly: true` to omit `api_write` and focused mutations from tool discovery entirely.
 
-Kraken refresh means “import through the immutable query-only Kraken client.” Neither MCP nor REST implements order placement, cancellation, deposits, withdrawals, staking changes, or any other exchange mutation.
+Kraken refresh means “import through the immutable query-only Kraken client.” Neither MCP nor REST implements order placement, cancellation, deposits, withdrawals, staking changes, or any other exchange mutation. Current account state that Kraken does not expose historically is stored in `kraken_account_observations`. Each changed response creates a version; an unchanged response only advances the version's `last_seen_at_ms`, avoiding repeated copies of large recent-transfer lists.
 
 Example REST call:
 
@@ -56,7 +56,7 @@ Example MCP client entry:
 
 ## Persistence and backups
 
-Canonical data is intentionally retained indefinitely. Operators must monitor database growth and storage capacity. Settings shows row counts, estimated category sizes, and retained time ranges.
+Canonical data is intentionally retained indefinitely. Operators must monitor database growth and storage capacity. Settings shows row counts, estimated category sizes, and retained time ranges. A finite user-selected retention window removes account observations only after their complete observed-through interval is older than the cutoff.
 
 For SQLite, persist `/app/data`, including the database, WAL, and SHM files. Use a SQLite-aware online backup or stop the application before copying all database files. Do not copy only the main `.sqlite` file while the application is running.
 
@@ -84,7 +84,9 @@ The Kubernetes example sets `fsGroup: 10001` so fresh persistent volumes and tem
 
 Set `CRYPTOTRACKER_DB_KIND=postgres`, configure `database.postgres`, and supply `CRYPTOTRACKER_POSTGRES_PASSWORD`. Migrations run on startup. A migration failure prevents readiness.
 
-Only one CryptoTracker replica should run against a single-tenant database in the initial architecture because scheduling is in-process.
+Each PostgreSQL API replica attempts migration before it starts listening. A shared PostgreSQL advisory lock serializes those attempts: one replica applies each pending migration in its own transaction and records it in `schema_migrations`; waiting replicas then re-read the table and skip versions already applied. The lock coordinates migration runners only. It does not prevent an older replica from serving queries while a newer replica changes the schema, so rolling upgrades must use backward-compatible expand/contract migrations or a separately coordinated migration job.
+
+Only one CryptoTracker replica should run against a single-tenant database in the initial architecture because scheduling is in-process. The migration lock makes concurrent startup safe, but it does not make the scheduler multi-replica safe.
 
 ## Provider behavior
 

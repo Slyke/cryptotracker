@@ -46,7 +46,27 @@ describe('database migrations and persistent jobs', () => {
           1
         ]
       });
+      await db.run({
+        sql: "DELETE FROM schema_migrations WHERE version = '0001_beta_baseline'"
+      });
+      for (const version of [
+        '0001_initial',
+        '0002_asset_catalog',
+        '0003_job_diagnostics',
+        '0004_kraken_earn_rates',
+        '0005_portfolio_snapshots',
+        '0006_kraken_account_observations',
+        '0007_kraken_observation_indexes'
+      ]) {
+        await db.run({
+          sql: 'INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?, ?)',
+          parameters: [version, Date.now()]
+        });
+      }
       await db.migrate();
+      expect(await db.one<{ version: string }>({
+        sql: "SELECT version FROM schema_migrations WHERE version = '0001_beta_baseline'"
+      })).toEqual({ version: '0001_beta_baseline' });
       expect(await db.one<{ close_value: string }>({
         sql: 'SELECT close_value FROM market_points WHERE id = ?',
         parameters: ['old-point']

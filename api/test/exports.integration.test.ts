@@ -86,6 +86,10 @@ describe('exports', () => {
         'app_user',
         'sessions'
       ]));
+      expect(applicationExportTables).toEqual(expect.arrayContaining([
+        'kraken_earn_strategy_rates',
+        'kraken_account_observations'
+      ]));
 
       const download = await service.download({ id: created.id });
       const extract = tar.extract();

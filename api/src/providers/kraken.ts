@@ -5,14 +5,21 @@ import { ProviderRateLimiter } from './rate-limiter.js';
 
 const readOnlyPrivatePaths = new Set([
   '/0/private/Balance',
+  '/0/private/BalanceEx',
+  '/0/private/CreditLines',
   '/0/private/TradeBalance',
+  '/0/private/TradeVolume',
+  '/0/private/OpenOrders',
   '/0/private/TradesHistory',
   '/0/private/Ledgers',
   '/0/private/OpenPositions',
   '/0/private/ClosedOrders',
+  '/0/private/DepositStatus',
+  '/0/private/WithdrawStatus',
   '/0/private/Earn/Allocations',
   '/0/private/Earn/Strategies',
-  '/0/private/Earn/AllocationStatus',
+  '/0/private/Earn/AllocateStatus',
+  '/0/private/Earn/DeallocateStatus',
   '/0/private/GetApiKeyInfo'
 ]);
 
@@ -95,16 +102,6 @@ export class KrakenReadOnlyClient {
         status: 503
       });
     }
-    const nonce = this.nonce.next();
-    const body = new URLSearchParams({
-      nonce,
-      ...Object.fromEntries(Object.entries(parameters).map(([key, value]) => [key, String(value)]))
-    });
-    const encoded = body.toString();
-    const message = Buffer.concat([
-      Buffer.from(path),
-      createHash('sha256').update(`${nonce}${encoded}`).digest()
-    ]);
     let secret: Buffer;
     try {
       secret = Buffer.from(this.credentials.apiSecret, 'base64');
@@ -115,34 +112,58 @@ export class KrakenReadOnlyClient {
         cause: error
       });
     }
-    const signature = createHmac('sha512', secret).update(message).digest('base64');
-
-    const response = await this.limiter.execute<Response>({
-      requestKey: `${path}:${JSON.stringify(parameters)}`,
-      task: async () => fetch(new URL(path, this.config.baseUrl), {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/x-www-form-urlencoded',
-          'api-key': this.credentials.apiKey!,
-          'api-sign': signature
-        },
-        body: encoded
-      })
-    });
-    const payload = await response.json() as { error?: string[]; result?: T };
-    if ((payload.error ?? []).length > 0) {
+    for (let attempt = 0; attempt <= this.config.rate.maxRetries; attempt += 1) {
+      const nonce = this.nonce.next();
+      const body = new URLSearchParams({
+        nonce,
+        ...Object.fromEntries(Object.entries(parameters).map(([key, value]) => [key, String(value)]))
+      });
+      const encoded = body.toString();
+      const message = Buffer.concat([
+        Buffer.from(path),
+        createHash('sha256').update(`${nonce}${encoded}`).digest()
+      ]);
+      const signature = createHmac('sha512', secret).update(message).digest('base64');
+      const response = await this.limiter.execute<Response>({
+        requestKey: `${path}:${JSON.stringify(parameters)}`,
+        task: async () => fetch(new URL(path, this.config.baseUrl), {
+          method: 'POST',
+          headers: {
+            accept: 'application/json',
+            'content-type': 'application/x-www-form-urlencoded',
+            'api-key': this.credentials.apiKey!,
+            'api-sign': signature
+          },
+          body: encoded
+        })
+      });
+      const payload = await response.json() as { error?: string[]; result?: T };
+      const errors = payload.error ?? [];
+      if (errors.length === 0) return payload.result as T;
+      const rateLimited = errors.some((error) =>
+        error.toLowerCase().includes('rate limit')
+      );
+      if (rateLimited && attempt < this.config.rate.maxRetries) {
+        const delayMs = this.config.rate.baseBackoffMs * (2 ** attempt);
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
       throw new AppError({
-        errorKey: 'PROVIDER_REQUEST_FAILED',
-        reason: `Kraken rejected a read-only query: ${(payload.error ?? []).join(', ')}`,
-        status: 502,
+        errorKey: rateLimited ? 'PROVIDER_RATE_LIMITED' : 'PROVIDER_REQUEST_FAILED',
+        reason: `Kraken rejected a read-only query: ${errors.join(', ')}`,
+        status: rateLimited ? 429 : 502,
         context: {
           path,
-          errors: payload.error
+          errors
         }
       });
     }
-    return payload.result as T;
+    throw new AppError({
+      errorKey: 'PROVIDER_REQUEST_FAILED',
+      reason: 'Kraken read-only query exhausted its retry boundary.',
+      status: 502,
+      context: { path }
+    });
   }
 
   async inspectPermissions() {

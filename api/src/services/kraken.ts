@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import type { LoadedRuntime } from '../config/load.js';
-import type { AppDatabase } from '../db/index.js';
+import type { AppDatabase, DatabaseExecutor } from '../db/index.js';
 import { calculateCostBasis, type BasisEvent, type CostBasisMethod } from '../domain/cost-basis.js';
 import {
   canonicalKrakenAsset,
@@ -56,6 +56,27 @@ const nestedValue = ({
 const firstString = (...values: unknown[]) => {
   const value = values.find((candidate) => candidate !== undefined && candidate !== null);
   return value === undefined ? null : String(value);
+};
+
+const canonicalJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalJsonValue(child)])
+  );
+};
+
+const serializeCanonicalJson = ({ value }: { value: unknown }) =>
+  JSON.stringify(canonicalJsonValue(value)) ?? 'null';
+
+const krakenTimeMs = ({ value }: { value: unknown }) => {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0
+    ? Math.round(seconds * 1_000)
+    : null;
 };
 
 const projectedApyPercent = ({
@@ -155,22 +176,35 @@ export class KrakenService {
           'ledgers',
           'balances',
           'earn',
-          'margin'
+          'margin',
+          'orders',
+          'trade-balance',
+          'funding',
+          'trade-volume',
+          'credit-lines'
         ] as const;
         await updateProgress({ current: 0, total: endpoints.length });
         await this.syncTrades();
         await updateProgress({ current: 1, total: endpoints.length, cursor: { endpoint: 'trades' } });
         await this.syncLedgers();
         await updateProgress({ current: 2, total: endpoints.length, cursor: { endpoint: 'ledgers' } });
-        const balances = await this.client.privateQuery<Record<string, string>>({
-          path: '/0/private/Balance'
-        });
+        const balances = await this.syncExtendedBalances();
         await updateProgress({ current: 3, total: endpoints.length, cursor: { endpoint: 'balances' } });
         await this.syncEarn();
         await updateProgress({ current: 4, total: endpoints.length, cursor: { endpoint: 'earn' } });
         await this.syncMargin();
+        await updateProgress({ current: 5, total: endpoints.length, cursor: { endpoint: 'margin' } });
+        await this.syncOrders();
+        await updateProgress({ current: 6, total: endpoints.length, cursor: { endpoint: 'orders' } });
+        await this.syncTradeBalance();
+        await updateProgress({ current: 7, total: endpoints.length, cursor: { endpoint: 'trade-balance' } });
+        await this.syncFunding();
+        await updateProgress({ current: 8, total: endpoints.length, cursor: { endpoint: 'funding' } });
+        await this.syncTradeVolume();
+        await updateProgress({ current: 9, total: endpoints.length, cursor: { endpoint: 'trade-volume' } });
+        await this.syncCreditLines();
         await this.writeSnapshot({ balances });
-        await updateProgress({ current: 5, total: endpoints.length, cursor: { endpoint: 'complete' } });
+        await updateProgress({ current: 10, total: endpoints.length, cursor: { endpoint: 'complete' } });
         await this.jobs.enqueue({
           jobType: 'transfers.reconcile',
           resourceKey: 'owned-transfers',
@@ -180,6 +214,196 @@ export class KrakenService {
         });
       }
     });
+  }
+
+  private async recordObservation({
+    executor = this.db,
+    endpoint,
+    entityId,
+    observedAtMs,
+    sourceAtMs = null,
+    present = true,
+    payload
+  }: {
+    executor?: DatabaseExecutor;
+    endpoint: string;
+    entityId: string;
+    observedAtMs: number;
+    sourceAtMs?: number | null;
+    present?: boolean;
+    payload: unknown;
+  }) {
+    const rawJson = serializeCanonicalJson({ value: payload });
+    const payloadHash = createHash('sha256').update(rawJson).digest('hex');
+    const latest = await executor.one<{
+      id: string;
+      payload_hash: string;
+      present: number | string;
+    }>({
+      sql: `
+        SELECT id, payload_hash, present
+        FROM kraken_account_observations
+        WHERE endpoint = ? AND entity_id = ?
+        ORDER BY observed_at_ms DESC
+        LIMIT 1
+      `,
+      parameters: [endpoint, entityId]
+    });
+    if (
+      latest
+      && latest.payload_hash === payloadHash
+      && Boolean(Number(latest.present)) === present
+    ) {
+      await executor.run({
+        sql: `
+          UPDATE kraken_account_observations
+          SET last_seen_at_ms = CASE
+            WHEN last_seen_at_ms < ? THEN ? ELSE last_seen_at_ms
+          END
+          WHERE id = ?
+        `,
+        parameters: [observedAtMs, observedAtMs, latest.id]
+      });
+      return { inserted: false, rawBytes: 0 };
+    }
+    await executor.run({
+      sql: `
+        INSERT INTO kraken_account_observations(
+          id, endpoint, entity_id, observed_at_ms, last_seen_at_ms,
+          source_at_ms, present, payload_hash, raw_json, raw_bytes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(endpoint, entity_id, observed_at_ms) DO UPDATE SET
+          last_seen_at_ms = excluded.last_seen_at_ms,
+          source_at_ms = excluded.source_at_ms,
+          present = excluded.present,
+          payload_hash = excluded.payload_hash,
+          raw_json = excluded.raw_json,
+          raw_bytes = excluded.raw_bytes
+      `,
+      parameters: [
+        createId({ prefix: 'kao' }),
+        endpoint,
+        entityId,
+        observedAtMs,
+        observedAtMs,
+        sourceAtMs,
+        present ? 1 : 0,
+        payloadHash,
+        rawJson,
+        Buffer.byteLength(rawJson)
+      ]
+    });
+    return { inserted: true, rawBytes: Buffer.byteLength(rawJson) };
+  }
+
+  private async markMissingObservations({
+    executor = this.db,
+    endpoint,
+    presentEntityIds,
+    observedAtMs
+  }: {
+    executor?: DatabaseExecutor;
+    endpoint: string;
+    presentEntityIds: Set<string>;
+    observedAtMs: number;
+  }) {
+    const latestPresent = await executor.query<{ entity_id: string }>({
+      sql: `
+        SELECT observation.entity_id
+        FROM kraken_account_observations AS observation
+        WHERE observation.endpoint = ?
+          AND observation.present = 1
+          AND NOT EXISTS (
+            SELECT 1
+            FROM kraken_account_observations AS newer
+            WHERE newer.endpoint = observation.endpoint
+              AND newer.entity_id = observation.entity_id
+              AND newer.observed_at_ms > observation.observed_at_ms
+          )
+      `,
+      parameters: [endpoint]
+    });
+    for (const row of latestPresent) {
+      if (presentEntityIds.has(row.entity_id)) continue;
+      await this.recordObservation({
+        executor,
+        endpoint,
+        entityId: row.entity_id,
+        observedAtMs,
+        present: false,
+        payload: {}
+      });
+    }
+  }
+
+  private async syncExtendedBalances() {
+    const observedAtMs = Date.now();
+    let extended: Record<string, unknown>;
+    let fallback = false;
+    try {
+      extended = await this.client.privateQuery<Record<string, unknown>>({
+        path: '/0/private/BalanceEx'
+      });
+    } catch (error) {
+      fallback = true;
+      extended = await this.client.privateQuery<Record<string, string>>({
+        path: '/0/private/Balance'
+      });
+      await this.updateCursor({
+        executor: this.db,
+        endpoint: 'extended-balances',
+        count: Object.keys(extended).length,
+        now: observedAtMs,
+        completeness: 'partial',
+        cursor: { fallback: '/0/private/Balance' },
+        error
+      });
+    }
+    const balances: Record<string, string> = {};
+    if (fallback) {
+      for (const [asset, rawValue] of Object.entries(extended)) {
+        balances[asset] = firstString(
+          rawValue && typeof rawValue === 'object'
+            ? (rawValue as Record<string, unknown>).balance
+            : rawValue
+        ) ?? '0';
+      }
+      return balances;
+    }
+    const presentEntityIds = new Set<string>();
+    await this.db.transaction({
+      task: async (executor) => {
+        for (const [asset, rawValue] of Object.entries(extended)) {
+          const detail = rawValue && typeof rawValue === 'object'
+            ? rawValue as Record<string, unknown>
+            : { balance: rawValue };
+          const balance = firstString(detail.balance) ?? '0';
+          balances[asset] = balance;
+          presentEntityIds.add(asset);
+          await this.recordObservation({
+            executor,
+            endpoint: 'extended-balances',
+            entityId: asset,
+            observedAtMs,
+            payload: detail
+          });
+        }
+        await this.markMissingObservations({
+          executor,
+          endpoint: 'extended-balances',
+          presentEntityIds,
+          observedAtMs
+        });
+        await this.updateCursor({
+          executor,
+          endpoint: 'extended-balances',
+          count: presentEntityIds.size,
+          now: observedAtMs,
+          completeness: 'complete'
+        });
+      }
+    });
+    return balances;
   }
 
   private async cursorState({ endpoint }: { endpoint: string }) {
@@ -421,15 +645,20 @@ export class KrakenService {
   }
 
   private async syncEarn() {
-    await this.syncEarnAllocations();
+    const strategyIds = await this.syncEarnAllocations();
     await this.syncEarnStrategies();
+    await this.syncEarnOperationStatuses({ strategyIds });
   }
 
   private async syncEarnAllocations() {
     const previous = await this.cursorState({ endpoint: 'earn' });
+    const observedAtMs = Date.now();
+    const observedStrategyIds = new Set<string>();
+    let recordedSummary = false;
     let nextCursor = previous.completeness === 'syncing'
       ? typeof previous.cursor.nextCursor === 'string' ? previous.cursor.nextCursor : null
       : null;
+    const startedAtBeginning = nextCursor === null;
     let count = previous.completeness === 'syncing' ? Number(previous.cursor.count ?? 0) : 0;
     let page = 0;
     while (page < 10_000) {
@@ -449,7 +678,7 @@ export class KrakenService {
           cursor: { nextCursor },
           error
         });
-        return;
+        return observedStrategyIds;
       }
       const items = Array.isArray(result.items) ? result.items as Array<Record<string, unknown>> : [];
       const providerNextCursor = typeof result.next_cursor === 'string' && result.next_cursor.length > 0
@@ -477,6 +706,14 @@ export class KrakenService {
               ?? item.strategy_id
               ?? `${assetRaw}:${String(item.status ?? 'active')}`
             );
+            observedStrategyIds.add(allocationId);
+            await this.recordObservation({
+              executor,
+              endpoint: 'earn-allocations',
+              entityId: allocationId,
+              observedAtMs,
+              payload: item
+            });
             await executor.run({
               sql: `
                 INSERT INTO kraken_earn_allocations(
@@ -501,10 +738,35 @@ export class KrakenService {
                 item.strategy_id ? String(item.strategy_id) : null,
                 quantity,
                 rewarded,
-                String(item.status ?? 'active'),
+                String(
+                  item.status
+                  ?? (item.is_utilized === true ? 'utilized' : 'active')
+                ),
                 now,
                 JSON.stringify(item)
               ]
+            });
+          }
+          if (!recordedSummary && startedAtBeginning) {
+            const { items: _items, next_cursor: _nextCursor, ...summary } = result;
+            await this.recordObservation({
+              executor,
+              endpoint: 'earn-allocations',
+              entityId: 'account-summary',
+              observedAtMs,
+              payload: summary
+            });
+            recordedSummary = true;
+          }
+          if (complete && startedAtBeginning) {
+            await this.markMissingObservations({
+              executor,
+              endpoint: 'earn-allocations',
+              presentEntityIds: new Set([
+                'account-summary',
+                ...observedStrategyIds
+              ]),
+              observedAtMs
             });
           }
           await this.updateCursor({
@@ -517,13 +779,57 @@ export class KrakenService {
           });
         }
       });
-      if (complete) return;
+      if (complete) return observedStrategyIds;
       nextCursor = providerNextCursor;
       page += 1;
     }
     throw new AppError({
       errorKey: 'PROVIDER_REQUEST_FAILED',
       reason: 'Kraken Earn allocations exceeded the pagination safety boundary.'
+    });
+  }
+
+  private async syncEarnOperationStatuses({
+    strategyIds
+  }: {
+    strategyIds: Set<string>;
+  }) {
+    const observedAtMs = Date.now();
+    let count = 0;
+    const warnings: string[] = [];
+    for (const strategyId of strategyIds) {
+      for (const operation of ['allocate', 'deallocate'] as const) {
+        const path = operation === 'allocate'
+          ? '/0/private/Earn/AllocateStatus'
+          : '/0/private/Earn/DeallocateStatus';
+        try {
+          const result = await this.client.privateQuery<Record<string, unknown>>({
+            path,
+            parameters: { strategy_id: strategyId }
+          });
+          await this.recordObservation({
+            endpoint: 'earn-operation-status',
+            entityId: `${strategyId}:${operation}`,
+            observedAtMs,
+            payload: result
+          });
+          count += 1;
+        } catch (error) {
+          warnings.push(
+            `${operation}:${strategyId}:${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+    }
+    await this.updateCursor({
+      executor: this.db,
+      endpoint: 'earn-operation-status',
+      count,
+      now: observedAtMs,
+      completeness: warnings.length === 0 ? 'complete' : 'partial',
+      cursor: warnings.length === 0 ? {} : { warnings }
     });
   }
 
@@ -650,9 +956,18 @@ export class KrakenService {
       parameters: { docalcs: 'true', consolidation: 'market' }
     });
     const now = Date.now();
+    const presentEntityIds = new Set(Object.keys(result ?? {}));
     await this.db.transaction({
       task: async (executor) => {
         for (const [krakenId, position] of Object.entries(result ?? {})) {
+          await this.recordObservation({
+            executor,
+            endpoint: 'margin-positions',
+            entityId: krakenId,
+            observedAtMs: now,
+            sourceAtMs: krakenTimeMs({ value: position.time }),
+            payload: position
+          });
           await executor.run({
             sql: `
               INSERT INTO kraken_margin_positions(
@@ -684,6 +999,12 @@ export class KrakenService {
             ]
           });
         }
+        await this.markMissingObservations({
+          executor,
+          endpoint: 'margin-positions',
+          presentEntityIds,
+          observedAtMs: now
+        });
         await this.updateCursor({
           executor,
           endpoint: 'margin',
@@ -693,6 +1014,387 @@ export class KrakenService {
         });
       }
     });
+  }
+
+  private async syncOrders() {
+    await this.syncOpenOrders();
+    await this.syncClosedOrders();
+  }
+
+  private async syncOpenOrders() {
+    const now = Date.now();
+    try {
+      const result = await this.client.privateQuery<{
+        open?: Record<string, Record<string, unknown>>;
+      }>({
+        path: '/0/private/OpenOrders',
+        parameters: { trades: 'true' }
+      });
+      const orders = result.open ?? {};
+      const presentEntityIds = new Set(Object.keys(orders));
+      await this.db.transaction({
+        task: async (executor) => {
+          for (const [orderId, order] of Object.entries(orders)) {
+            await this.recordObservation({
+              executor,
+              endpoint: 'open-orders',
+              entityId: orderId,
+              observedAtMs: now,
+              sourceAtMs: krakenTimeMs({ value: order.opentm }),
+              payload: order
+            });
+          }
+          await this.markMissingObservations({
+            executor,
+            endpoint: 'open-orders',
+            presentEntityIds,
+            observedAtMs: now
+          });
+          await this.updateCursor({
+            executor,
+            endpoint: 'open-orders',
+            count: presentEntityIds.size,
+            now,
+            completeness: 'complete'
+          });
+        }
+      });
+    } catch (error) {
+      await this.updateCursor({
+        executor: this.db,
+        endpoint: 'open-orders',
+        count: 0,
+        now,
+        completeness: 'partial',
+        error
+      });
+    }
+  }
+
+  private async syncClosedOrders() {
+    const previous = await this.cursorState({ endpoint: 'closed-orders' });
+    const resumed = previous.completeness === 'syncing';
+    let offset = resumed ? Number(previous.cursor.offset ?? 0) : 0;
+    const startSeconds = resumed
+      ? Number(previous.cursor.startSeconds ?? 0) || null
+      : previous.newestAtMs === null
+        ? null
+        : Math.max(0, Math.floor((previous.newestAtMs - 60 * 60_000) / 1_000));
+    let page = 0;
+    while (page < 10_000) {
+      let result: {
+        closed?: Record<string, Record<string, unknown>>;
+        count?: number;
+      };
+      try {
+        result = await this.client.privateQuery<typeof result>({
+          path: '/0/private/ClosedOrders',
+          parameters: {
+            trades: 'true',
+            ofs: offset,
+            ...(startSeconds === null ? {} : { start: startSeconds })
+          }
+        });
+      } catch (error) {
+        await this.updateCursor({
+          executor: this.db,
+          endpoint: 'closed-orders',
+          count: offset,
+          now: Date.now(),
+          completeness: offset > 0 || resumed ? 'syncing' : 'partial',
+          cursor: { offset, startSeconds },
+          error
+        });
+        return;
+      }
+      const entries = Object.entries(result.closed ?? {});
+      const total = Number(result.count ?? offset + entries.length);
+      const nextOffset = offset + entries.length;
+      const complete = entries.length === 0 || nextOffset >= total;
+      const now = Date.now();
+      const times = entries
+        .map(([, order]) => krakenTimeMs({ value: order.closetm ?? order.opentm }))
+        .filter((value): value is number => value !== null);
+      await this.db.transaction({
+        task: async (executor) => {
+          for (const [orderId, order] of entries) {
+            await this.recordObservation({
+              executor,
+              endpoint: 'closed-orders',
+              entityId: orderId,
+              observedAtMs: now,
+              sourceAtMs: krakenTimeMs({ value: order.closetm ?? order.opentm }),
+              payload: order
+            });
+          }
+          await this.updateCursor({
+            executor,
+            endpoint: 'closed-orders',
+            count: nextOffset,
+            now,
+            completeness: complete ? 'complete' : 'syncing',
+            cursor: {
+              offset: complete ? 0 : nextOffset,
+              startSeconds,
+              providerCount: total
+            },
+            oldestAtMs: times.length === 0 ? previous.oldestAtMs : Math.min(...times),
+            newestAtMs: times.length === 0 ? previous.newestAtMs : Math.max(...times)
+          });
+        }
+      });
+      if (complete) return;
+      offset = nextOffset;
+      page += 1;
+    }
+    throw new AppError({
+      errorKey: 'PROVIDER_REQUEST_FAILED',
+      reason: 'Kraken closed-order history exceeded the pagination safety boundary.'
+    });
+  }
+
+  private async syncTradeBalance() {
+    const now = Date.now();
+    const asset = await this.primaryCurrency();
+    try {
+      const result = await this.client.privateQuery<Record<string, unknown>>({
+        path: '/0/private/TradeBalance',
+        parameters: { asset }
+      });
+      await this.db.transaction({
+        task: async (executor) => {
+          await this.recordObservation({
+            executor,
+            endpoint: 'trade-balance',
+            entityId: asset,
+            observedAtMs: now,
+            payload: result
+          });
+          await this.updateCursor({
+            executor,
+            endpoint: 'trade-balance',
+            count: 1,
+            now,
+            completeness: 'complete'
+          });
+        }
+      });
+    } catch (error) {
+      await this.updateCursor({
+        executor: this.db,
+        endpoint: 'trade-balance',
+        count: 0,
+        now,
+        completeness: 'partial',
+        cursor: { asset },
+        error
+      });
+    }
+  }
+
+  private async syncFunding() {
+    await this.syncFundingEndpoint({
+      path: '/0/private/DepositStatus',
+      endpoint: 'deposit-status',
+      collectionKeys: ['deposits', 'items']
+    });
+    await this.syncFundingEndpoint({
+      path: '/0/private/WithdrawStatus',
+      endpoint: 'withdraw-status',
+      collectionKeys: ['withdrawals', 'items']
+    });
+  }
+
+  private async syncFundingEndpoint({
+    path,
+    endpoint,
+    collectionKeys
+  }: {
+    path: '/0/private/DepositStatus' | '/0/private/WithdrawStatus';
+    endpoint: 'deposit-status' | 'withdraw-status';
+    collectionKeys: string[];
+  }) {
+    let cursor: string | null = null;
+    let count = 0;
+    let page = 0;
+    while (page < 10_000) {
+      let result: unknown;
+      try {
+        result = await this.client.privateQuery<unknown>({
+          path,
+          parameters: {
+            cursor: cursor ?? 'true',
+            limit: 500
+          }
+        });
+      } catch (error) {
+        await this.updateCursor({
+          executor: this.db,
+          endpoint,
+          count,
+          now: Date.now(),
+          completeness: 'partial',
+          cursor: { nextCursor: cursor },
+          error
+        });
+        return;
+      }
+      const container = result && typeof result === 'object' && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : null;
+      const items = Array.isArray(result)
+        ? result as Array<Record<string, unknown>>
+        : collectionKeys
+            .map((key) => container?.[key])
+            .find(Array.isArray) as Array<Record<string, unknown>> | undefined
+          ?? [];
+      const rawNextCursor = container?.next_cursor ?? container?.cursor;
+      const nextCursor = typeof rawNextCursor === 'string' && rawNextCursor.length > 0
+        ? rawNextCursor
+        : null;
+      const complete = Array.isArray(result)
+        || !nextCursor
+        || nextCursor === cursor
+        || items.length === 0;
+      const now = Date.now();
+      await this.db.transaction({
+        task: async (executor) => {
+          for (const item of items) {
+            const fallbackIdentity = createHash('sha256')
+              .update(serializeCanonicalJson({
+                value: {
+                  time: item.time,
+                  asset: item.asset,
+                  amount: item.amount,
+                  method: item.method,
+                  info: item.info
+                }
+              }))
+              .digest('hex')
+              .slice(0, 24);
+            const entityId = firstString(item.refid, item.txid, item.id) ?? fallbackIdentity;
+            await this.recordObservation({
+              executor,
+              endpoint,
+              entityId,
+              observedAtMs: now,
+              sourceAtMs: krakenTimeMs({ value: item.time }),
+              payload: item
+            });
+          }
+          count += items.length;
+          await this.updateCursor({
+            executor,
+            endpoint,
+            count,
+            now,
+            completeness: complete ? 'complete' : 'syncing',
+            cursor: { nextCursor: complete ? null : nextCursor }
+          });
+        }
+      });
+      if (complete) return;
+      cursor = nextCursor;
+      page += 1;
+    }
+    throw new AppError({
+      errorKey: 'PROVIDER_REQUEST_FAILED',
+      reason: `Kraken ${endpoint} history exceeded the pagination safety boundary.`
+    });
+  }
+
+  private async syncTradeVolume() {
+    const pairs = (await this.db.query<{ pair_raw: string }>({
+      sql: `
+        SELECT DISTINCT pair_raw
+        FROM kraken_trades
+        WHERE pair_raw != ''
+        ORDER BY pair_raw
+      `
+    })).map((row) => row.pair_raw);
+    const chunks: string[][] = [];
+    for (let index = 0; index < pairs.length; index += 50) {
+      chunks.push(pairs.slice(index, index + 50));
+    }
+    if (chunks.length === 0) chunks.push([]);
+    const now = Date.now();
+    let count = 0;
+    const warnings: string[] = [];
+    const presentEntityIds = new Set<string>();
+    for (const chunk of chunks) {
+      try {
+        const result = await this.client.privateQuery<Record<string, unknown>>({
+          path: '/0/private/TradeVolume',
+          parameters: {
+            fee_schedule: 'true',
+            ...(chunk.length === 0 ? {} : { pair: chunk.join(',') })
+          }
+        });
+        const entityId = chunk.length === 0
+          ? 'account'
+          : `pairs:${createHash('sha256').update(chunk.join(',')).digest('hex').slice(0, 16)}`;
+        presentEntityIds.add(entityId);
+        await this.recordObservation({
+          endpoint: 'trade-volume',
+          entityId,
+          observedAtMs: now,
+          payload: result
+        });
+        count += 1;
+      } catch (error) {
+        warnings.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (warnings.length === 0) {
+      await this.markMissingObservations({
+        endpoint: 'trade-volume',
+        presentEntityIds,
+        observedAtMs: now
+      });
+    }
+    await this.updateCursor({
+      executor: this.db,
+      endpoint: 'trade-volume',
+      count,
+      now,
+      completeness: warnings.length === 0 ? 'complete' : 'partial',
+      cursor: {
+        pairCount: pairs.length,
+        chunkCount: chunks.length,
+        ...(warnings.length === 0 ? {} : { warnings })
+      }
+    });
+  }
+
+  private async syncCreditLines() {
+    const now = Date.now();
+    try {
+      const result = await this.client.privateQuery<Record<string, unknown>>({
+        path: '/0/private/CreditLines'
+      });
+      await this.recordObservation({
+        endpoint: 'credit-lines',
+        entityId: 'account',
+        observedAtMs: now,
+        payload: result
+      });
+      await this.updateCursor({
+        executor: this.db,
+        endpoint: 'credit-lines',
+        count: 1,
+        now,
+        completeness: 'complete'
+      });
+    } catch (error) {
+      await this.updateCursor({
+        executor: this.db,
+        endpoint: 'credit-lines',
+        count: 0,
+        now,
+        completeness: 'partial',
+        error
+      });
+    }
   }
 
   private async primaryCurrency() {

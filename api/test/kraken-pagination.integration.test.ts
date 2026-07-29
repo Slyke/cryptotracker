@@ -15,6 +15,7 @@ describe('Kraken read-only import', () => {
     } as unknown as JobQueue;
     const requests: Array<{ path: string; parameters: Record<string, string | number> }> = [];
     let failTradeSecondPage = true;
+    let openOrderPresent = true;
     const client: KrakenClientContract = {
       isConfigured: () => true,
       inspectPermissions: async () => ({
@@ -104,14 +105,101 @@ describe('Kraken read-only import', () => {
             ]
           } as T;
         }
-        if (path === '/0/private/Balance') {
+        if (path === '/0/private/BalanceEx') {
           return {
-            'DOT28.S': '10',
-            XXDG: '100',
-            ZCAD: '0'
+            'DOT28.S': { balance: '10', hold_trade: '0' },
+            XXDG: { balance: '100', hold_trade: '25' },
+            ZCAD: { balance: '0', hold_trade: '0' }
           } as T;
         }
         if (path === '/0/private/OpenPositions') return {} as T;
+        if (path === '/0/private/OpenOrders') {
+          return {
+            open: openOrderPresent ? {
+              order1: {
+                status: 'open',
+                opentm: 4,
+                vol: '2',
+                vol_exec: '1',
+                cost: '10',
+                fee: '0.1'
+              }
+            } : {}
+          } as T;
+        }
+        if (path === '/0/private/ClosedOrders') {
+          return {
+            count: 1,
+            closed: {
+              order2: {
+                status: 'canceled',
+                opentm: 2,
+                closetm: 3,
+                vol: '1',
+                vol_exec: '0'
+              }
+            }
+          } as T;
+        }
+        if (path === '/0/private/TradeBalance') {
+          return {
+            eb: '100',
+            tb: '90',
+            m: '0',
+            n: '0',
+            e: '90',
+            mf: '90',
+            ml: null
+          } as T;
+        }
+        if (path === '/0/private/DepositStatus') {
+          return [{
+            refid: 'deposit1',
+            txid: 'tx-deposit',
+            asset: 'XXBT',
+            amount: '1',
+            time: 5,
+            status: 'Success'
+          }] as T;
+        }
+        if (path === '/0/private/WithdrawStatus') {
+          return [{
+            refid: 'withdrawal1',
+            txid: 'tx-withdrawal',
+            asset: 'XETH',
+            amount: '1',
+            time: 6,
+            status: 'Pending'
+          }] as T;
+        }
+        if (path === '/0/private/TradeVolume') {
+          return {
+            currency: 'ZUSD',
+            volume: '1000',
+            fees: {
+              XXBTZCAD: {
+                fee: '0.25',
+                nextfee: '0.24',
+                nextvolume: '10000'
+              }
+            }
+          } as T;
+        }
+        if (path === '/0/private/CreditLines') {
+          return {
+            asset_details: {},
+            limits_monitor: {
+              total_credit_usd: '0',
+              total_credit_used_usd: '0'
+            }
+          } as T;
+        }
+        if (
+          path === '/0/private/Earn/AllocateStatus'
+          || path === '/0/private/Earn/DeallocateStatus'
+        ) {
+          return { pending: false } as T;
+        }
         throw new Error(`Unexpected fixture path: ${path}`);
       },
       status: () => ({ status: 'healthy' })
@@ -390,12 +478,59 @@ describe('Kraken read-only import', () => {
       expect(await db.query<{ endpoint: string; completeness: string }>({
         sql: 'SELECT endpoint, completeness FROM kraken_sync_cursors ORDER BY endpoint'
       })).toEqual([
+        { endpoint: 'closed-orders', completeness: 'complete' },
+        { endpoint: 'credit-lines', completeness: 'complete' },
+        { endpoint: 'deposit-status', completeness: 'complete' },
         { endpoint: 'earn', completeness: 'complete' },
+        { endpoint: 'earn-operation-status', completeness: 'complete' },
         { endpoint: 'earn-strategies', completeness: 'complete' },
+        { endpoint: 'extended-balances', completeness: 'complete' },
         { endpoint: 'ledgers', completeness: 'complete' },
         { endpoint: 'margin', completeness: 'complete' },
-        { endpoint: 'trades', completeness: 'complete' }
+        { endpoint: 'open-orders', completeness: 'complete' },
+        { endpoint: 'trade-balance', completeness: 'complete' },
+        { endpoint: 'trade-volume', completeness: 'complete' },
+        { endpoint: 'trades', completeness: 'complete' },
+        { endpoint: 'withdraw-status', completeness: 'complete' }
       ]);
+      expect(await db.query<{
+        endpoint: string;
+        entity_id: string;
+        present: number | string;
+      }>({
+        sql: `
+          SELECT endpoint, entity_id, present
+          FROM kraken_account_observations
+          ORDER BY endpoint, entity_id
+        `
+      })).toEqual(expect.arrayContaining([
+        { endpoint: 'credit-lines', entity_id: 'account', present: 1 },
+        { endpoint: 'deposit-status', entity_id: 'deposit1', present: 1 },
+        { endpoint: 'earn-allocations', entity_id: 'earn1', present: 1 },
+        { endpoint: 'earn-allocations', entity_id: 'earn2', present: 1 },
+        { endpoint: 'extended-balances', entity_id: 'XXDG', present: 1 },
+        { endpoint: 'open-orders', entity_id: 'order1', present: 1 },
+        { endpoint: 'closed-orders', entity_id: 'order2', present: 1 },
+        { endpoint: 'trade-balance', entity_id: 'CAD', present: 1 },
+        { endpoint: 'withdraw-status', entity_id: 'withdrawal1', present: 1 }
+      ]));
+      const observationCount = await db.one<{ count: number | string }>({
+        sql: 'SELECT COUNT(*) AS count FROM kraken_account_observations'
+      });
+      await handler();
+      expect(await db.one<{ count: number | string }>({
+        sql: 'SELECT COUNT(*) AS count FROM kraken_account_observations'
+      })).toEqual(observationCount);
+      openOrderPresent = false;
+      await handler();
+      expect(await db.query<{ present: number | string }>({
+        sql: `
+          SELECT present
+          FROM kraken_account_observations
+          WHERE endpoint = 'open-orders' AND entity_id = 'order1'
+          ORDER BY observed_at_ms
+        `
+      })).toEqual([{ present: 1 }, { present: 0 }]);
       expect(requests.map((request) => request.path).every((path) => path.startsWith('/0/private/'))).toBe(true);
     } finally {
       await db.close();

@@ -192,4 +192,53 @@ describe('provider controls', () => {
     expect(values[2]! > values[1]!).toBe(true);
     vi.restoreAllMocks();
   });
+
+  it('retries Kraken API-level rate-limit responses with a fresh nonce', async () => {
+    const runtime = await createTestRuntime({
+      config: {
+        providers: {
+          market: {
+            kraken: {
+              enabled: true,
+              baseUrl: 'https://api.kraken.test',
+              rate: {
+                ...rateConfig,
+                concurrency: 1
+              }
+            }
+          }
+        }
+      },
+      secrets: {
+        kraken: {
+          apiKey: 'key',
+          apiSecret: Buffer.from('secret').toString('base64')
+        }
+      }
+    });
+    const nonces: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = new URLSearchParams(String(init?.body ?? ''));
+      nonces.push(body.get('nonce') ?? '');
+      return new Response(JSON.stringify(nonces.length === 1
+        ? { error: ['EAPI:Rate limit exceeded'] }
+        : { error: [], result: { ZCAD: '1' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }));
+    try {
+      const client = new KrakenReadOnlyClient(
+        runtime.config.providers.market.kraken,
+        runtime.secrets.kraken
+      );
+      await expect(client.privateQuery({
+        path: '/0/private/Balance'
+      })).resolves.toEqual({ ZCAD: '1' });
+      expect(nonces).toHaveLength(2);
+      expect(BigInt(nonces[1]!) > BigInt(nonces[0]!)).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

@@ -569,6 +569,8 @@ The initial schema should include equivalents of:
 - `kraken_snapshot_balances`
 - `kraken_margin_positions`
 - `kraken_earn_allocations`
+- `kraken_earn_strategy_rates`
+- `kraken_account_observations`
 - `kraken_sync_cursors`
 - `internal_transfer_matches`
 - `cost_basis_lots`
@@ -664,7 +666,7 @@ Rules:
 - Provider metadata and asset catalogs have longer configurable refresh intervals.
 - Shared market data remains cached when a watched asset is removed, but automatic refresh stops.
 
-Automatic polling is configured independently in Settings for CoinGecko market data, Coinbase market data, Kraken public market data, the asset catalog, tracked addresses, and the private Kraken account. The hard minimum is five minutes. Conservative defaults are 15 minutes for Coinbase and Kraken public markets, 30 minutes for CoinGecko, addresses, and the private Kraken account, and one day for the asset catalog. A single poll may retrieve all upstream 5-minute candles created since the prior poll; the app does not need to call upstream every five minutes to preserve five-minute history.
+Automatic polling is configured independently in Settings for CoinGecko market data, Coinbase market data, Kraken public market data, the asset catalog, tracked addresses, and the private Kraken account. The hard minimum is five minutes. Conservative defaults are five minutes for the private Kraken account and Earn state, 15 minutes for Coinbase and Kraken public markets, 30 minutes for CoinGecko and addresses, and one day for the asset catalog. A single market poll may retrieve all upstream 5-minute candles created since the prior poll; current-only account and Earn surfaces are polled every five minutes because missed observations cannot be recovered from upstream history.
 
 For every enabled market asset, initial synchronization targets progressively deeper cached history: 90 days at one-hour granularity, two years at daily granularity, and five years at weekly granularity. Each adapter caps those targets to the upstream plan and endpoint limits; Combined history uses deeper providers without repeatedly requesting a range another provider cannot supply. Historical work is admitted in bounded batches on later scheduler cycles so current data and free-provider quotas are not overwhelmed. A provider response containing one observation in a requested bucket is retained as an honest one-sample derived OHLC bucket rather than discarded.
 
@@ -1387,6 +1389,8 @@ On first successful configuration:
 - import current balances
 - import Earn/staking allocations
 - import current and available historical margin data
+- import available closed-order and recent funding history
+- record current extended balances, open orders, margin/trade balance, rolling volume/fee tiers, and credit-line state when available
 - record per-endpoint cursors and completeness
 - tolerate pagination and rate limiting
 
@@ -1394,17 +1398,19 @@ The initial import is resumable.
 
 ### 13.4 Ongoing Synchronization
 
-Default schedule: every 30 minutes.
+Default schedule: every 5 minutes.
 
 When permissions are unsafe or required query permissions are missing, the Kraken page shows an accordion with basic remediation steps, an exact allow list, an exact revoke list derived from the inspected key, per-permission purpose, and a link to Kraken's key-management instructions.
 
 Each cycle:
 
-- fetches current balances
+- fetches current extended balances, including held and credit amounts
 - fetches incremental trades
 - fetches incremental ledgers
-- fetches Earn/staking state
-- fetches margin state
+- fetches Earn/staking allocation, payout, strategy, and pending-operation state
+- fetches margin positions and account-level margin/risk state
+- fetches open/closed orders, recent funding statuses, rolling volume/fee tiers, and credit-line state when available
+- stores content-addressed account-state versions and extends unchanged versions without duplicating their JSON
 - writes one account snapshot
 - recalculates affected derived ranges
 
@@ -2249,7 +2255,7 @@ The initial implementation is acceptable when:
 26. Unsafe Kraken key permissions prevent integration activation.
 27. Spot, Earn/staking, and margin sections appear only when used.
 28. Kraken Futures is absent.
-29. Kraken history imports incrementally and snapshots every 30 minutes.
+29. Kraken history imports incrementally and current-only account and Earn state is observed every 5 minutes by default.
 30. ACB, FIFO, and LIFO estimates are selectable.
 31. Unknown cost basis is visible and never assumed to be zero.
 32. Local auth works with the configured single account.

@@ -486,7 +486,7 @@
       title: {
         text: title,
         subtext: minimalChrome ? undefined : `${source} · ${granularity}s resolved`,
-        top: 14,
+        top: minimalChrome ? 8 : 14,
         left: 18,
         textStyle: {
           color: getComputedStyle(document.documentElement).getPropertyValue('--color-text'),
@@ -499,7 +499,7 @@
         }
       },
       legend: {
-        top: 72,
+        top: minimalChrome ? 46 : 72,
         left: 18,
         textStyle: {
           color: getComputedStyle(document.documentElement).getPropertyValue('--color-text')
@@ -507,10 +507,10 @@
       },
       grid: showVolume && meaningfulVolume()
         ? [
-            { left: 70, right: 28, top: 118, height: '50%' },
+            { left: 70, right: 28, top: minimalChrome ? 96 : 118, height: '50%' },
             { left: 70, right: 28, top: '74%', height: '15%' }
           ]
-        : { left: 70, right: 28, top: 118, bottom: minimalChrome ? 42 : 78 },
+        : { left: 70, right: 28, top: minimalChrome ? 96 : 118, bottom: minimalChrome ? 42 : 78 },
       xAxis: showVolume && meaningfulVolume()
         ? [
             {
@@ -1072,7 +1072,10 @@
     chart?.dispose();
   });
 
-  $: if (chart && series) renderChart();
+  $: {
+    minimalChrome;
+    if (chart && series) renderChart();
+  }
   $: range = initialRange;
   $: selectedGranularity = selectedGranularitySetting ?? String(granularity);
   $: if (
@@ -1085,7 +1088,7 @@
 
 <svelte:window on:keydown={inspectByKeyboard} />
 
-<section class="chart-panel" aria-label={title}>
+<section class:minimal-chrome={minimalChrome} class="chart-panel" aria-label={title}>
   {#if !compact}
   <div class="toolbar chart-toolbar">
     <div class="field">
@@ -1291,9 +1294,6 @@
   {#if validationMessage}
     <div class="alert warning" role="status">{validationMessage}</div>
   {/if}
-  {#if partial}
-    <div class="alert warning" role="status">{partialMessage}</div>
-  {/if}
   {#if stale}
     <div class="alert warning" role="status">{strings['cryptotracker-data_stale-label']}</div>
   {/if}
@@ -1301,28 +1301,51 @@
     <div class="alert start" role="status">Combined volume is intentionally unavailable because exchange volumes cannot be summed without duplication.</div>
   {/if}
 
-  {#if !compact}
+  {#if !compact || partial}
     <div class="chart-inspection-actions">
-      <button
-        type="button"
-        class="btn secondary compact keyboard-inspector-button"
-        aria-label={`${title} ${inspectorActive ? 'stop keyboard chart inspector' : 'keyboard chart inspector'}`}
-        aria-expanded={inspectorActive}
-        aria-keyshortcuts="ArrowLeft ArrowRight Home End Escape"
-        on:click={toggleKeyboardInspection}
-      >{inspectorActive ? 'Stop keyboard inspection' : 'Inspect chart with keyboard'}</button>
-      {#if showAllTooltipAssetsControl}
-        <label class="check popup-assets-toggle">
-          <input
-            type="checkbox"
-            bind:checked={showAllTooltipAssets}
-            on:change={renderChart}
-          />
-          Show all, including disabled/inactive, in popup
-        </label>
+      {#if partial}
+        <span class="sr-only" role="status">{partialMessage}</span>
+      {/if}
+      {#if !compact}
+        <button
+          type="button"
+          class="btn secondary compact keyboard-inspector-button"
+          aria-label={`${title} ${inspectorActive ? 'stop keyboard chart inspector' : 'keyboard chart inspector'}`}
+          aria-expanded={inspectorActive}
+          aria-keyshortcuts="ArrowLeft ArrowRight Home End Escape"
+          on:click={toggleKeyboardInspection}
+        >{inspectorActive ? 'Stop keyboard inspection' : 'Inspect chart with keyboard'}</button>
+        {#if showAllTooltipAssetsControl}
+          <label class="check popup-assets-toggle">
+            <input
+              type="checkbox"
+              bind:checked={showAllTooltipAssets}
+              on:change={renderChart}
+            />
+            Show all, including disabled/inactive, in popup
+          </label>
+        {/if}
+      {/if}
+      {#if partial}
+        <!-- Focus is the keyboard equivalent of hovering to reveal the selectable warning text. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <span
+          class="partial-data-tip"
+          role="group"
+          tabindex="0"
+          aria-label="Partial data notice"
+          aria-describedby={controlId('partial-data-tooltip')}
+        >
+          <span class="partial-data-icon" aria-hidden="true">!</span>
+          <span
+            class="partial-data-popup"
+            id={controlId('partial-data-tooltip')}
+            role="tooltip"
+          >{partialMessage}</span>
+        </span>
       {/if}
     </div>
-    {#if inspectorActive}
+    {#if !compact && inspectorActive}
       <div class="inspector-status" role="status">
         <strong>Keyboard inspection active.</strong>
         Use ←/→ to move one point, Home/End to jump, Escape to close, or press the button again.
@@ -1530,6 +1553,10 @@
     margin-top: 0.8rem;
   }
 
+  .chart-panel.minimal-chrome .chart-frame {
+    margin-top: 0;
+  }
+
   .chart {
     width: 100%;
     min-height: 34rem;
@@ -1611,6 +1638,92 @@
 
   .popup-assets-toggle {
     margin-left: auto;
+  }
+
+  .partial-data-tip {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 1.65rem;
+    min-width: 1.65rem;
+    height: 1.5rem;
+    min-height: 1.5rem;
+    margin-left: auto;
+    padding: 0;
+    outline: none;
+    user-select: text;
+  }
+
+  .partial-data-icon {
+    display: grid;
+    width: 1.65rem;
+    height: 1.5rem;
+    place-items: center;
+    padding-top: 0.32rem;
+    background: var(--color-warning);
+    clip-path: polygon(50% 0, 100% 100%, 0 100%);
+    color: #17120a;
+    font-size: 0.72rem;
+    font-weight: 800;
+    line-height: 1;
+    cursor: help;
+  }
+
+  .popup-assets-toggle + .partial-data-tip {
+    margin-left: 0;
+  }
+
+  .partial-data-tip:hover .partial-data-icon,
+  .partial-data-tip:focus-visible .partial-data-icon {
+    filter: brightness(1.08) drop-shadow(0 0 0.16rem var(--color-warning-border));
+  }
+
+  .partial-data-popup {
+    position: absolute;
+    z-index: 20;
+    right: 0;
+    bottom: calc(100% + 0.45rem);
+    display: block;
+    visibility: hidden;
+    width: min(24rem, calc(100vw - 2rem));
+    padding: 0.55rem 0.65rem;
+    opacity: 0;
+    border: 1px solid var(--color-warning-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-panel-strong);
+    color: var(--color-text);
+    box-shadow: 0 0.7rem 1.8rem rgba(0, 0, 0, 0.28);
+    font-size: 0.76rem;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: 1.4;
+    text-align: left;
+    text-transform: none;
+    transition:
+      opacity 0.12s ease 0.35s,
+      visibility 0s linear 0.47s;
+    user-select: text;
+    white-space: normal;
+    cursor: text;
+  }
+
+  .partial-data-popup::after {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    width: 2.5rem;
+    height: 0.55rem;
+    content: '';
+  }
+
+  .partial-data-tip:hover .partial-data-popup,
+  .partial-data-tip:focus .partial-data-popup,
+  .partial-data-tip:focus-within .partial-data-popup {
+    visibility: visible;
+    opacity: 1;
+    transition-delay: 0s;
   }
 
   .inspector-status {

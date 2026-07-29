@@ -52,6 +52,21 @@ describe('historical point retention', () => {
           ) VALUES ('snapshot-old', 'XXBT', 'bitcoin', 'spot', '1', 1)
         `
       });
+      for (const [id, observedAtMs, lastSeenAtMs] of [
+        ['observation-old', old, old],
+        ['observation-current-interval', old, recent],
+        ['observation-recent', recent, recent]
+      ] as const) {
+        await db.run({
+          sql: `
+            INSERT INTO kraken_account_observations(
+              id, endpoint, entity_id, observed_at_ms, last_seen_at_ms,
+              present, payload_hash, raw_json, raw_bytes
+            ) VALUES (?, 'trade-balance', ?, ?, ?, 1, ?, '{}', 2)
+          `,
+          parameters: [id, id, observedAtMs, lastSeenAtMs, id]
+        });
+      }
       await db.run({
         sql: `
           INSERT INTO chain_transactions(
@@ -105,12 +120,19 @@ describe('historical point retention', () => {
         marketPoints: 1,
         addressBalancePoints: 1,
         krakenSnapshots: 1,
+        krakenAccountObservations: 1,
         portfolioSnapshots: 0
       });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM market_points' })).toEqual({ count: 1 });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM address_balance_points' })).toEqual({ count: 1 });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM kraken_snapshots' })).toEqual({ count: 1 });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM kraken_snapshot_balances' })).toEqual({ count: 0 });
+      expect(await db.query<{ id: string }>({
+        sql: 'SELECT id FROM kraken_account_observations ORDER BY id'
+      })).toEqual([
+        { id: 'observation-current-interval' },
+        { id: 'observation-recent' }
+      ]);
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM chain_transactions' })).toEqual({ count: 1 });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM address_balance_events' })).toEqual({ count: 1 });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM kraken_trades' })).toEqual({ count: 1 });
@@ -137,6 +159,7 @@ describe('historical point retention', () => {
         marketPoints: 0,
         addressBalancePoints: 0,
         krakenSnapshots: 0,
+        krakenAccountObservations: 0,
         portfolioSnapshots: 0
       });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM market_points' })).toEqual({ count: 1 });

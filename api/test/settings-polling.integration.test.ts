@@ -15,7 +15,7 @@ describe('per-integration polling settings', () => {
         marketKraken: 15,
         assetCatalog: 1_440,
         addresses: 30,
-        krakenAccount: 30
+        krakenAccount: 5
       });
 
       await service.patch({

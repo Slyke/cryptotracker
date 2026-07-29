@@ -422,14 +422,14 @@
 
   {:else if blockId === 'graphs'}
   <section class="panel">
-    <div class="row dashboard-heading">
-      <div>
-        <p class="eyebrow">Saved dashboard items</p>
-        <h2>{settings.savedGraphs.filter((item) => !item.hidden).length} visible charts and tables</h2>
-        {#if !removeFluff}
+    <div class:fluff-hidden={removeFluff} class="row dashboard-heading">
+      {#if !removeFluff}
+        <div>
+          <p class="eyebrow">Saved dashboard items</p>
+          <h2>{settings.savedGraphs.filter((item) => !item.hidden).length} visible charts and tables</h2>
           <p class="muted">Each row has its own one-to-four-column layout. Save charts or tables from Markets, Addresses, or Kraken.</p>
-        {/if}
-      </div>
+        </div>
+      {/if}
       <div class="dashboard-heading-actions">
         <button
           class="ghost compact"
@@ -511,9 +511,7 @@
                         <SavedDashboardChart
                           graph={item}
                           minimalChrome={removeFluff}
-                          partialDismissed={settings.dismissedNotices.includes('dashboard-saved-graph-missing-data')}
                           on:hide={hideGraph}
-                          on:dismiss={dismissNotice}
                         />
                       {/if}
                     </div>
@@ -665,6 +663,11 @@
 
   .dashboard-heading {
     align-items: flex-end;
+  }
+
+  .dashboard-heading.fluff-hidden {
+    align-items: center;
+    justify-content: flex-end;
   }
 
   .dashboard-heading-actions {

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
   import PortfolioChart from './PortfolioChart.svelte';
-  import DismissableNotice from './DismissableNotice.svelte';
   import type {
     ChartDenominationOption,
     ChartEvent,
@@ -16,12 +15,10 @@
   import { configuredCurrencies } from '$lib/currencies';
 
   export let graph: SavedGraph;
-  export let partialDismissed = false;
   export let minimalChrome = false;
 
   const dispatch = createEventDispatcher<{
     hide: { id: string };
-    dismiss: { id: string };
   }>();
   let series: ChartSeries[] = [];
   let events: ChartEvent[] = [];
@@ -278,23 +275,17 @@
   });
 </script>
 
-<article class="saved-chart">
-  <div class="saved-chart-header">
-    <div>
-      {#if !minimalChrome}<span class="badge start">{graph.type}</span>{/if}
-      <h3 class:compact-title={minimalChrome}>{graph.name}</h3>
+<article class:minimal-chrome={minimalChrome} class="saved-chart">
+  {#if !minimalChrome}
+    <div class="saved-chart-header">
+      <div>
+        <span class="badge start">{graph.type}</span>
+        <h3>{graph.name}</h3>
+      </div>
+      <button class="ghost compact" type="button" on:click={() => dispatch('hide', { id: graph.id })}>Remove</button>
     </div>
-    <button class="ghost compact" type="button" on:click={() => dispatch('hide', { id: graph.id })}>Remove</button>
-  </div>
-  {#if error}<div class="alert danger">{error}</div>{/if}
-  {#if partial}
-    <DismissableNotice
-      noticeId="dashboard-saved-graph-missing-data"
-      tone="warning"
-      dismissed={partialDismissed}
-      on:dismiss={(event) => dispatch('dismiss', event.detail)}
-    >This saved graph contains missing data. Settings → Synchronization identifies active work and cached coverage.</DismissableNotice>
   {/if}
+  {#if error}<div class="alert danger">{error}</div>{/if}
   <PortfolioChart
     title={graph.name}
     {series}
@@ -306,7 +297,8 @@
     source={graph.type === 'market' ? stringConfig('source', 'combined') : graph.type}
     timezone={stringConfig('timezone', 'America/Vancouver')}
     granularity={resolvedGranularity}
-    partial={false}
+    partial={partial && !minimalChrome}
+    partialMessage="This saved graph contains missing data. Settings → Synchronization identifies active work and cached coverage."
     {stale}
     busy={loading}
     compact
@@ -330,6 +322,10 @@
     background: var(--color-panel);
   }
 
+  .saved-chart.minimal-chrome {
+    padding: 0.55rem;
+  }
+
   .saved-chart-header {
     display: flex;
     align-items: flex-start;
@@ -339,10 +335,6 @@
 
   h3 {
     margin: 0.35rem 0 0;
-  }
-
-  h3.compact-title {
-    margin-top: 0;
   }
 
   :global(.saved-chart .chart) {

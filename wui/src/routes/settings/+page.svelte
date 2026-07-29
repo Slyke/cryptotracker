@@ -129,7 +129,7 @@
       marketKraken: 15,
       assetCatalog: 1_440,
       addresses: 30,
-      krakenAccount: 30
+      krakenAccount: 5
     }
   };
   let tooltipCurrencyText = 'CAD';
@@ -705,9 +705,9 @@
                 </div>
               </div>
               <p class="muted retention-copy">
-                Five minutes is the minimum. Kraken account and Earn defaults to 30 minutes because
-                strategy-rate estimates usually change much less often than market prices.
-                Saved changes take effect on the next scheduler check.
+                Five minutes is the minimum and the default for Kraken account and Earn state,
+                which has no upstream history to recover between observations. Saved changes take
+                effect on the next scheduler check.
               </p>
             </fieldset>
 

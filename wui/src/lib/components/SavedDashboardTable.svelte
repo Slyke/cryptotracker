@@ -320,8 +320,8 @@
     <div class="table-actions">
       {#if !minimalChrome}
         <a class="button ghost compact" href={`/${item.type === 'market' ? 'markets' : item.type}`}>Open source</a>
+        <button class="ghost compact" type="button" on:click={() => dispatch('hide', { id: item.id })}>Remove</button>
       {/if}
-      <button class="ghost compact" type="button" on:click={() => dispatch('hide', { id: item.id })}>Remove</button>
     </div>
   </div>
   {#if error}<div class="alert danger">{error}</div>{/if}

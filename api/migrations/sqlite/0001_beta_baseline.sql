@@ -381,3 +381,71 @@ CREATE TABLE IF NOT EXISTS audit_log (
   details_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS audit_log_range_idx ON audit_log(occurred_at_ms);
+
+CREATE TABLE IF NOT EXISTS asset_catalog (
+  canonical_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  name TEXT NOT NULL,
+  network TEXT,
+  contract_or_mint TEXT,
+  market_cap_rank INTEGER,
+  source TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS asset_catalog_rank_idx
+  ON asset_catalog(market_cap_rank, canonical_id);
+CREATE INDEX IF NOT EXISTS asset_catalog_symbol_idx
+  ON asset_catalog(symbol, name);
+
+CREATE INDEX IF NOT EXISTS jobs_status_updated_idx
+  ON jobs(status, updated_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS kraken_earn_strategy_rates (
+  id TEXT PRIMARY KEY,
+  strategy_id TEXT NOT NULL,
+  asset_raw TEXT NOT NULL,
+  canonical_asset_id TEXT,
+  captured_at_ms INTEGER NOT NULL,
+  apr_low_percent TEXT NOT NULL,
+  apr_high_percent TEXT NOT NULL,
+  apy_low_percent TEXT NOT NULL,
+  apy_high_percent TEXT NOT NULL,
+  auto_compound INTEGER NOT NULL DEFAULT 0,
+  payout_frequency_seconds INTEGER,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE (strategy_id, captured_at_ms)
+);
+CREATE INDEX IF NOT EXISTS kraken_earn_strategy_rates_asset_time_idx
+  ON kraken_earn_strategy_rates(canonical_asset_id, captured_at_ms);
+
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+  id TEXT PRIMARY KEY,
+  captured_at_ms INTEGER NOT NULL UNIQUE,
+  primary_currency TEXT NOT NULL,
+  values_json TEXT NOT NULL DEFAULT '{}',
+  quantities_json TEXT NOT NULL DEFAULT '{}',
+  priced_coverage_percent TEXT NOT NULL,
+  incomplete_balance_count INTEGER NOT NULL DEFAULT 0,
+  provenance_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS portfolio_snapshots_time_idx
+  ON portfolio_snapshots(captured_at_ms);
+
+CREATE TABLE IF NOT EXISTS kraken_account_observations (
+  id TEXT PRIMARY KEY,
+  endpoint TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  observed_at_ms INTEGER NOT NULL,
+  last_seen_at_ms INTEGER NOT NULL,
+  source_at_ms INTEGER,
+  present INTEGER NOT NULL DEFAULT 1,
+  payload_hash TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  raw_bytes INTEGER NOT NULL,
+  UNIQUE (endpoint, entity_id, observed_at_ms)
+);
+CREATE INDEX IF NOT EXISTS kraken_account_observations_endpoint_time_idx
+  ON kraken_account_observations(endpoint, observed_at_ms);
+CREATE INDEX IF NOT EXISTS kraken_account_observations_last_seen_idx
+  ON kraken_account_observations(last_seen_at_ms);
