@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import { persistAccordionState } from '$lib/accordion-state';
 
   interface AssetOption {
     canonicalId: string;
@@ -34,7 +35,12 @@
   };
 </script>
 
-<details class="asset-picker" id="asset-catalog" bind:open>
+<details
+  class="asset-picker"
+  id="asset-catalog"
+  bind:open
+  use:persistAccordionState={{ key: 'asset-picker:catalog' }}
+>
   <summary>{label} <span class="muted">({assets.length} disabled)</span></summary>
   <div class="picker-dropdown">
     <div class="field">

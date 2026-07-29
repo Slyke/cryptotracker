@@ -7,6 +7,7 @@ export interface RetentionResult {
     marketPoints: number;
     addressBalancePoints: number;
     krakenSnapshots: number;
+    portfolioSnapshots: number;
   };
 }
 
@@ -29,7 +30,8 @@ export class RetentionService {
         deleted: {
           marketPoints: 0,
           addressBalancePoints: 0,
-          krakenSnapshots: 0
+          krakenSnapshots: 0,
+          portfolioSnapshots: 0
         }
       };
     }
@@ -48,13 +50,18 @@ export class RetentionService {
           sql: 'DELETE FROM kraken_snapshots WHERE captured_at_ms < ?',
           parameters: [cutoffMs]
         });
+        const portfolioSnapshots = await executor.run({
+          sql: 'DELETE FROM portfolio_snapshots WHERE captured_at_ms < ?',
+          parameters: [cutoffMs]
+        });
         return {
           retentionDays,
           cutoff: new Date(cutoffMs).toISOString(),
           deleted: {
             marketPoints: marketPoints.changes,
             addressBalancePoints: addressBalancePoints.changes,
-            krakenSnapshots: krakenSnapshots.changes
+            krakenSnapshots: krakenSnapshots.changes,
+            portfolioSnapshots: portfolioSnapshots.changes
           }
         };
       }

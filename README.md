@@ -16,6 +16,8 @@ cp config/examples/cryptotracker.secrets.example.json5 config/cryptotracker.secr
 
 Edit both copied files. At minimum, replace `sessionSecret` with at least 32 random characters and `localPassword` with a strong password. Keep the secrets file out of source control.
 
+Compose also starts the standalone MCP sidecar. Copy `.env.example` to `.env` and replace the dedicated upstream key plus the client-facing MCP keys, or set `CRYPTOTRACKER_MCP_ENABLED=false` when MCP is not wanted.
+
 ETH and ERC-20 assets such as SHIB share one `providers.etherscanApiKey`; SOL and SPL assets share
 one `providers.heliusApiKey`; and DOT history requires `providers.subscanApiKey`. Kraken, Coinbase,
 and CoinGecko provide market prices, not transaction history for arbitrary public wallet addresses.
@@ -30,7 +32,7 @@ JSON5 values may instead use whole-value environment references such as `"${KRAK
 docker compose up --build
 ```
 
-Open `http://localhost:8192` and sign in as `admin` with the configured password. Canonical data is retained in the `cryptotracker-data` volume.
+Open `http://localhost:8192` and sign in as `admin` with the configured password. Canonical data is retained in the `cryptotracker-data` volume. The API and MCP sidecar share the TLS certificate retained in `cryptotracker-certs`.
 
 For PostgreSQL:
 
@@ -48,13 +50,25 @@ CryptoTracker requires Node.js 24 or newer.
 
 ```bash
 npm ci
+npm --prefix mcp ci
 mkdir -p config data
 cp config/examples/cryptotracker.config.example.json5 config/cryptotracker.config.json5
 cp config/examples/cryptotracker.secrets.example.json5 config/cryptotracker.secrets.json5
 npm run dev
 ```
 
-For local development, change `exports.directory` in the copied config to `./data/exports`. The API listens on port 8192 and proxies the internal Vite/SvelteKit server on port 3000.
+For local development, change `exports.directory` in the copied config to `./data/exports`. `npm run dev` starts only the WUI and API; run `npm --prefix mcp run dev` separately when developing the sidecar. The API listens on HTTP port 8192, optional HTTPS port 8194, and proxies the internal Vite/SvelteKit server on port 3000.
+
+## API and MCP
+
+The API and MCP are separate processes and Compose services. The API can listen on HTTP (`8192`) and HTTPS (`8194`) independently. The MCP sidecar defaults to HTTPS at `https://localhost:8193/mcp`; trusted local deployments may enable its plaintext HTTP listener on port `8195`.
+
+There are two deliberately distinct credentials:
+
+- MCP clients authenticate to the sidecar with named Bearer API keys carrying `read` or `readwrite` roles.
+- The sidecar calls the CryptoTracker API with a separate dedicated upstream key through `X-API-Key`.
+
+The sidecar’s upstream URL may use the API’s HTTP or HTTPS listener. Both containers mount the shared certificate; TLS verification remains enabled when HTTPS is selected. MCP covers every allowlisted `/api` operation through focused tools plus `api_catalog`, `api_read`, and dry-run-first `api_write`. Kraken remains query-only. See the standalone [MCP README](mcp/README.md) for all tools and configuration.
 
 ## Verification
 

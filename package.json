@@ -11,17 +11,20 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "build": "npm run build:api && npm run build:wui",
+    "build": "npm run build:api && npm run build:wui && npm run build:mcp",
     "build:api": "npm run build --workspace cryptotracker-api",
     "build:wui": "npm run build --workspace cryptotracker-wui",
-    "check": "npm run check:api && npm run check:wui",
+    "build:mcp": "npm --prefix mcp run build",
+    "check": "npm run check:api && npm run check:wui && npm run check:mcp",
     "check:api": "npm run check --workspace cryptotracker-api",
     "check:wui": "npm run check --workspace cryptotracker-wui",
+    "check:mcp": "npm --prefix mcp run check",
     "dev": "node runtime/dev-launcher.mjs",
     "start": "node runtime/launcher.mjs",
-    "test": "npm run test:api && npm run test:wui",
+    "test": "npm run test:api && npm run test:wui && npm run test:mcp",
     "test:api": "npm run test --workspace cryptotracker-api",
     "test:wui": "npm run test --workspace cryptotracker-wui",
+    "test:mcp": "npm --prefix mcp run test",
     "test:browser": "npm run test:browser --workspace cryptotracker-wui",
     "write-build-info": "node scripts/write-build-info.mjs",
     "error-validate": "npm run error-validate --workspace cryptotracker-api"

@@ -18,8 +18,10 @@ ENV BUILD_HASH=$BUILD_HASH
 
 COPY . .
 RUN node scripts/write-build-info.mjs --output /workspace/build-info.json \
-  && npm run check \
-  && npm run build
+  && npm run check:api \
+  && npm run check:wui \
+  && npm run build:api \
+  && npm run build:wui
 
 FROM node:24.14.0-bookworm-slim AS production
 
@@ -49,7 +51,7 @@ COPY --from=build /workspace/runtime ./runtime
 COPY --from=build /workspace/build-info.json ./build-info.json
 
 USER cryptotracker:cryptotracker
-EXPOSE 8192
+EXPOSE 8192 8194
 VOLUME ["/app/data"]
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "runtime/launcher.mjs"]

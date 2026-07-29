@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import argon2 from 'argon2';
 import { jwtVerify } from 'jose';
 import type { Request, Response } from 'express';
@@ -9,7 +9,7 @@ import type { Logger } from '../logging/logger.js';
 import { createId, createOpaqueToken } from '../utils/ids.js';
 import { isIpInCidrs, normalizeIpAddress, parseCidr, type CidrRule } from './cidr.js';
 
-export type AuthMethod = 'local' | 'header';
+export type AuthMethod = 'local' | 'header' | 'apiKey';
 
 export interface AuthenticatedIdentity {
   username: string;
@@ -18,6 +18,7 @@ export interface AuthenticatedIdentity {
   userId: string | null;
   sessionId: string | null;
   csrfToken: string;
+  role: 'read' | 'readwrite';
 }
 
 interface UserRow {
@@ -44,6 +45,13 @@ const safeEqual = ({ left, right }: { left: string; right: string }) => {
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 };
+
+const safeTokenEqual = ({ supplied, expected }: { supplied: string; expected: string }) => (
+  timingSafeEqual(
+    createHash('sha256').update(supplied).digest(),
+    createHash('sha256').update(expected).digest()
+  )
+);
 
 export class AuthService {
   private readonly trustedCidrs: CidrRule[];
@@ -424,7 +432,8 @@ export class AuthService {
       authMethod: 'header',
       userId: null,
       sessionId: null,
-      csrfToken: this.headerCsrfToken({ username })
+      csrfToken: this.headerCsrfToken({ username }),
+      role: 'readwrite'
     };
   }
 
@@ -457,7 +466,42 @@ export class AuthService {
       authMethod: 'local',
       userId: row.user_id,
       sessionId: row.id,
-      csrfToken: row.csrf_token
+      csrfToken: row.csrf_token,
+      role: 'readwrite'
+    };
+  }
+
+  private authenticateApiKey({ req }: { req: Request }): AuthenticatedIdentity | null {
+    const config = this.runtime.config.auth.apiKey;
+    if (!config.enabled) return null;
+    const headerToken = req.get(config.headerName);
+    const authorization = req.get('authorization');
+    const bearerToken = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    const supplied = headerToken ?? bearerToken ?? null;
+    if (!supplied) return null;
+    let match: (typeof this.runtime.secrets.apiKeys)[number] | null = null;
+    for (const entry of this.runtime.secrets.apiKeys) {
+      const matches = safeTokenEqual({
+        supplied,
+        expected: entry.key
+      });
+      if (matches && !match) match = entry;
+    }
+    if (!match) {
+      throw new AppError({
+        errorKey: 'AUTH_FORBIDDEN',
+        reason: 'The supplied API key is invalid.',
+        status: 403
+      });
+    }
+    return {
+      username: match.name,
+      groups: [`api:${match.role}`],
+      authMethod: 'apiKey',
+      userId: null,
+      sessionId: null,
+      csrfToken: '',
+      role: match.role
     };
   }
 
@@ -468,6 +512,8 @@ export class AuthService {
     req: Request;
     correlationId: string;
   }) {
+    const apiKey = this.authenticateApiKey({ req });
+    if (apiKey) return apiKey;
     const header = await this.authenticateHeader({ req, correlationId });
     if (header) return header;
     return this.authenticateSession({ req });
@@ -480,6 +526,16 @@ export class AuthService {
     req: Request;
     identity: AuthenticatedIdentity;
   }) {
+    if (identity.authMethod === 'apiKey') {
+      if (identity.role !== 'readwrite') {
+        throw new AppError({
+          errorKey: 'AUTH_FORBIDDEN',
+          reason: 'This API key is read-only.',
+          status: 403
+        });
+      }
+      return;
+    }
     const origin = req.get('origin');
     const expectedOrigin = new URL(this.runtime.config.publicBaseUrl).origin;
     if (!origin || origin !== expectedOrigin) {
@@ -557,7 +613,8 @@ export class AuthService {
     return {
       local: this.runtime.config.auth.local.enabled,
       header: this.runtime.config.auth.header.enabled,
-      signedIdentity: this.runtime.config.auth.header.signedIdentity.enabled
+      signedIdentity: this.runtime.config.auth.header.signedIdentity.enabled,
+      apiKey: this.runtime.config.auth.apiKey.enabled
     };
   }
 }
@@ -565,5 +622,6 @@ export class AuthService {
 export const authInternals = {
   normalizeSet,
   normalizeUsername,
-  safeEqual
+  safeEqual,
+  safeTokenEqual
 };

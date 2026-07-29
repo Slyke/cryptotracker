@@ -105,7 +105,27 @@
       }>({ url: '/api/settings' });
       currentPrimaryCurrency = settingsPayload.settings.primaryCurrency.toUpperCase();
       fallbackTooltipCurrencies = settingsPayload.settings.tooltipCurrencies ?? [];
-      if (graph.type === 'market') {
+      if (graph.type === 'portfolio') {
+        const currencies = configuredTooltipCurrencies();
+        const payload = await apiRequest<{
+          data: {
+            series: ChartSeries[];
+            events: ChartEvent[];
+            denominationOptions: ChartDenominationOption[];
+            partial: boolean;
+            stale: boolean;
+            granularitySeconds: number;
+          };
+        }>({
+          url: `/api/portfolio/series?from=${from}&to=${to}&quoteCurrencies=${encodeURIComponent(currencies.join(','))}`
+        });
+        series = payload.data.series;
+        events = payload.data.events;
+        denominationOptions = payload.data.denominationOptions;
+        partial = payload.data.partial;
+        stale = payload.data.stale;
+        resolvedGranularity = payload.data.granularitySeconds;
+      } else if (graph.type === 'market') {
         const assetIds = Array.isArray(graph.config.assetIds)
           ? graph.config.assetIds.map(String).filter(Boolean)
           : [];
@@ -117,9 +137,10 @@
           || stringConfig('primaryCurrency', 'CAD').toUpperCase();
         const currencies = configuredTooltipCurrencies();
         const yAxisUnit = stringConfig('yAxisUnit', currency);
+        const yAxisIsFiat = currencies.includes(yAxisUnit.toUpperCase());
         const requestedAssetIds = [...new Set([
           ...assetIds,
-          ...(yAxisUnit === currency ? [] : [yAxisUnit])
+          ...(yAxisIsFiat ? [] : [yAxisUnit])
         ])];
         type MarketSeriesPayload = {
           data: {
@@ -160,8 +181,10 @@
             ] as const)
           )))
         ]));
-        const denominatorSeries = payload.data.series.find((item) => item.id === yAxisUnit);
-        denominationOptions = yAxisUnit === currency
+        const denominatorSeries = yAxisIsFiat
+          ? undefined
+          : payload.data.series.find((item) => item.id === yAxisUnit);
+        denominationOptions = yAxisIsFiat
           ? []
           : [{
               id: yAxisUnit,
@@ -184,7 +207,7 @@
                   pointValuesByCurrency.get(quoteCurrency)
                     ?.get(`${item.id}:${point.timestampMs}`) ?? null
                 ])),
-                denominations: yAxisUnit === currency
+                denominations: yAxisIsFiat
                   ? {}
                   : {
                       [yAxisUnit]: Number.isFinite(numerator)
@@ -287,6 +310,7 @@
     {stale}
     busy={loading}
     compact
+    preferenceKey={`dashboard:${graph.id}`}
     {minimalChrome}
     initialRange={stringConfig('range', '30d')}
     initialScale={stringConfig('scale', 'linear') === 'log' ? 'log' : 'linear'}

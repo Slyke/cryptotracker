@@ -59,6 +59,13 @@ The production launcher also accepts `CRYPTOTRACKER_WUI_HOST`, `CRYPTOTRACKER_WU
 
 | Variable | Meaning |
 |---|---|
+| `CRYPTOTRACKER_API_KEY_ENABLED` | Enable API-key authentication for REST |
+| `CRYPTOTRACKER_API_KEY_HEADER` | REST API-key header name; defaults to `X-API-Key` |
+| `CRYPTOTRACKER_API_KEY` | One API-key secret supplied directly by the environment |
+| `CRYPTOTRACKER_API_KEY_FILE` | File containing the direct API-key secret; mutually exclusive with `CRYPTOTRACKER_API_KEY` |
+| `CRYPTOTRACKER_API_KEY_NAME` | Audit identity for the direct environment API key |
+| `CRYPTOTRACKER_API_KEY_ROLE` | `read` or `readwrite`; defaults to the safer `read` role for the direct override |
+| `CRYPTOTRACKER_HTTPS_PORT` | API HTTPS listener port; defaults to `8194` |
 | `CRYPTOTRACKER_AUTH_LOCAL_ENABLED` | Enable local authentication |
 | `CRYPTOTRACKER_AUTH_LOCAL_USERNAME` | Local username |
 | `CRYPTOTRACKER_AUTH_LOCAL_PASSWORD` | Local password secret |
@@ -77,6 +84,37 @@ The production launcher also accepts `CRYPTOTRACKER_WUI_HOST`, `CRYPTOTRACKER_WU
 | `CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_SECRET` | HMAC secret |
 
 Allowed users and allowed groups use OR semantics. Never trust identity headers from an Internet-facing peer; restrict `trustedCidrs` to the directly connected authentication proxy.
+
+Multiple named API keys can be declared in the API secrets file under `apiKeys`. Each entry accepts either an inline `key` or a `keyFile`; relative key-file paths resolve from the secrets-file directory. API-key comparisons hash both values before timing-safe comparison. Read keys can call GET APIs. Readwrite keys may also call local application mutations. The MCP sidecar must use a dedicated entry here for its upstream calls; client-facing MCP keys are configured separately and must not reuse the upstream value.
+
+## HTTPS
+
+`api.https` controls the API’s additional TLS listener:
+
+- `enabled`
+- `port`
+- `certPath`
+- `keyPath`
+- `generateSelfSigned`
+
+The normal browser/WUI and local API listener remains HTTP on `api.port` (8192 by default), which keeps local testing unchanged. The example enables API HTTPS on port 8194. Both listeners expose the same authenticated `/api/*` routes and can be enabled independently. Mounted certificate files take precedence; when either file is missing and `generateSelfSigned` is true, CryptoTracker creates a shared certificate and private key under `/app/data/certs`. For a trusted hostname, mount an operator-managed certificate whose SAN contains that hostname and set `generateSelfSigned` to false.
+
+Direct overrides are available as `CRYPTOTRACKER_HTTPS_ENABLED`, `CRYPTOTRACKER_HTTPS_PORT`, `CRYPTOTRACKER_HTTPS_CERT_PATH`, `CRYPTOTRACKER_HTTPS_KEY_PATH`, and `CRYPTOTRACKER_HTTPS_GENERATE_SELF_SIGNED`.
+
+## MCP sidecar
+
+MCP is a standalone subproject and Compose sidecar. Its public configuration is loaded from `CRYPTOTRACKER_MCP_CONFIG_PATH`; client and upstream keys are loaded from `CRYPTOTRACKER_MCP_SECRETS_PATH`. The checked-in examples are `mcp/config.example.json5` and `mcp/secrets.example.json5`.
+
+`enabled: false` or `CRYPTOTRACKER_MCP_ENABLED=false` opens no MCP listeners. HTTP and HTTPS are independently controlled through `mcp.http` and `mcp.https`; HTTPS defaults to port 8193 and HTTP is opt-in on port 8195. The sidecar’s `upstream.baseUrl` may select API HTTP (`http://cryptotracker:8192`) or API HTTPS (`https://cryptotracker:8194`). When HTTPS is selected, keep `upstream.verifyTls` enabled and point `upstream.caCertPath` to the shared certificate.
+
+MCP has two separate secret groups:
+
+- `upstreamApiKey` or `upstreamApiKeyFile` authenticates the sidecar to the CryptoTracker API.
+- `clientApiKeys` contains named `read` or `readwrite` Bearer keys for MCP clients.
+
+The upstream key must be configured in the API’s `secrets.apiKeys` and must differ from every client key. Compose can supply the same upstream value to both processes through `CRYPTOTRACKER_MCP_UPSTREAM_API_KEY`.
+
+Common sidecar overrides include `CRYPTOTRACKER_MCP_ENABLED`, `CRYPTOTRACKER_MCP_READ_ONLY`, `CRYPTOTRACKER_MCP_HTTP_ENABLED`, `CRYPTOTRACKER_MCP_HTTP_PORT`, `CRYPTOTRACKER_MCP_HTTPS_ENABLED`, `CRYPTOTRACKER_MCP_HTTPS_PORT`, `CRYPTOTRACKER_MCP_UPSTREAM_BASE_URL`, `CRYPTOTRACKER_MCP_UPSTREAM_VERIFY_TLS`, `CRYPTOTRACKER_MCP_UPSTREAM_CA_CERT_PATH`, `CRYPTOTRACKER_MCP_READ_CLIENT_API_KEYS`, and `CRYPTOTRACKER_MCP_READWRITE_CLIENT_API_KEYS`. The complete list is in `mcp/.env.example`.
 
 ## Provider secret overrides
 

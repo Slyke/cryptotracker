@@ -1,4 +1,18 @@
 services:
+  cryptotracker-certgen:
+    build:
+      context: ./mcp
+      dockerfile: Dockerfile.dev
+    command: ["node", "scripts/generate-certificate.mjs"]
+    restart: "no"
+    environment:
+      CRYPTOTRACKER_CERT_PATH: ${CRYPTOTRACKER_SHARED_CERT_PATH:-/app/data/certs/server.crt}
+      CRYPTOTRACKER_KEY_PATH: ${CRYPTOTRACKER_SHARED_KEY_PATH:-/app/data/certs/server.key}
+    volumes:
+      - ./mcp:/workspace/mcp
+      - cryptotracker-mcp-node-modules:/workspace/mcp/node_modules
+      - cryptotracker-certs:/app/data/certs
+
   cryptotracker:
     env_file:
       - path: .env
@@ -7,7 +21,7 @@ services:
       context: .
       dockerfile: dockerfiles/cryptotracker.dev.Dockerfile
     working_dir: /workspace
-    command: ["npm", "run", "dev"]
+    command: ["node", "runtime/dev-container-entrypoint.mjs"]
     environment:
       NODE_ENV: development
       CRYPTOTRACKER_CONFIG_PATH: /workspace/config/cryptotracker.config.json5
@@ -16,15 +30,88 @@ services:
       CRYPTOTRACKER_SQLITE_PATH: /workspace/data/cryptotracker.sqlite
       CRYPTOTRACKER_PUBLIC_BASE_URL: http://localhost:8192
       CRYPTOTRACKER_WUI_UPSTREAM_BASE_URL: http://127.0.0.1:3000
+      CRYPTOTRACKER_API_KEY_ENABLED: "true"
+      CRYPTOTRACKER_API_KEY: ${CRYPTOTRACKER_MCP_UPSTREAM_API_KEY:-}
+      CRYPTOTRACKER_API_KEY_NAME: cryptotracker-mcp
+      CRYPTOTRACKER_API_KEY_ROLE: readwrite
+      CRYPTOTRACKER_HTTPS_ENABLED: "true"
+      CRYPTOTRACKER_HTTPS_PORT: "8194"
+      CRYPTOTRACKER_HTTPS_CERT_PATH: ${CRYPTOTRACKER_SHARED_CERT_PATH:-/app/data/certs/server.crt}
+      CRYPTOTRACKER_HTTPS_KEY_PATH: ${CRYPTOTRACKER_SHARED_KEY_PATH:-/app/data/certs/server.key}
+      CRYPTOTRACKER_HTTPS_GENERATE_SELF_SIGNED: "false"
     volumes:
       - .:/workspace
       - cryptotracker-node-modules:/workspace/node_modules
       - cryptotracker-api-node-modules:/workspace/api/node_modules
       - cryptotracker-wui-node-modules:/workspace/wui/node_modules
+      - cryptotracker-certs:/app/data/certs
     ports:
       - "8192:8192"
+      - "8194:8194"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8192/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    depends_on:
+      cryptotracker-certgen:
+        condition: service_completed_successfully
+
+  cryptotracker-mcp:
+    env_file:
+      - path: .env
+        required: false
+    build:
+      context: ./mcp
+      dockerfile: Dockerfile.dev
+    working_dir: /workspace/mcp
+    command: ["npm", "run", "dev"]
+    environment:
+      NODE_ENV: development
+      CRYPTOTRACKER_MCP_ENABLED: ${CRYPTOTRACKER_MCP_ENABLED:-true}
+      CRYPTOTRACKER_MCP_READ_ONLY: ${CRYPTOTRACKER_MCP_READ_ONLY:-false}
+      CRYPTOTRACKER_MCP_HTTP_ENABLED: ${CRYPTOTRACKER_MCP_HTTP_ENABLED:-false}
+      CRYPTOTRACKER_MCP_HTTP_HOST: 0.0.0.0
+      CRYPTOTRACKER_MCP_HTTP_PORT: ${CRYPTOTRACKER_MCP_HTTP_PORT:-8195}
+      CRYPTOTRACKER_MCP_HTTPS_ENABLED: ${CRYPTOTRACKER_MCP_HTTPS_ENABLED:-true}
+      CRYPTOTRACKER_MCP_HTTPS_HOST: 0.0.0.0
+      CRYPTOTRACKER_MCP_HTTPS_PORT: ${CRYPTOTRACKER_MCP_HTTPS_PORT:-8193}
+      CRYPTOTRACKER_MCP_HTTPS_CERT_PATH: ${CRYPTOTRACKER_SHARED_CERT_PATH:-/app/data/certs/server.crt}
+      CRYPTOTRACKER_MCP_HTTPS_KEY_PATH: ${CRYPTOTRACKER_SHARED_KEY_PATH:-/app/data/certs/server.key}
+      CRYPTOTRACKER_MCP_HTTPS_GENERATE_SELF_SIGNED: "false"
+      CRYPTOTRACKER_MCP_UPSTREAM_BASE_URL: ${CRYPTOTRACKER_MCP_UPSTREAM_BASE_URL:-http://cryptotracker:8192}
+      CRYPTOTRACKER_MCP_UPSTREAM_API_KEY_HEADER: X-API-Key
+      CRYPTOTRACKER_MCP_UPSTREAM_API_KEY: ${CRYPTOTRACKER_MCP_UPSTREAM_API_KEY:-}
+      CRYPTOTRACKER_MCP_UPSTREAM_VERIFY_TLS: ${CRYPTOTRACKER_MCP_UPSTREAM_VERIFY_TLS:-true}
+      CRYPTOTRACKER_MCP_UPSTREAM_CA_CERT_PATH: ${CRYPTOTRACKER_SHARED_CERT_PATH:-/app/data/certs/server.crt}
+      CRYPTOTRACKER_MCP_READ_CLIENT_API_KEYS: ${CRYPTOTRACKER_MCP_READ_CLIENT_API_KEYS:-}
+      CRYPTOTRACKER_MCP_READWRITE_CLIENT_API_KEYS: ${CRYPTOTRACKER_MCP_READWRITE_CLIENT_API_KEYS:-}
+      CRYPTOTRACKER_MCP_HISTORY_PATH: /app/data/mcp-history.json
+    volumes:
+      - ./mcp:/workspace/mcp
+      - cryptotracker-mcp-node-modules:/workspace/mcp/node_modules
+      - cryptotracker-mcp-data:/app/data
+      - cryptotracker-certs:/app/data/certs
+    ports:
+      - "${CRYPTOTRACKER_MCP_HTTPS_PORT:-8193}:${CRYPTOTRACKER_MCP_HTTPS_PORT:-8193}"
+      - "${CRYPTOTRACKER_MCP_HTTP_PORT:-8195}:${CRYPTOTRACKER_MCP_HTTP_PORT:-8195}"
+    healthcheck:
+      test: ["CMD", "node", "scripts/healthcheck.mjs"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      cryptotracker-certgen:
+        condition: service_completed_successfully
+      cryptotracker:
+        condition: service_healthy
 
 volumes:
   cryptotracker-node-modules:
   cryptotracker-api-node-modules:
   cryptotracker-wui-node-modules:
+  cryptotracker-mcp-node-modules:
+  cryptotracker-mcp-data:
+  cryptotracker-certs:

@@ -4,7 +4,7 @@ import type { AppDatabase } from '../db/index.js';
 export interface SavedGraphSettings {
   id: string;
   name: string;
-  type: 'market' | 'kraken' | 'addresses';
+  type: 'market' | 'kraken' | 'addresses' | 'portfolio';
   hidden: boolean;
   config: Record<string, unknown>;
 }
@@ -30,6 +30,7 @@ export interface UserSettings {
   graphDefaults: Record<string, unknown>;
   pageLayouts: Record<string, string[]>;
   collapsedBlocks: Record<string, string[]>;
+  accordionStates: Record<string, boolean>;
   tableColumns: Record<string, string[]>;
   tableRows: Record<string, string[]>;
   savedGraphs: SavedGraphSettings[];
@@ -80,6 +81,7 @@ export class SettingsService {
       },
       pageLayouts: {},
       collapsedBlocks: {},
+      accordionStates: {},
       tableColumns: {},
       tableRows: {},
       savedGraphs: [],

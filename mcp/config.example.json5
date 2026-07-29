@@ -1,0 +1,46 @@
+{
+  // Master switch. When false the sidecar opens no network listeners.
+  enabled: true,
+  readOnly: false,
+
+  // Plaintext MCP is useful on a trusted local network or sidecar bridge.
+  http: {
+    enabled: false,
+    host: '0.0.0.0',
+    port: 8195,
+  },
+
+  // HTTPS is the default client-facing MCP transport.
+  https: {
+    enabled: true,
+    host: '0.0.0.0',
+    port: 8193,
+    certPath: './data/certs/server.crt',
+    keyPath: './data/certs/server.key',
+    generateSelfSigned: true,
+  },
+
+  // The sidecar can call either the API HTTP or HTTPS listener.
+  upstream: {
+    baseUrl: 'http://cryptotracker:8192',
+    apiKeyHeaderName: 'X-API-Key',
+    timeoutMs: 30000,
+    verifyTls: true,
+    // Mount the shared certificate and set this when baseUrl uses HTTPS.
+    caCertPath: './data/certs/server.crt',
+    readyCheck: true,
+  },
+
+  rateLimits: {
+    windowSeconds: 60,
+    read: 300,
+    write: 120,
+    destructive: 30,
+  },
+
+  history: {
+    enabled: true,
+    path: './data/mcp-history.json',
+    maxEntries: 5000,
+  },
+}

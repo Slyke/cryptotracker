@@ -2,16 +2,21 @@
 
 ## Runtime
 
-One production image starts two child processes:
+The application container starts two child processes:
 
-- the API/ingress on port 8192;
+- the HTTP API/WUI ingress on port 8192;
+- the optional HTTPS API ingress on port 8194;
 - the SvelteKit WUI on loopback port 3000.
 
-Only the API port is exposed. Ingress owns authentication, CSRF, security headers, API routes, health checks, and WUI proxying. The launcher treats either child as required and coordinates graceful shutdown.
+Ingress owns authentication, CSRF, security headers, API routes, health checks, and WUI proxying. The launcher treats the API and WUI children as required and coordinates graceful shutdown.
+
+MCP runs as a separate `cryptotracker-mcp` sidecar process/container. It owns client Bearer authentication, tool authorization, dry-run planning, rate limits, and bounded redacted MCP history. It calls the API over a configured HTTP or HTTPS base URL using a dedicated upstream API key. The API and sidecar mount the same certificate volume.
 
 ```mermaid
 flowchart LR
-  User["Browser"] --> Ingress["API ingress :8192"]
+  User["Browser"] --> Ingress["HTTP API/WUI ingress :8192"]
+  MCP["MCP client"] --> Sidecar["MCP sidecar HTTPS :8193 or HTTP :8195"]
+  Sidecar -->|"Dedicated X-API-Key; HTTP :8192 or HTTPS :8194"| API
   Ingress --> API["Authenticated /api routes"]
   Ingress --> WUI["SvelteKit WUI :3000 (loopback)"]
   API --> DB["SQLite or PostgreSQL"]

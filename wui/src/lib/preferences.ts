@@ -1,7 +1,7 @@
 import { apiRequest } from '$lib/api';
 import { formatInTimezone } from '$lib/timezone';
 
-export type SavedGraphType = 'market' | 'kraken' | 'addresses';
+export type SavedGraphType = 'market' | 'kraken' | 'addresses' | 'portfolio';
 
 export interface SavedGraph {
   id: string;
@@ -21,6 +21,7 @@ export interface DashboardRow {
 export interface PersonalizationSettings {
   pageLayouts: Record<string, string[]>;
   collapsedBlocks: Record<string, string[]>;
+  accordionStates: Record<string, boolean>;
   tableColumns: Record<string, string[]>;
   tableRows: Record<string, string[]>;
   savedGraphs: SavedGraph[];

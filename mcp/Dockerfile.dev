@@ -1,0 +1,12 @@
+FROM node:24.14.0-bookworm-slim
+
+WORKDIR /workspace/mcp
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates openssl \
+  && rm -rf /var/lib/apt/lists/*
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+
+EXPOSE 8193 8195
+CMD ["npm", "run", "dev"]

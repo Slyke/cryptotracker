@@ -176,12 +176,32 @@ const configBaseSchema = z.object({
     host: z.string().min(1).default('0.0.0.0'),
     port: z.number().int().positive().max(65_535).default(8_192),
     trustProxy: z.boolean().default(false),
-    bodyLimit: z.string().min(1).default('256kb')
+    bodyLimit: z.string().min(1).default('256kb'),
+    https: z.object({
+      enabled: z.boolean().default(false),
+      port: z.number().int().positive().max(65_535).default(8_194),
+      certPath: z.string().min(1).default('./data/certs/server.crt'),
+      keyPath: z.string().min(1).default('./data/certs/server.key'),
+      generateSelfSigned: z.boolean().default(true)
+    }).prefault({
+      enabled: false,
+      port: 8_194,
+      certPath: './data/certs/server.crt',
+      keyPath: './data/certs/server.key',
+      generateSelfSigned: true
+    })
   }).prefault({
     host: '0.0.0.0',
     port: 8_192,
     trustProxy: false,
-    bodyLimit: '256kb'
+    bodyLimit: '256kb',
+    https: {
+      enabled: false,
+      port: 8_194,
+      certPath: './data/certs/server.crt',
+      keyPath: './data/certs/server.key',
+      generateSelfSigned: true
+    }
   }),
   wui: z.object({
     upstreamBaseUrl: urlSchema.default('http://127.0.0.1:3000'),
@@ -218,6 +238,19 @@ const configBaseSchema = z.object({
     defaultCostBasisMethod: 'acb'
   }),
   auth: z.object({
+    apiKey: z.object({
+      enabled: z.boolean().default(false),
+      headerName: z.string()
+        .regex(/^[A-Za-z0-9-]+$/, 'API key header name must be a valid HTTP header token.')
+        .refine(
+          (name) => !['authorization', 'cookie', 'set-cookie'].includes(name.toLowerCase()),
+          'Use a dedicated API key header name; Authorization remains reserved for Bearer authentication.'
+        )
+        .default('X-API-Key')
+    }).prefault({
+      enabled: false,
+      headerName: 'X-API-Key'
+    }),
     local: z.object({
       enabled: z.boolean().default(true),
       username: z.string().min(1).default('admin'),
@@ -265,6 +298,10 @@ const configBaseSchema = z.object({
       }
     })
   }).prefault({
+    apiKey: {
+      enabled: false,
+      headerName: 'X-API-Key'
+    },
     local: {
       enabled: true,
       username: 'admin',
@@ -505,6 +542,13 @@ const configBaseSchema = z.object({
 });
 
 export const configSchema = configBaseSchema.superRefine((value, context) => {
+  if (value.api.https.enabled && value.api.https.port === value.api.port) {
+    context.addIssue({
+      code: 'custom',
+      path: ['api', 'https', 'port'],
+      message: 'The API HTTPS port must differ from the HTTP application port.'
+    });
+  }
   const header = value.auth.header;
   if (header.enabled) {
     if (header.trustedCidrs.length === 0) {
@@ -560,6 +604,14 @@ export const secretsSchema = z.object({
     apiKey: null,
     apiSecret: null
   }),
+  apiKeys: z.array(z.object({
+    name: z.string().trim().min(1).max(100),
+    key: z.string().min(16),
+    role: z.enum(['read', 'readwrite']).default('read')
+  })).max(100).refine(
+    (entries) => new Set(entries.map((entry) => entry.name.toLowerCase())).size === entries.length,
+    { message: 'API key names must be unique.' }
+  ).default([]),
   postgresPassword: nullableSecretSchema
 });
 

@@ -1,0 +1,6 @@
+node_modules/
+dist/
+coverage/
+config.json5
+secrets.json5
+data/

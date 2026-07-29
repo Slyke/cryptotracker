@@ -23,6 +23,7 @@ interface AddressRow {
   oldest_reconstructed_at_ms?: number | string | null;
   last_success_at_ms?: number | string | null;
   warnings_json?: string | null;
+  work_active?: number | string;
 }
 
 interface SelectionRow {
@@ -210,7 +211,14 @@ export class AddressService {
         SELECT tracked_addresses.*, address_sync_state.status,
           address_sync_state.oldest_reconstructed_at_ms,
           address_sync_state.last_success_at_ms,
-          address_sync_state.warnings_json
+          address_sync_state.warnings_json,
+          EXISTS (
+            SELECT 1
+            FROM jobs
+            WHERE jobs.job_type = 'address.sync'
+              AND jobs.resource_key = 'address:' || tracked_addresses.id
+              AND jobs.status IN ('queued', 'running', 'retry')
+          ) AS work_active
         FROM tracked_addresses
         LEFT JOIN address_sync_state ON address_sync_state.address_id = tracked_addresses.id
         WHERE tracked_addresses.deleted_at_ms IS NULL
@@ -250,7 +258,14 @@ export class AddressService {
                   code: 'ADDRESS_PROVIDER_UNAVAILABLE',
                   network: row.network
                 }
-              ]
+              ],
+          workActive: Boolean(Number(row.work_active ?? 0)),
+          providerHistoryAvailable: !warnings.some((warning) => (
+            warning
+            && typeof warning === 'object'
+            && 'code' in warning
+            && (warning as { code?: unknown }).code === 'ETHEREUM_HISTORY_PROVIDER_UNAVAILABLE'
+          ))
         },
         assets: await this.selections({ addressId: row.id })
       };
@@ -734,6 +749,25 @@ export class AddressService {
           priority: 30,
           payload: { reason: 'address-sync' }
         });
+        const historyUnavailable = result.warnings.some((warning) => (
+          warning.code === 'ETHEREUM_HISTORY_PROVIDER_UNAVAILABLE'
+        ));
+        const cursorAdvanced = JSON.stringify(result.cursor) !== JSON.stringify(
+          JSON.parse(address.cursor_json ?? '{}') as Record<string, unknown>
+        );
+        if (
+          result.completeness === 'partial'
+          && !historyUnavailable
+          && cursorAdvanced
+        ) {
+          return {
+            jobType: 'address.sync',
+            resourceKey: `address:${addressId}`,
+            idempotencyKey: `address:${addressId}:continuation:${job.id}`,
+            priority: 20,
+            payload: { addressId }
+          };
+        }
       }
     });
   }

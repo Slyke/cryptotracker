@@ -11,14 +11,14 @@ import { createTestLogger, createTestRuntime, openMigratedTestDatabase } from '.
 
 const servers: Server[] = [];
 
-const listen = async (server: Server) => {
+const listen = async (server: Server, protocol = 'http') => {
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
   });
   servers.push(server);
   const address = server.address() as AddressInfo;
-  return `http://127.0.0.1:${address.port}`;
+  return `${protocol}://127.0.0.1:${address.port}`;
 };
 
 afterEach(async () => {
@@ -40,6 +40,85 @@ const requestFixture = ({
 }) as unknown as Request;
 
 describe('authentication security', () => {
+  it('authenticates named API keys with timing-safe roles and bypasses CSRF only for write keys', async () => {
+    const runtime = await createTestRuntime({
+      config: {
+        auth: {
+          apiKey: {
+            enabled: true,
+            headerName: 'X-API-Key'
+          },
+          local: { enabled: false }
+        }
+      },
+      secrets: {
+        localPassword: null,
+        apiKeys: [
+          {
+            name: 'reader',
+            key: 'reader-key-with-at-least-16-characters',
+            role: 'read'
+          },
+          {
+            name: 'writer',
+            key: 'writer-key-with-at-least-16-characters',
+            role: 'readwrite'
+          }
+        ]
+      }
+    });
+    const { db } = await openMigratedTestDatabase({ runtime });
+    const auth = new AuthService(runtime, db, createTestLogger({ runtime }));
+    try {
+      const readerRequest = requestFixture({
+        remoteAddress: '127.0.0.1',
+        headers: {
+          'x-api-key': 'reader-key-with-at-least-16-characters'
+        }
+      });
+      const reader = await auth.authenticate({
+        req: readerRequest,
+        correlationId: 'api-reader'
+      });
+      expect(reader).toMatchObject({
+        username: 'reader',
+        authMethod: 'apiKey',
+        role: 'read'
+      });
+      expect(() => auth.assertCsrf({
+        req: readerRequest,
+        identity: reader!
+      })).toThrow(/read-only/);
+
+      const writerRequest = requestFixture({
+        remoteAddress: '127.0.0.1',
+        headers: {
+          authorization: 'Bearer writer-key-with-at-least-16-characters'
+        }
+      });
+      const writer = await auth.authenticate({
+        req: writerRequest,
+        correlationId: 'api-writer'
+      });
+      expect(() => auth.assertCsrf({
+        req: writerRequest,
+        identity: writer!
+      })).not.toThrow();
+
+      await expect(auth.authenticate({
+        req: requestFixture({
+          remoteAddress: '127.0.0.1',
+          headers: { 'x-api-key': 'invalid-key-with-at-least-16-characters' }
+        }),
+        correlationId: 'api-invalid'
+      })).rejects.toMatchObject({
+        errorKey: 'AUTH_FORBIDDEN'
+      });
+    } finally {
+      await db.close();
+    }
+  });
+
   it('uses allow-user OR allow-group semantics and rejects spoofed peers', async () => {
     const runtime = await createTestRuntime({
       config: {
@@ -247,6 +326,7 @@ describe('HTTP ingress', () => {
       const health = await fetch(`${baseUrl}/health`);
       expect(health.status).toBe(200);
       expect(health.headers.get('x-content-type-options')).toBe('nosniff');
+      expect(await fetch(`${baseUrl}/mcp`, { method: 'POST' })).toMatchObject({ status: 404 });
       expect(await fetch(`${baseUrl}/api/settings`)).toMatchObject({ status: 401 });
       expect(await fetch(`${baseUrl}/auth/local/login`, {
         method: 'POST',
@@ -290,6 +370,9 @@ describe('HTTP ingress', () => {
         },
         body: JSON.stringify({
           theme: 'light',
+          accordionStates: {
+            'settings:market-coverage': false
+          },
           dashboardRows: [{
             id: 'fixture-row',
             name: 'Fixture row',
@@ -302,11 +385,23 @@ describe('HTTP ingress', () => {
       expect(await settingsPatch.json()).toMatchObject({
         settings: {
           theme: 'light',
+          accordionStates: {
+            'settings:market-coverage': false
+          },
           dashboardRows: [{
             id: 'fixture-row',
             columns: 3,
             itemIds: ['fixture-chart', 'fixture-table']
           }]
+        }
+      });
+      expect(await (await fetch(`${baseUrl}/api/settings`, {
+        headers: { cookie }
+      })).json()).toMatchObject({
+        settings: {
+          accordionStates: {
+            'settings:market-coverage': false
+          }
         }
       });
       const duplicateNames = await fetch(`${baseUrl}/api/settings`, {

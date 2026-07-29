@@ -14,6 +14,7 @@ const requiredTables = [
   'jobs',
   'kraken_ledgers',
   'market_points',
+  'portfolio_snapshots',
   'sessions',
   'tracked_addresses',
   'watched_assets'
@@ -117,6 +118,52 @@ describe('database migrations and persistent jobs', () => {
       }
       expect(status).toBe('completed');
       expect(executions).toBe(1);
+    } finally {
+      await queue.stop();
+      await db.close();
+    }
+  });
+
+  it('queues a continuation only after the current job completes', async () => {
+    const { db, runtime } = await openMigratedTestDatabase();
+    const queue = new JobQueue(db, createTestLogger({ runtime }), 1);
+    let executions = 0;
+    queue.register({
+      jobType: 'fixture-continuation',
+      handler: async ({ job }) => {
+        executions += 1;
+        if (executions > 1) return;
+        return {
+          jobType: 'fixture-continuation',
+          resourceKey: 'resource',
+          idempotencyKey: `fixture:continuation:${job.id}`,
+          priority: 10
+        };
+      }
+    });
+    try {
+      await queue.enqueue({
+        jobType: 'fixture-continuation',
+        resourceKey: 'resource',
+        idempotencyKey: 'fixture:continuation:first',
+        priority: 10
+      });
+      await queue.start();
+      const deadline = Date.now() + 5_000;
+      let completed = 0;
+      while (Date.now() < deadline) {
+        completed = Number((await db.one<{ count: number | string }>({
+          sql: `
+            SELECT COUNT(*) AS count
+            FROM jobs
+            WHERE job_type = 'fixture-continuation' AND status = 'completed'
+          `
+        }))?.count ?? 0);
+        if (completed === 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(completed).toBe(2);
+      expect(executions).toBe(2);
     } finally {
       await queue.stop();
       await db.close();

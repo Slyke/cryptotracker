@@ -21,6 +21,17 @@ describe('configuration', () => {
     expect(config.providers.market.coinGecko.rate.minimumSpacingMs).toBe(6_000);
     expect(config.providers.market.coinGecko.rate.burst).toBe(1);
     expect(config.providers.chains.ethereum.baseUrl).toBe('https://api.etherscan.io');
+    expect(config.api.port).toBe(8_192);
+    expect(config.api.https.port).toBe(8_194);
+    expect(() => configSchema.parse({
+      api: {
+        port: 8_192,
+        https: {
+          enabled: true,
+          port: 8_192
+        }
+      }
+    })).toThrow(/must differ/);
   });
 
   it('applies documented environment values over JSON5 secrets and config', async () => {
@@ -40,6 +51,93 @@ describe('configuration', () => {
     expect(runtime.config.ui.defaultPrimaryCurrency).toBe('CAD');
     expect(runtime.secrets.localPassword).toBe('environment-password');
     expect(runtime.secrets.sessionSecret).toBe(requiredEnvironment.CRYPTOTRACKER_SESSION_SECRET);
+  });
+
+  it('loads HTTPS and a named API key from direct deployment overrides', async () => {
+    const runtime = await loadRuntime({
+      env: {
+        ...requiredEnvironment,
+        CRYPTOTRACKER_API_KEY_ENABLED: 'true',
+        CRYPTOTRACKER_API_KEY: 'environment-api-key-with-32-characters',
+        CRYPTOTRACKER_API_KEY_NAME: 'automation-reader',
+        CRYPTOTRACKER_HTTPS_ENABLED: 'true',
+        CRYPTOTRACKER_HTTPS_PORT: '9443',
+        CRYPTOTRACKER_HTTPS_CERT_PATH: '/mounted/server.crt',
+        CRYPTOTRACKER_HTTPS_KEY_PATH: '/mounted/server.key',
+        CRYPTOTRACKER_HTTPS_GENERATE_SELF_SIGNED: 'false'
+      }
+    });
+    expect(runtime.config.auth.apiKey).toEqual({
+      enabled: true,
+      headerName: 'X-API-Key'
+    });
+    expect(runtime.config.api.https).toEqual({
+      enabled: true,
+      port: 9_443,
+      certPath: '/mounted/server.crt',
+      keyPath: '/mounted/server.key',
+      generateSelfSigned: false
+    });
+    expect(runtime.secrets.apiKeys).toEqual([{
+      name: 'automation-reader',
+      key: 'environment-api-key-with-32-characters',
+      role: 'read'
+    }]);
+  });
+
+  it('loads an API key from a file relative to the secrets file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cryptotracker-key-file-'));
+    const secretsPath = join(directory, 'secrets.json5');
+    await writeFile(join(directory, 'mcp-reader.key'), 'file-backed-api-key-with-32-characters\n', 'utf8');
+    await writeFile(
+      secretsPath,
+      `{
+        sessionSecret: 'file-session-secret-with-at-least-32-characters',
+        localPassword: 'file-password',
+        apiKeys: [{
+          name: 'file-reader',
+          keyFile: './mcp-reader.key',
+          role: 'read',
+        }],
+      }`,
+      'utf8'
+    );
+    const runtime = await loadRuntime({
+      env: {
+        CRYPTOTRACKER_SECRETS_PATH: secretsPath
+      }
+    });
+    expect(runtime.secrets.apiKeys).toEqual([{
+      name: 'file-reader',
+      key: 'file-backed-api-key-with-32-characters',
+      role: 'read'
+    }]);
+  });
+
+  it('adds a direct sidecar API key without removing file-configured keys', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cryptotracker-sidecar-key-'));
+    const secretsPath = join(directory, 'secrets.json5');
+    await writeFile(secretsPath, `{
+      sessionSecret: 'file-session-secret-with-at-least-32-characters',
+      localPassword: 'file-password',
+      apiKeys: [{
+        name: 'existing-reader',
+        key: 'existing-reader-key-with-at-least-16-characters',
+        role: 'read',
+      }],
+    }`, 'utf8');
+    const runtime = await loadRuntime({
+      env: {
+        CRYPTOTRACKER_SECRETS_PATH: secretsPath,
+        CRYPTOTRACKER_API_KEY: 'sidecar-upstream-key-with-at-least-16-characters',
+        CRYPTOTRACKER_API_KEY_NAME: 'cryptotracker-mcp',
+        CRYPTOTRACKER_API_KEY_ROLE: 'readwrite'
+      }
+    });
+    expect(runtime.secrets.apiKeys.map((entry) => entry.name)).toEqual([
+      'existing-reader',
+      'cryptotracker-mcp'
+    ]);
   });
 
   it('resolves generic environment references in JSON5 values', async () => {

@@ -4,6 +4,7 @@ import type { Logger } from './logging/logger.js';
 import type { AddressService } from './services/addresses.js';
 import type { KrakenService } from './services/kraken.js';
 import type { MarketService } from './services/market.js';
+import type { PortfolioService } from './services/portfolio.js';
 import type { RetentionService } from './services/retention.js';
 import type { SettingsService } from './services/settings.js';
 
@@ -17,6 +18,7 @@ export class Scheduler {
     private readonly market: MarketService,
     private readonly addresses: AddressService,
     private readonly kraken: KrakenService,
+    private readonly portfolio: PortfolioService,
     private readonly settings: SettingsService,
     private readonly retention: RetentionService,
     private readonly logger: Logger
@@ -56,6 +58,9 @@ export class Scheduler {
           retentionDays: settings.retentionDays,
           failedJobRetentionHours: settings.failedJobRetentionHours
         });
+      }
+      if (this.due({ key: 'portfolio-snapshot', intervalMinutes: 30, now })) {
+        await this.portfolio.capture({ capturedAtMs: now });
       }
       const quoteCurrencies = [...new Set([
         settings.primaryCurrency,

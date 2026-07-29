@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import { persistAccordionState } from '$lib/accordion-state';
 
   interface ColumnOption {
     id: string;
@@ -48,7 +49,12 @@
   };
 </script>
 
-<details class="column-configurator">
+<details
+  class="column-configurator"
+  use:persistAccordionState={{
+    key: `columns:${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')}`
+  }}
+>
   <summary>{label} ({selected.length}/{columns.length})</summary>
   <div class="details-body">
     <div class="toolbar">

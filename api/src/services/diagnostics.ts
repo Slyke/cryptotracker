@@ -22,6 +22,11 @@ const categories: CategoryDefinition[] = [
     timeColumn: 'occurred_at_ms'
   },
   {
+    category: 'portfolio',
+    tables: ['portfolio_snapshots'],
+    timeColumn: 'captured_at_ms'
+  },
+  {
     category: 'kraken',
     tables: ['kraken_trades', 'kraken_ledgers', 'kraken_snapshots', 'kraken_snapshot_balances', 'kraken_margin_positions', 'kraken_earn_allocations'],
     timeColumn: 'occurred_at_ms'
@@ -78,6 +83,7 @@ export class DiagnosticsService {
     });
     const rangeQueries = [
       ['market', 'market_points', 'bucket_start_ms'],
+      ['portfolio', 'portfolio_snapshots', 'captured_at_ms'],
       ['addresses', 'address_balance_events', 'occurred_at_ms'],
       ['kraken', 'kraken_snapshots', 'captured_at_ms'],
       ['audit', 'audit_log', 'occurred_at_ms']
@@ -102,7 +108,7 @@ export class DiagnosticsService {
       retention: {
         policy: 'user-configurable',
         default: 'forever',
-        automaticallyPrunedTables: ['market_points', 'address_balance_points', 'kraken_snapshots'],
+        automaticallyPrunedTables: ['market_points', 'address_balance_points', 'kraken_snapshots', 'portfolio_snapshots'],
         protectedTables: ['chain_transactions', 'address_balance_events', 'kraken_trades', 'kraken_ledgers', 'cost_basis_lots', 'calculation_runs'],
         destructiveDownsampling: false,
         explanation: 'Historical market points and derived portfolio snapshots follow the user retention window. Transaction and activity records needed for balances and cost basis are not automatically pruned.'

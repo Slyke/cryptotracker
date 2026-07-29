@@ -111,20 +111,29 @@ The production container runs:
 1. API and ingress process
    - Node.js + TypeScript
    - owns authentication, authorization, CSRF, configuration, database access, background jobs, provider integrations, exports, health endpoints, and the HTTP API
-   - is the only externally reachable process
+   - is externally reachable on independently configurable HTTP and HTTPS listeners
    - proxies non-API application traffic to the internal SvelteKit process
 2. WUI process
    - SvelteKit using `@sveltejs/adapter-node`
    - owns application pages, layouts, components, graph rendering, and browser interactivity
    - listens only on an internal loopback or container-local port
    - is never exposed directly by Docker, Compose, Kubernetes, or a reverse proxy
+3. MCP sidecar process
+   - runs from the standalone `mcp/` subproject
+   - authenticates MCP clients with named Bearer API keys
+   - calls the API with a separate dedicated upstream API key
+   - supports independently configurable HTTP and HTTPS MCP listeners
+   - may be disabled without changing API/WUI availability
 
 Default ports:
 
 - API/ingress: `8192`
+- API HTTPS ingress: `8194`
+- MCP HTTPS ingress: `8193`
+- MCP HTTP ingress: `8195` (disabled by default)
 - internal SvelteKit WUI: `3000`
 
-Only `8192` is exposed from the application container.
+Ports `8192` and `8194` belong to the application container. Ports `8193` and `8195` belong to the MCP sidecar. The sidecar defaults to HTTPS but may enable HTTP for trusted local or sidecar deployments. Its upstream base URL may select either API transport.
 
 The API ingress must proxy:
 
@@ -309,6 +318,10 @@ There must not be a generic rule that maps every environment variable into arbit
     host: '0.0.0.0',
     port: 8192,
     trustProxy: true,
+    https: {
+      enabled: true,
+      port: 8194,
+    },
   },
   wui: {
     upstreamBaseUrl: 'http://127.0.0.1:3000',
@@ -903,6 +916,12 @@ Supported Y-axis scales:
 
 - Linear
 - Logarithmic
+
+For valuation and price charts, the Y-axis unit selector contains the primary
+currency, every configured display currency (up to five), and every activated
+crypto asset exposed by the chart. Opening the selector provides a search field
+that filters by fiat code or crypto symbol, name, and canonical ID. The selected
+unit remains part of the graph's database-backed display state.
 
 Logarithmic scale requires every visible plotted value to be greater than zero.
 

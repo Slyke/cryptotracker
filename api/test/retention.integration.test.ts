@@ -104,7 +104,8 @@ describe('historical point retention', () => {
       expect(result.deleted).toEqual({
         marketPoints: 1,
         addressBalancePoints: 1,
-        krakenSnapshots: 1
+        krakenSnapshots: 1,
+        portfolioSnapshots: 0
       });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM market_points' })).toEqual({ count: 1 });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM address_balance_points' })).toEqual({ count: 1 });
@@ -135,7 +136,8 @@ describe('historical point retention', () => {
       expect(result.deleted).toEqual({
         marketPoints: 0,
         addressBalancePoints: 0,
-        krakenSnapshots: 0
+        krakenSnapshots: 0,
+        portfolioSnapshots: 0
       });
       expect(await db.one<{ count: number }>({ sql: 'SELECT COUNT(*) AS count FROM market_points' })).toEqual({ count: 1 });
     } finally {

@@ -19,7 +19,15 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await expect(catalogFilter).toHaveValue('');
   await expect(page.getByRole('button', { name: /save table to dashboard/i })).toBeVisible();
   await page.getByText(/scale bounds, display, events, and exports/i).click();
-  await expect(page.getByLabel(/y-axis unit/i)).toBeVisible();
+  const yAxisUnit = page.getByLabel(/y-axis unit/i);
+  await expect(yAxisUnit).toBeVisible();
+  await yAxisUnit.click();
+  const yAxisSearch = page.getByLabel(/search y-axis currencies or crypto assets/i);
+  await expect(yAxisSearch).toBeVisible();
+  await yAxisSearch.fill('primary');
+  await expect(page.getByRole('option', { name: /primary currency/i })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(yAxisSearch).toBeHidden();
   await expect(page.getByLabel(/y scale/i).getByRole('option', { name: /logarithmic/i })).toBeEnabled();
 
   const inspector = page.getByRole('button', { name: /keyboard chart inspector/i });

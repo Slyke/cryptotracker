@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import ReorderableBlock from '../../lib/components/ReorderableBlock.svelte';
   import { apiRequest, setDocumentPreferences } from '$lib/api';
+  import { persistAccordionState } from '$lib/accordion-state';
   import {
     formatDateTime,
     moveInOrder,
@@ -759,7 +760,11 @@
           </div>
           <p class="muted">“Requested from” is the target start. “Oldest reached” is the earliest point currently stored. This panel refreshes every three seconds.</p>
 
-          <details class="failed-jobs" open>
+          <details
+            class="failed-jobs"
+            open
+            use:persistAccordionState={{ key: 'settings:failed-jobs', defaultOpen: true }}
+          >
             <summary>Recent failed jobs ({syncProgress?.failedJobs.total ?? 0})</summary>
             <div class="details-body">
               <div class="diagnostic-filter-toolbar">
@@ -884,7 +889,10 @@
             <div class="alert mid">No synchronization jobs are currently running or queued. The tables below show the latest stored coverage.</div>
           {/if}
 
-          <details open>
+          <details
+            open
+            use:persistAccordionState={{ key: 'settings:market-coverage', defaultOpen: true }}
+          >
             <summary>Market coverage ({filteredMarketCoverage.length} of {syncProgress?.market.length ?? 0})</summary>
             <div class="details-body">
               <div class="diagnostic-filter-toolbar">
@@ -946,7 +954,7 @@
             </div>
           </details>
 
-          <details>
+          <details use:persistAccordionState={{ key: 'settings:kraken-coverage' }}>
             <summary>Kraken import coverage ({syncProgress?.kraken.length ?? 0})</summary>
             <div class="details-body table-wrap">
               <table>
@@ -1069,7 +1077,7 @@
         <section class="panel">
           <p class="eyebrow">Provider diagnostics</p>
           <h2>Enablement, contribution, cooldown, and Kraken safety</h2>
-          <details>
+          <details use:persistAccordionState={{ key: 'settings:provider-state' }}>
             <summary>Inspect provider state</summary>
             <div class="details-body"><pre>{JSON.stringify(providers, null, 2)}</pre></div>
           </details>

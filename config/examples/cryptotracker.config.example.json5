@@ -6,6 +6,13 @@
     port: 8192,
     trustProxy: false,
     bodyLimit: '256kb',
+    https: {
+      enabled: true,
+      port: 8194,
+      certPath: '/app/data/certs/server.crt',
+      keyPath: '/app/data/certs/server.key',
+      generateSelfSigned: true,
+    },
   },
   wui: {
     upstreamBaseUrl: 'http://127.0.0.1:3000',
@@ -26,6 +33,10 @@
     defaultCostBasisMethod: 'acb',
   },
   auth: {
+    apiKey: {
+      enabled: true,
+      headerName: 'X-API-Key',
+    },
     local: {
       enabled: true,
       username: 'admin',

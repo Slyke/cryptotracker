@@ -27,6 +27,15 @@ export interface JobRecord {
   completed_at_ms: number | string | null;
 }
 
+export interface JobContinuation {
+  jobType: string;
+  resourceKey: string;
+  idempotencyKey: string;
+  priority: number;
+  payload?: unknown;
+  maxAttempts?: number;
+}
+
 export type JobHandler = ({
   job,
   updateProgress
@@ -41,7 +50,7 @@ export type JobHandler = ({
     total?: number | null;
     cursor?: unknown;
   }) => Promise<void>;
-}) => Promise<void>;
+}) => Promise<JobContinuation | void>;
 
 export class JobQueue {
   private readonly handlers = new Map<string, JobHandler>();
@@ -156,7 +165,7 @@ export class JobQueue {
         reason: `No handler is registered for ${job.job_type}.`
       });
     }
-    await handler({
+    const continuation = await handler({
       job,
       updateProgress: async ({ current, total = null, cursor = {} }) => {
         await this.db.run({
@@ -177,6 +186,9 @@ export class JobQueue {
       `,
       parameters: [Date.now(), Date.now(), job.id]
     });
+    if (continuation) {
+      await this.enqueue(continuation);
+    }
   }
 
   private async fail({ job, error }: { job: JobRecord; error: unknown }) {

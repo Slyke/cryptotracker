@@ -30,12 +30,26 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: cryptotracker-certgen
+          image: your-registry/cryptotracker-mcp:v0.1.0-commit
+          command: ["node", "scripts/generate-certificate.mjs"]
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: cryptotracker
           image: your-registry/cryptotracker:v0.1.0-commit
           ports:
             - name: http
               containerPort: 8192
+            - name: api-https
+              containerPort: 8194
           env:
             - name: CRYPTOTRACKER_CONFIG_PATH
               value: /app/config/cryptotracker.config.json5
@@ -74,10 +88,66 @@ spec:
             httpGet:
               path: /readyz
               port: http
+              scheme: HTTP
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+              scheme: HTTP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+        - name: cryptotracker-mcp
+          image: your-registry/cryptotracker-mcp:v0.1.0-commit
+          ports:
+            - name: mcp-https
+              containerPort: 8193
+            - name: mcp-http
+              containerPort: 8195
+          env:
+            - name: CRYPTOTRACKER_MCP_ENABLED
+              value: "true"
+            - name: CRYPTOTRACKER_MCP_HTTP_ENABLED
+              value: "false"
+            - name: CRYPTOTRACKER_MCP_HTTPS_ENABLED
+              value: "true"
+            - name: CRYPTOTRACKER_MCP_HTTPS_GENERATE_SELF_SIGNED
+              value: "false"
+            - name: CRYPTOTRACKER_MCP_HTTPS_CERT_PATH
+              value: /app/data/certs/server.crt
+            - name: CRYPTOTRACKER_MCP_HTTPS_KEY_PATH
+              value: /app/data/certs/server.key
+            - name: CRYPTOTRACKER_MCP_UPSTREAM_BASE_URL
+              value: http://127.0.0.1:8192
+            - name: CRYPTOTRACKER_MCP_UPSTREAM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cryptotracker-mcp
+                  key: upstream-api-key
+            - name: CRYPTOTRACKER_MCP_READ_CLIENT_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: cryptotracker-mcp
+                  key: read-client-api-keys
+            - name: CRYPTOTRACKER_MCP_READWRITE_CLIENT_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: cryptotracker-mcp
+                  key: readwrite-client-api-keys
+                  optional: true
+            - name: CRYPTOTRACKER_MCP_HISTORY_PATH
+              value: /app/data/mcp-history.json
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          readinessProbe:
+            exec:
+              command: ["node", "scripts/healthcheck.mjs"]
+          livenessProbe:
+            exec:
+              command: ["node", "scripts/healthcheck.mjs", "--liveness"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -107,3 +177,12 @@ spec:
     - name: http
       port: 8192
       targetPort: http
+    - name: api-https
+      port: 8194
+      targetPort: api-https
+    - name: mcp-https
+      port: 8193
+      targetPort: mcp-https
+    - name: mcp-http
+      port: 8195
+      targetPort: mcp-http

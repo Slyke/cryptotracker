@@ -9,7 +9,9 @@ RUN apt-get update \
 COPY package.json package-lock.json ./
 COPY api/package.json ./api/package.json
 COPY wui/package.json ./wui/package.json
-RUN npm install
+RUN npm install \
+  && mkdir -p api/node_modules wui/node_modules \
+  && node -e "const {createHash}=require('node:crypto');const {readFileSync,writeFileSync}=require('node:fs');const hash=createHash('sha256').update(readFileSync('package-lock.json')).digest('hex');for(const directory of ['node_modules','api/node_modules','wui/node_modules'])writeFileSync(directory+'/.cryptotracker-package-lock.sha256',hash+'\\n')"
 
-EXPOSE 8192
+EXPOSE 8192 8194
 CMD ["npm", "run", "dev"]

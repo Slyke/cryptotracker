@@ -15,6 +15,7 @@ import { DiagnosticsService } from './services/diagnostics.js';
 import { ApplicationExportService } from './services/exports.js';
 import { KrakenService } from './services/kraken.js';
 import { MarketService } from './services/market.js';
+import { PortfolioService } from './services/portfolio.js';
 import { RetentionService } from './services/retention.js';
 import { SettingsService } from './services/settings.js';
 import { TransferService } from './services/transfers.js';
@@ -55,11 +56,12 @@ const main = async () => {
   );
   const kraken = new KrakenService(db, runtime, krakenClient, jobs);
   const settings = new SettingsService(db, runtime, userId);
+  const portfolio = new PortfolioService(db, runtime);
   const transfers = new TransferService(db);
   const exports = new ApplicationExportService(db, runtime, jobs, buildInfo);
   const retention = new RetentionService(db);
   const diagnostics = new DiagnosticsService(db, runtime, market, addresses, kraken);
-  const scheduler = new Scheduler(db, runtime, market, addresses, kraken, settings, retention, logger);
+  const scheduler = new Scheduler(db, runtime, market, addresses, kraken, portfolio, settings, retention, logger);
   market.registerJobs();
   addresses.registerJobs();
   kraken.registerJobs();
@@ -73,6 +75,7 @@ const main = async () => {
     auth,
     settings,
     market,
+    portfolio,
     addresses,
     kraken,
     transfers,
@@ -82,11 +85,21 @@ const main = async () => {
     jobs,
     scheduler
   };
-  const { server } = createHttpServer({ context });
+  const { server, secureServer } = createHttpServer({ context });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(runtime.config.api.port, runtime.config.api.host, () => resolve());
   });
+  if (secureServer) {
+    await new Promise<void>((resolve, reject) => {
+      secureServer.once('error', reject);
+      secureServer.listen(
+        runtime.config.api.https.port,
+        runtime.config.api.host,
+        () => resolve()
+      );
+    });
+  }
   logger.info({
     caller: 'index::main',
     loggerKey: 'SERVICE_BOOT_DIAGNOSTICS',
@@ -100,9 +113,16 @@ const main = async () => {
       pid: process.pid,
       host: runtime.config.api.host,
       port: runtime.config.api.port,
+      protocol: 'http',
+      httpsEnabled: runtime.config.api.https.enabled,
+      httpsPort: runtime.config.api.https.enabled
+        ? runtime.config.api.https.port
+        : null,
       databaseKind: runtime.databaseKind,
       configPath: runtime.configPath,
       secretsPathConfigured: Boolean(runtime.secretsPath),
+      apiKeyAuthEnabled: runtime.config.auth.apiKey.enabled,
+      apiKeyIdentityCount: runtime.secrets.apiKeys.length,
       krakenConfigured: krakenClient.isConfigured()
     }
   });
@@ -130,7 +150,12 @@ const main = async () => {
     scheduler.stop();
     await jobs.stop();
     clearInterval(maintenance);
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await Promise.all([
+      new Promise<void>((resolve) => server.close(() => resolve())),
+      ...(secureServer ? [
+        new Promise<void>((resolve) => secureServer.close(() => resolve()))
+      ] : [])
+    ]);
     await db.close();
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {

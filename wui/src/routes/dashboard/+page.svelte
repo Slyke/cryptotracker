@@ -6,6 +6,7 @@
   import DismissableNotice from '../../lib/components/DismissableNotice.svelte';
   import CurrencyValue from '../../lib/components/CurrencyValue.svelte';
   import { apiRequest, setDocumentPreferences } from '$lib/api';
+  import { persistAccordionState } from '$lib/accordion-state';
   import { configuredCurrencies } from '$lib/currencies';
   import strings from '$lib/i18n/en-CA.json';
   import {
@@ -576,7 +577,7 @@
       </div>
       <a class="button secondary compact" href="/settings">Inspect diagnostics</a>
     </div>
-    <details>
+    <details use:persistAccordionState={{ key: 'dashboard:row-layout-help' }}>
       <summary>Provider state</summary>
       <div class="details-body"><pre>{JSON.stringify(providers, null, 2)}</pre></div>
     </details>

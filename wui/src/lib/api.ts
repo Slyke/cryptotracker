@@ -3,7 +3,7 @@ import { writable } from 'svelte/store';
 export interface SessionUser {
   username: string;
   groups: string[];
-  authMethod: 'local' | 'header';
+  authMethod: 'local' | 'header' | 'apiKey';
 }
 
 export interface SessionState {

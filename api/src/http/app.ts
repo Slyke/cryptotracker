@@ -1,4 +1,5 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server as HttpServer } from 'node:http';
+import { createServer as createSecureServer, type Server as HttpsServer } from 'node:https';
 import { pipeline } from 'node:stream/promises';
 import cookieParser from 'cookie-parser';
 import express, {
@@ -28,9 +29,11 @@ import {
 } from '../services/exports.js';
 import type { KrakenService } from '../services/kraken.js';
 import type { MarketService } from '../services/market.js';
+import type { PortfolioService } from '../services/portfolio.js';
 import type { RetentionService } from '../services/retention.js';
 import type { SettingsService, UserSettings } from '../services/settings.js';
 import type { TransferService } from '../services/transfers.js';
+import { loadHttpsCertificates } from './certificates.js';
 
 export interface AppContext {
   runtime: LoadedRuntime;
@@ -40,6 +43,7 @@ export interface AppContext {
   auth: AuthService;
   settings: SettingsService;
   market: MarketService;
+  portfolio: PortfolioService;
   addresses: AddressService;
   kraken: KrakenService;
   transfers: TransferService;
@@ -279,6 +283,18 @@ const registerRoutes = ({
     });
     res.json({ ok: true });
   }));
+  app.all('/mcp', (_req, res) => {
+    res.status(404).json({
+      ok: false,
+      error: {
+        code: 'MCP_SIDECAR_REQUIRED',
+        message: 'MCP is served by the separately configured cryptotracker-mcp sidecar.',
+        details: {
+          documentation: 'See mcp/README.md.'
+        }
+      }
+    });
+  });
 
   app.use('/api', requireAuth);
   app.get('/api/me', (req, res) => {
@@ -314,12 +330,13 @@ const registerRoutes = ({
         graphDefaults: z.record(z.string(), z.unknown()).optional(),
         pageLayouts: z.record(z.string(), z.array(z.string().min(1)).max(50)).optional(),
         collapsedBlocks: z.record(z.string(), z.array(z.string().min(1)).max(50)).optional(),
+        accordionStates: z.record(z.string(), z.boolean()).optional(),
         tableColumns: z.record(z.string(), z.array(z.string().min(1)).max(100)).optional(),
         tableRows: z.record(z.string(), z.array(z.string().min(1)).max(500)).optional(),
         savedGraphs: z.array(z.object({
           id: z.string().min(1).max(200),
           name: z.string().trim().min(1).max(120),
-          type: z.enum(['market', 'kraken', 'addresses']),
+          type: z.enum(['market', 'kraken', 'addresses', 'portfolio']),
           hidden: z.boolean(),
           config: z.record(z.string(), z.unknown())
         })).max(200).superRefine((graphs, refinement) => {
@@ -551,6 +568,36 @@ const registerRoutes = ({
       metrics: await context.market.assetMetrics({
         assetIds,
         quoteCurrencies: quoteCurrencies.length > 0 ? quoteCurrencies : ['CAD']
+      })
+    });
+  }));
+  app.get('/api/portfolio/series', asyncRoute(async (req, res) => {
+    const query = parse({
+      schema: z.object({
+        from: z.coerce.number().int().nonnegative(),
+        to: z.coerce.number().int().positive(),
+        quoteCurrencies: z.string().optional()
+      }),
+      value: req.query
+    });
+    if (query.from >= query.to && query.from !== 0) {
+      throw new AppError({
+        errorKey: 'INPUT_INVALID',
+        reason: 'Range start must be earlier than range end.',
+        status: 400
+      });
+    }
+    res.json({
+      ok: true,
+      data: await context.portfolio.series({
+        fromMs: query.from,
+        toMs: query.to,
+        ...(query.quoteCurrencies ? {
+          quoteCurrencies: query.quoteCurrencies.split(',')
+            .map((currency) => currency.trim().toUpperCase())
+            .filter((currency) => /^[A-Z]{3}$/.test(currency))
+            .slice(0, 6)
+        } : {})
       })
     });
   }));
@@ -942,7 +989,8 @@ export const createHttpServer = ({
   context: AppContext;
 }): {
   app: express.Express;
-  server: Server;
+  server: HttpServer;
+  secureServer: HttpsServer | null;
 } => {
   const app = express();
   if (context.runtime.config.api.trustProxy) app.set('trust proxy', true);
@@ -1011,13 +1059,43 @@ export const createHttpServer = ({
     }));
   };
   app.use(errorHandler);
+  const httpsConfig = context.runtime.config.api.https;
   const server = createServer(app);
+  const secureServer = httpsConfig.enabled
+    ? createSecureServer(loadHttpsCertificates({
+        certPath: httpsConfig.certPath,
+        keyPath: httpsConfig.keyPath,
+        generateSelfSigned: httpsConfig.generateSelfSigned
+      }), (req, res) => {
+        const pathname = new URL(req.url ?? '/', 'https://localhost').pathname;
+        if (
+          pathname.startsWith('/api/')
+          || ['/health', '/healthz', '/readyz'].includes(pathname)
+        ) {
+          app(req, res);
+          return;
+        }
+        const payload = JSON.stringify({
+          ok: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: 'The API HTTPS listener exposes only API and health endpoints.',
+            details: {}
+          }
+        });
+        res.writeHead(404, {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload)
+        });
+        res.end(payload);
+      })
+    : null;
   server.on('upgrade', (req, socket, head) => {
     const correlationId = String(req.headers['x-correlation-id'] ?? crypto.randomUUID());
     req.headers['x-correlation-id'] = correlationId;
     proxy.ws(req, socket, head);
   });
-  return { app, server };
+  return { app, server, secureServer };
 };
 
 export const httpInternals = {

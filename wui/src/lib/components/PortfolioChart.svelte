@@ -2,6 +2,12 @@
   import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
   import type { ECharts, EChartsOption } from 'echarts';
   import strings from '$lib/i18n/en-CA.json';
+  import { persistAccordionState } from '$lib/accordion-state';
+  import {
+    buildChartAxisOptions,
+    type ChartDenominationOption
+  } from '$lib/chart-axis-options';
+  import SearchableSelect from './SearchableSelect.svelte';
   import {
     formatDisplayNumber,
     formatPercent,
@@ -39,12 +45,6 @@
     id: string;
     label: string;
     points: ChartPoint[];
-  }
-
-  interface ChartDenominationOption {
-    id: string;
-    symbol: string;
-    label: string;
   }
 
   interface ChartEvent {
@@ -88,6 +88,7 @@
   export let initialNormalized = false;
   export let initialShowEvents = true;
   export let initialShowVolume = false;
+  export let preferenceKey = '';
 
   const dispatch = createEventDispatcher<{
     stateChange: {
@@ -182,13 +183,27 @@
 
   const allPoints = () => series.flatMap((item) => item.points);
   const rawPointValue = (point: ChartPoint) => point.value ?? point.close ?? null;
+  const configuredFiatCurrencies = () => [...new Set([
+    currency.toUpperCase(),
+    ...tooltipCurrencies
+      .map((quote) => quote.toUpperCase())
+      .filter((quote) => /^[A-Z]{3}$/.test(quote))
+  ])];
+  const yAxisOptions = () => buildChartAxisOptions({
+    primaryCurrency: currency,
+    listedCurrencies: tooltipCurrencies,
+    denominationOptions
+  });
+  const isFiatUnit = (unit: string) => configuredFiatCurrencies().includes(unit.toUpperCase());
   const plottedPointValue = (point: ChartPoint) => (
     chartMode === 'line' && yAxisUnit !== currency
-      ? point.denominations?.[yAxisUnit] ?? null
+      ? isFiatUnit(yAxisUnit)
+        ? point.quotes?.[yAxisUnit.toUpperCase()] ?? null
+        : point.denominations?.[yAxisUnit] ?? null
       : rawPointValue(point)
   );
-  const yAxisUnitLabel = () => yAxisUnit === currency
-    ? currency
+  const yAxisUnitLabel = () => isFiatUnit(yAxisUnit)
+    ? yAxisUnit.toUpperCase()
     : denominationOptions.find((option) => option.id === yAxisUnit)?.symbol ?? yAxisUnit;
   const assetQuantityLabel = (assetId: string) => (
     denominationOptions.find((option) => option.id === assetId)?.symbol
@@ -678,7 +693,7 @@
               const value = point.quotes?.[quote] ?? (quote === currency ? rawPointValue(point) : null);
               return `<span>${escapeHtml(quote)}</span> <strong>${escapeHtml(formatChartValue(value))}</strong>`;
             }).join('<br />');
-            const denominationRow = yAxisUnit === currency
+            const denominationRow = isFiatUnit(yAxisUnit)
               ? ''
               : `<br /><span>${escapeHtml(yAxisUnitLabel())} value</span> <strong>${escapeHtml(formatChartValue(point.denominations?.[yAxisUnit] ?? null))}</strong>`;
             const status = point.disputed ? 'disputed' : point.status;
@@ -1061,11 +1076,11 @@
   $: range = initialRange;
   $: selectedGranularity = selectedGranularitySetting ?? String(granularity);
   $: if (
-    denominationOptions.length > 0
-    &&
     yAxisUnit !== currency
+    && !isFiatUnit(yAxisUnit)
     && !denominationOptions.some((option) => option.id === yAxisUnit)
   ) yAxisUnit = currency;
+  $: if (chartMode === 'candlestick' && yAxisUnit !== currency) yAxisUnit = currency;
 </script>
 
 <svelte:window on:keydown={inspectByKeyboard} />
@@ -1179,23 +1194,25 @@
   {/if}
 
   {#if !compact}
-  <details class="chart-options">
+  <details
+    class="chart-options"
+    use:persistAccordionState={{
+      key: `${preferenceKey || controlId('chart')}:options`
+    }}
+  >
     <summary>Scale bounds, display, events, and exports</summary>
     <div class="details-body">
       <div class="toolbar">
         <div class="field">
           <label for={controlId('y-axis-unit')}>Y-axis unit</label>
-          <select
+          <SearchableSelect
             id={controlId('y-axis-unit')}
             bind:value={yAxisUnit}
+            options={yAxisOptions()}
+            label="Y-axis currencies or crypto assets"
             disabled={chartMode === 'candlestick'}
             on:change={viewChanged}
-          >
-            <option value={currency}>{currency} · Primary currency</option>
-            {#each denominationOptions as option (option.id)}
-              <option value={option.id}>{option.label}</option>
-            {/each}
-          </select>
+          />
         </div>
         <div class="field">
           <label for={controlId('minimum-mode')}>Minimum</label>
@@ -1418,7 +1435,12 @@
   {/if}
 
   {#if visibleEvents().length > 0}
-    <details class="event-details">
+    <details
+      class="event-details"
+      use:persistAccordionState={{
+        key: `${preferenceKey || controlId('chart')}:events`
+      }}
+    >
       <summary>Accessible event details ({filteredEvents().length} of {visibleEvents().length})</summary>
       <div class="details-body">
         <div class="event-detail-toolbar">
@@ -1455,7 +1477,12 @@
                   <td>{formatChartValue(event.quantity)}</td>
                   <td>{event.source ?? 'Unknown'}</td>
                   <td>
-                    <details class="event-evidence">
+                    <details
+                      class="event-evidence"
+                      use:persistAccordionState={{
+                        key: `${preferenceKey || controlId('chart')}:event:${event.id}`
+                      }}
+                    >
                       <summary>Inspect</summary>
                       <code>{JSON.stringify(event.details ?? {}, null, 2)}</code>
                     </details>

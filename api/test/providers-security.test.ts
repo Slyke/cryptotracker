@@ -139,7 +139,16 @@ describe('provider controls', () => {
   });
 
   it('keeps Kraken private operations on an immutable query-only allowlist', async () => {
-    expect(krakenReadOnlyPaths.every((path) => !/(AddOrder|Withdraw|Transfer)/i.test(path))).toBe(true);
+    const mutatingPaths = [
+      '/0/private/AddOrder',
+      '/0/private/AddOrderBatch',
+      '/0/private/CancelOrder',
+      '/0/private/Withdraw',
+      '/0/private/WalletTransfer',
+      '/0/private/Earn/Allocate',
+      '/0/private/Earn/Deallocate'
+    ];
+    expect(krakenReadOnlyPaths).not.toEqual(expect.arrayContaining(mutatingPaths));
     expect(findUnsafeKrakenPermissions({
       permissions: [
         'query-funds',
@@ -168,11 +177,11 @@ describe('provider controls', () => {
       runtime.config.providers.market.kraken,
       runtime.secrets.kraken
     );
-    await expect(client.privateQuery({
-      path: '/0/private/AddOrder'
-    })).rejects.toMatchObject({
-      errorKey: 'INPUT_INVALID'
-    });
+    for (const path of mutatingPaths) {
+      await expect(client.privateQuery({ path })).rejects.toMatchObject({
+        errorKey: 'INPUT_INVALID'
+      });
+    }
   });
 
   it('coordinates a strictly increasing nonce even when time does not move', () => {

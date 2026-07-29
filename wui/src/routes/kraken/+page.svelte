@@ -12,6 +12,7 @@
     ChartSeries
   } from '../../lib/components/chart-types';
   import { apiRequest } from '$lib/api';
+  import { persistAccordionState } from '$lib/accordion-state';
   import { configuredCurrencies } from '$lib/currencies';
   import strings from '$lib/i18n/en-CA.json';
   import {
@@ -1201,7 +1202,10 @@
         CryptoTracker accepts a dedicated query-only key with four permissions.
         It never needs permission to trade, transfer, withdraw, export, or change Earn allocations.
       </p>
-      <details class="permission-help">
+      <details
+        class="permission-help"
+        use:persistAccordionState={{ key: 'kraken:permission-help' }}
+      >
         <summary>How to fix Kraken API permissions</summary>
         <div class="details-body permission-help-body">
           <ol class="permission-steps">
@@ -1528,7 +1532,10 @@
         </table>
       </div>
 
-      <details class="earn-activity">
+      <details
+        class="earn-activity"
+        use:persistAccordionState={{ key: 'kraken:earn-activity' }}
+      >
         <summary>Earn payouts, stakes, purchases, and sales ({earnOverview.activity.length})</summary>
         <div class="details-body">
           <div class="toolbar earn-activity-controls">
@@ -1584,7 +1591,10 @@
                   <td>{event.asset ?? 'unavailable'}</td>
                   <td>{event.quantity === undefined ? 'unavailable' : formatDisplayNumber({ value: event.quantity, locale })}</td>
                   <td>
-                    <details class="activity-details">
+                    <details
+                      class="activity-details"
+                      use:persistAccordionState={{ key: `kraken:activity:${event.id}` }}
+                    >
                       <summary>View details</summary>
                       <pre>{JSON.stringify(event.details ?? {}, null, 2)}</pre>
                     </details>
@@ -1615,7 +1625,7 @@
         </div>
       </details>
 
-      <details>
+      <details use:persistAccordionState={{ key: 'kraken:earn-raw-allocations' }}>
         <summary>Raw Kraken Earn allocations ({earnAllocations.length})</summary>
         <div class="details-body"><pre>{JSON.stringify(earnAllocations, null, 2)}</pre></div>
       </details>
@@ -1716,7 +1726,7 @@
         {#if pnl.incompleteBasis}<span class="badge warning">unknown basis present</span>{/if}
       </article>
     </div>
-    <details>
+    <details use:persistAccordionState={{ key: 'kraken:cost-basis-lots' }}>
       <summary>Calculation details</summary>
       <div class="details-body"><pre>{JSON.stringify(pnl, null, 2)}</pre></div>
     </details>
@@ -1726,11 +1736,11 @@
   <section class="panel">
     <p class="eyebrow">Activity</p>
     <h2>Imported trades and ledger entries</h2>
-    <details>
+    <details use:persistAccordionState={{ key: 'kraken:cost-basis-dispositions' }}>
       <summary>Trades ({activity.trades.length})</summary>
       <div class="details-body"><pre>{JSON.stringify(activity.trades, null, 2)}</pre></div>
     </details>
-    <details>
+    <details use:persistAccordionState={{ key: 'kraken:cost-basis-raw' }}>
       <summary>Ledgers ({activity.ledgers.length})</summary>
       <div class="details-body"><pre>{JSON.stringify(activity.ledgers, null, 2)}</pre></div>
     </details>

@@ -49,6 +49,15 @@
   let customToMs = Date.now();
   let series: ChartSeries[] = [];
   let events: ChartEvent[] = [];
+  let portfolioSeries: ChartSeries[] = [];
+  let portfolioEvents: ChartEvent[] = [];
+  let portfolioDenominationOptions: ChartDenominationOption[] = [];
+  let portfolioPartial = false;
+  let portfolioStale = false;
+  let portfolioLoading = true;
+  let portfolioRange = '30d';
+  let portfolioFromMs = Date.now() - 30 * 24 * 60 * 60_000;
+  let portfolioToMs = Date.now();
   let partial = false;
   let stale = false;
   let resolvedGranularity = 3_600;
@@ -64,7 +73,7 @@
   let pageLayouts: Record<string, string[]> = {};
   let collapsedBlocks: Record<string, string[]> = {};
   let tableColumns: Record<string, string[]> = {};
-  const defaultPageOrder = ['controls', 'chart', 'watchlist'];
+  const defaultPageOrder = ['controls', 'portfolio', 'chart', 'watchlist'];
   let pageOrder = [...defaultPageOrder];
   const watchlistColumnOptions = [
     { id: 'asset', label: 'Asset' },
@@ -284,6 +293,38 @@
     }
   };
 
+  const loadPortfolioSeries = async () => {
+    portfolioLoading = true;
+    try {
+      const currencies = configuredCurrencies({
+        primaryCurrency,
+        listedCurrencies: tooltipCurrencies
+      });
+      const payload = await apiRequest<{
+        data: {
+          series: ChartSeries[];
+          events: ChartEvent[];
+          denominationOptions: ChartDenominationOption[];
+          partial: boolean;
+          stale: boolean;
+        };
+      }>({
+        url: `/api/portfolio/series?from=${portfolioFromMs}&to=${portfolioToMs}&quoteCurrencies=${encodeURIComponent(currencies.join(','))}`
+      });
+      portfolioSeries = payload.data.series;
+      portfolioEvents = payload.data.events;
+      portfolioDenominationOptions = payload.data.denominationOptions;
+      portfolioPartial = payload.data.partial;
+      portfolioStale = payload.data.stale;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : 'Combined portfolio series failed.';
+      portfolioSeries = [];
+      portfolioEvents = [];
+    } finally {
+      portfolioLoading = false;
+    }
+  };
+
   const toggleAsset = ({ canonicalId }: { canonicalId: string }) => {
     if (!watchState({ canonicalId })?.enabled) return;
     const next = new Set(selected);
@@ -476,6 +517,60 @@
     message = `Saved “${graph.name}” to the dashboard.`;
   };
 
+  const portfolioGraphStateChanged = (event: CustomEvent<{
+    range: string;
+    granularity: string;
+    customFromMs: number | null;
+    customToMs: number | null;
+  }>) => {
+    portfolioRange = event.detail.range;
+    portfolioToMs = event.detail.range === 'custom' && event.detail.customToMs !== null
+      ? event.detail.customToMs
+      : Date.now();
+    portfolioFromMs = event.detail.range === 'all'
+      ? 0
+      : event.detail.range === 'custom' && event.detail.customFromMs !== null
+        ? event.detail.customFromMs
+        : portfolioToMs - (rangeMilliseconds[event.detail.range as keyof typeof rangeMilliseconds] ?? rangeMilliseconds['30d']);
+    void loadPortfolioSeries();
+  };
+
+  const savePortfolioGraph = async (event: CustomEvent<{
+    name: string;
+    range: string;
+    granularity: string;
+    chartMode: 'line' | 'candlestick';
+    scale: 'linear' | 'log';
+    normalized: boolean;
+    showEvents: boolean;
+    showVolume: boolean;
+    yAxisUnit: string;
+    customFromMs: number | null;
+    customToMs: number | null;
+    customRangeMode: 'dates' | 'ago';
+    customAgoValue: number;
+    customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
+  }>) => {
+    if (savedGraphNameExists({ savedGraphs, name: event.detail.name })) {
+      error = `A dashboard item named “${event.detail.name.trim()}” already exists. Choose a unique name.`;
+      message = '';
+      return;
+    }
+    const graph = createSavedGraph({
+      name: event.detail.name,
+      type: 'portfolio',
+      config: {
+        primaryCurrency,
+        tooltipCurrencies,
+        timezone,
+        ...event.detail
+      }
+    });
+    savedGraphs = [...savedGraphs, graph];
+    await savePreferences({ savedGraphs });
+    message = `Saved “${graph.name}” to the dashboard.`;
+  };
+
   const queueBackfill = async () => {
     const toMs = Date.now();
     const fromMs = toMs - rangeMilliseconds[range as keyof typeof rangeMilliseconds];
@@ -548,7 +643,10 @@
       if (location.hash === '#asset-catalog') {
         focusCatalogFilter();
       }
-      await loadSeries();
+      await Promise.all([
+        loadSeries(),
+        loadPortfolioSeries()
+      ]);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : 'Markets failed to load.';
       loading = false;
@@ -569,7 +667,13 @@
   {#each pageOrder as blockId, index}
     <ReorderableBlock
       {blockId}
-      label={blockId === 'controls' ? 'Market controls' : blockId === 'chart' ? 'Market chart' : 'Watchlist'}
+      label={blockId === 'controls'
+        ? 'Market controls'
+        : blockId === 'portfolio'
+          ? 'Combined portfolio chart'
+          : blockId === 'chart'
+            ? 'Market chart'
+            : 'Watchlist'}
       {index}
       total={pageOrder.length}
       collapsed={collapsedBlocks.markets?.includes(blockId) ?? false}
@@ -620,6 +724,34 @@
       </p>
     {/if}
   </section>
+  {:else if blockId === 'portfolio'}
+
+  <PortfolioChart
+    title="Combined portfolio history"
+    series={portfolioSeries}
+    chartMode="line"
+    currency={primaryCurrency}
+    tooltipCurrencies={configuredCurrencies({
+      primaryCurrency,
+      listedCurrencies: tooltipCurrencies
+    })}
+    denominationOptions={portfolioDenominationOptions}
+    source="portfolio snapshots"
+    {timezone}
+    granularity={1_800}
+    partial={portfolioPartial}
+    stale={portfolioStale}
+    events={portfolioEvents}
+    busy={portfolioLoading}
+    saveable
+    initialRange={portfolioRange}
+    preferenceKey="markets:combined-portfolio"
+    partialMessage="Some observed balances or market valuations are unavailable. Portfolio history starts with locally retained snapshots and is not retroactively fabricated."
+    emptyMessage="No combined portfolio snapshot exists yet. The first locally observed snapshot is recorded when this chart loads; historical balances are not guessed."
+    on:stateChange={portfolioGraphStateChanged}
+    on:saveGraph={savePortfolioGraph}
+  />
+
   {:else if blockId === 'chart'}
 
   <PortfolioChart
@@ -640,6 +772,7 @@
     {exportQuery}
     busy={loading}
     saveable
+    preferenceKey="markets:watched-prices"
     partialMessage={partialMessage || strings['cryptotracker-data_partial-label']}
     emptyMessage="No cached market prices are available for the selected assets and range. Use Queue backfill in Market controls, then follow progress in Settings → Synchronization."
     on:stateChange={graphStateChanged}

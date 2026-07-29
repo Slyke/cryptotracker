@@ -49,6 +49,8 @@
       oldestReconstructedAt: string | null;
       lastSuccessfulSync: string | null;
       warnings: unknown[];
+      workActive: boolean;
+      providerHistoryAvailable: boolean;
     };
     assets: Array<{
       canonicalAssetId: string;
@@ -206,14 +208,26 @@
   };
 
   const partialMessage = () => {
-    const labels = addresses
-      .filter((item) => item.history.status !== 'complete')
+    const unavailable = addresses
+      .filter((item) => !item.history.providerHistoryAvailable)
+      .map((item) => item.label);
+    const incomplete = addresses
+      .filter((item) => (
+        item.history.status !== 'complete'
+        && item.history.providerHistoryAvailable
+      ))
       .map((item) => `${item.label} (${item.history.status})`);
+    const workActive = addresses.some((item) => item.history.workActive);
     const unpricedCount = holdings.filter((holding) => Number(holding.pricedCoveragePercent) < 100).length;
     const parts = [];
-    if (labels.length > 0) parts.push(`Incomplete provider history: ${labels.join(', ')}.`);
+    if (unavailable.length > 0) {
+      parts.push(`Historical transaction provider unavailable for ${unavailable.join(', ')}. Current balances are still sampled and retained, but earlier ETH/ERC-20 balances require a configured Etherscan API key.`);
+    }
+    if (incomplete.length > 0) parts.push(`Incomplete provider history: ${incomplete.join(', ')}.`);
     if (unpricedCount > 0) parts.push(`${unpricedCount} holding${unpricedCount === 1 ? ' is' : 's are'} not fully priced.`);
-    parts.push('Settings → Synchronization shows whether work is active and the oldest point reached.');
+    if (workActive) {
+      parts.push('Synchronization is active. Settings → Synchronization shows live work and the oldest point reached.');
+    }
     return parts.join(' ');
   };
 

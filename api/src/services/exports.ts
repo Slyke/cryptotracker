@@ -35,6 +35,7 @@ const publicTables = [
   'kraken_margin_positions',
   'kraken_earn_allocations',
   'kraken_sync_cursors',
+  'portfolio_snapshots',
   'internal_transfer_matches',
   'cost_basis_lots',
   'calculation_runs',

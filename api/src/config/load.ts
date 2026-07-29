@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import JSON5 from 'json5';
 import { configSchema, secretsSchema, type RuntimeConfig, type RuntimeSecrets } from './schema.js';
 import { AppError } from '../errors.js';
@@ -106,6 +107,46 @@ const readOptionalJson5 = async ({
   }
 };
 
+const resolveApiKeyFiles = async ({
+  rawSecrets,
+  secretsPath
+}: {
+  rawSecrets: Record<string, unknown>;
+  secretsPath: string | null;
+}) => {
+  if (!Array.isArray(rawSecrets.apiKeys)) return;
+  const baseDirectory = secretsPath ? dirname(resolve(secretsPath)) : process.cwd();
+  for (const [index, value] of rawSecrets.apiKeys.entries()) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    const key = typeof entry.key === 'string' ? entry.key : '';
+    const keyFile = typeof entry.keyFile === 'string' ? entry.keyFile.trim() : '';
+    if (key && keyFile) {
+      throw new AppError({
+        errorKey: 'SECRETS_VALIDATION_FAILED',
+        reason: `apiKeys[${index}] must use either key or keyFile, not both.`,
+        status: 500
+      });
+    }
+    if (!keyFile) continue;
+    const resolvedPath = resolve(baseDirectory, keyFile);
+    try {
+      entry.key = (await readFile(resolvedPath, 'utf8')).trim();
+      delete entry.keyFile;
+    } catch (error) {
+      throw new AppError({
+        errorKey: 'SECRETS_FILE_LOAD_FAILED',
+        reason: `Unable to read apiKeys[${index}] from its configured keyFile.`,
+        status: 500,
+        context: {
+          keyFile: resolvedPath
+        },
+        cause: error
+      });
+    }
+  }
+};
+
 const setPath = ({
   target,
   path,
@@ -139,6 +180,9 @@ const applyConfigOverrides = ({
     ['CRYPTOTRACKER_API_HOST', ['api', 'host']],
     ['CRYPTOTRACKER_WUI_UPSTREAM_BASE_URL', ['wui', 'upstreamBaseUrl']],
     ['CRYPTOTRACKER_AUTH_LOCAL_USERNAME', ['auth', 'local', 'username']],
+    ['CRYPTOTRACKER_API_KEY_HEADER', ['auth', 'apiKey', 'headerName']],
+    ['CRYPTOTRACKER_HTTPS_CERT_PATH', ['api', 'https', 'certPath']],
+    ['CRYPTOTRACKER_HTTPS_KEY_PATH', ['api', 'https', 'keyPath']],
     ['CRYPTOTRACKER_AUTH_HEADER_USERNAME_HEADER', ['auth', 'header', 'usernameHeader']],
     ['CRYPTOTRACKER_AUTH_HEADER_GROUPS_HEADER', ['auth', 'header', 'groupsHeader']],
     ['CRYPTOTRACKER_AUTH_HEADER_GROUPS_SEPARATOR', ['auth', 'header', 'groupsSeparator']],
@@ -152,6 +196,9 @@ const applyConfigOverrides = ({
   ];
   const booleanOverrides: Array<[string, string[]]> = [
     ['CRYPTOTRACKER_AUTH_LOCAL_ENABLED', ['auth', 'local', 'enabled']],
+    ['CRYPTOTRACKER_API_KEY_ENABLED', ['auth', 'apiKey', 'enabled']],
+    ['CRYPTOTRACKER_HTTPS_ENABLED', ['api', 'https', 'enabled']],
+    ['CRYPTOTRACKER_HTTPS_GENERATE_SELF_SIGNED', ['api', 'https', 'generateSelfSigned']],
     ['CRYPTOTRACKER_AUTH_HEADER_ENABLED', ['auth', 'header', 'enabled']],
     ['CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_ENABLED', ['auth', 'header', 'signedIdentity', 'enabled']],
     ['LOG_K8S_METADATA_ENABLED', ['logging', 'kubernetes', 'enabled']]
@@ -178,7 +225,16 @@ const applyConfigOverrides = ({
       })
     });
   }
-
+  if (env.CRYPTOTRACKER_HTTPS_PORT !== undefined && env.CRYPTOTRACKER_HTTPS_PORT !== '') {
+    setPath({
+      target: rawConfig,
+      path: ['api', 'https', 'port'],
+      value: parseNumber({
+        key: 'CRYPTOTRACKER_HTTPS_PORT',
+        value: env.CRYPTOTRACKER_HTTPS_PORT
+      })
+    });
+  }
   for (const [key, path] of booleanOverrides) {
     if (env[key] !== undefined && env[key] !== '') {
       setPath({
@@ -223,6 +279,39 @@ const applySecretOverrides = ({
     if (env[key] !== undefined && env[key] !== '') {
       setPath({ target: rawSecrets, path, value: env[key]!.trim() });
     }
+  }
+  const directApiKey = env.CRYPTOTRACKER_API_KEY?.trim() ?? '';
+  const directApiKeyFile = env.CRYPTOTRACKER_API_KEY_FILE?.trim() ?? '';
+  if (directApiKey && directApiKeyFile) {
+    throw new AppError({
+      errorKey: 'SECRETS_VALIDATION_FAILED',
+      reason: 'Use either CRYPTOTRACKER_API_KEY or CRYPTOTRACKER_API_KEY_FILE, not both.',
+      status: 500
+    });
+  }
+  if (directApiKey || directApiKeyFile) {
+    const name = env.CRYPTOTRACKER_API_KEY_NAME?.trim() || 'environment';
+    const existing = Array.isArray(rawSecrets.apiKeys)
+      ? rawSecrets.apiKeys.filter((entry) => (
+        !entry
+        || typeof entry !== 'object'
+        || Array.isArray(entry)
+        || String((entry as Record<string, unknown>).name ?? '').toLowerCase() !== name.toLowerCase()
+      ))
+      : [];
+    setPath({
+      target: rawSecrets,
+      path: ['apiKeys'],
+      value: [...existing, {
+        name,
+        ...(directApiKey
+          ? { key: directApiKey }
+          : { keyFile: directApiKeyFile }),
+        role: env.CRYPTOTRACKER_API_KEY_ROLE?.trim().toLowerCase() === 'readwrite'
+          ? 'readwrite'
+          : 'read'
+      }]
+    });
   }
 };
 
@@ -308,6 +397,7 @@ export const loadRuntime = async ({
   const rawSecrets = structuredClone(fileSecrets) as Record<string, unknown>;
   applyConfigOverrides({ rawConfig, env });
   applySecretOverrides({ rawSecrets, env });
+  await resolveApiKeyFiles({ rawSecrets, secretsPath });
 
   const configResult = configSchema.safeParse(rawConfig);
   if (!configResult.success) {
@@ -352,5 +442,6 @@ export const configurationHelpers = {
   parseBoolean,
   parseCsv,
   parseNumber,
+  resolveApiKeyFiles,
   resolveEnvironmentReferences
 };
