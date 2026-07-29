@@ -1,0 +1,30 @@
+services:
+  cryptotracker:
+    env_file:
+      - path: .env
+        required: false
+    build:
+      context: .
+      dockerfile: dockerfiles/cryptotracker.dev.Dockerfile
+    working_dir: /workspace
+    command: ["npm", "run", "dev"]
+    environment:
+      NODE_ENV: development
+      CRYPTOTRACKER_CONFIG_PATH: /workspace/config/cryptotracker.config.json5
+      CRYPTOTRACKER_SECRETS_PATH: /workspace/config/cryptotracker.secrets.json5
+      CRYPTOTRACKER_DB_KIND: sqlite
+      CRYPTOTRACKER_SQLITE_PATH: /workspace/data/cryptotracker.sqlite
+      CRYPTOTRACKER_PUBLIC_BASE_URL: http://localhost:8192
+      CRYPTOTRACKER_WUI_UPSTREAM_BASE_URL: http://127.0.0.1:3000
+    volumes:
+      - .:/workspace
+      - cryptotracker-node-modules:/workspace/node_modules
+      - cryptotracker-api-node-modules:/workspace/api/node_modules
+      - cryptotracker-wui-node-modules:/workspace/wui/node_modules
+    ports:
+      - "8192:8192"
+
+volumes:
+  cryptotracker-node-modules:
+  cryptotracker-api-node-modules:
+  cryptotracker-wui-node-modules:

@@ -1,0 +1,868 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import ColumnConfigurator from '../../lib/components/ColumnConfigurator.svelte';
+  import DismissableNotice from '../../lib/components/DismissableNotice.svelte';
+  import PortfolioChart from '../../lib/components/PortfolioChart.svelte';
+  import ReorderableBlock from '../../lib/components/ReorderableBlock.svelte';
+  import type {
+    ChartDenominationOption,
+    ChartEvent,
+    ChartSeries
+  } from '../../lib/components/chart-types';
+  import { apiRequest } from '$lib/api';
+  import { configuredCurrencies } from '$lib/currencies';
+  import {
+    createSavedGraph,
+    formatDateTime,
+    formatDisplayNumber,
+    formatPercent,
+    moveInOrder,
+    normalizeOrder,
+    savePreferences,
+    savedGraphNameExists,
+    toggleCollapsed,
+    type SavedGraph
+  } from '$lib/preferences';
+  import strings from '$lib/i18n/en-CA.json';
+
+  type Network = 'bitcoin' | 'dogecoin' | 'ethereum' | 'polkadot' | 'solana';
+  type MainnetOption = {
+    id: string;
+    label: string;
+    nativeAssetId: string;
+    enabledAssets: Array<{
+      id: string;
+      symbol: string;
+      contractOrMint: string | null;
+    }>;
+    supported: boolean;
+    reason: string | null;
+  };
+  type TrackedAddress = {
+    id: string;
+    network: Network;
+    address: string;
+    label: string;
+    enabled: boolean;
+    history: {
+      status: string;
+      oldestReconstructedAt: string | null;
+      lastSuccessfulSync: string | null;
+      warnings: unknown[];
+    };
+    assets: Array<{
+      canonicalAssetId: string;
+      contractOrMint: string | null;
+      enabled: boolean;
+    }>;
+  };
+
+  type Holding = {
+    addressId: string;
+    address: string;
+    label: string;
+    network: Network;
+    assetId: string;
+    assetSymbol: string;
+    assetName: string;
+    quantity: string | null;
+    currentValue: string | null;
+    currentValues: Record<string, string | null>;
+    valueCurrency: string;
+    completeness: string;
+    oldestReconstructedAt: string | null;
+    lastSuccessfulSync: string | null;
+    pricedCoveragePercent: string;
+    balanceObserved: boolean;
+    balanceReason: string | null;
+  };
+
+  const buildHoldingColumnOptions = (currencies: string[]) => [
+    { id: 'label', label: 'Address label' },
+    { id: 'address', label: 'Public address' },
+    { id: 'network', label: 'Network' },
+    { id: 'asset', label: 'Asset' },
+    { id: 'quantity', label: 'Quantity' },
+    ...currencies.map((currency) => ({
+      id: `value:${currency}`,
+      label: `Current value (${currency})`
+    })),
+    { id: 'coverage', label: 'Pricing coverage' },
+    { id: 'history', label: 'History state' },
+    { id: 'oldest', label: 'Oldest reconstructed' },
+    { id: 'lastSync', label: 'Last successful check' }
+  ];
+  const buildDefaultHoldingColumns = (currency: string) => [
+    'label',
+    'network',
+    'asset',
+    'quantity',
+    `value:${currency}`,
+    'coverage',
+    'history'
+  ];
+  const defaultPageOrder = ['add', 'tracked', 'chart', 'holdings'];
+
+  let addresses: TrackedAddress[] = [];
+  let mainnets: MainnetOption[] = [];
+  let unmappedMainnetAssets: Array<{ id: string; symbol: string }> = [];
+  let holdings: Holding[] = [];
+  let series: ChartSeries[] = [];
+  let events: ChartEvent[] = [];
+  let denominationOptions: ChartDenominationOption[] = [];
+  let network: Network = 'bitcoin';
+  let address = '';
+  let label = '';
+  let optionalAssetId = '';
+  let contractOrMint = '';
+  let loading = true;
+  let error = '';
+  let message = '';
+  let partial = false;
+  let stale = false;
+  let primaryCurrency = 'CAD';
+  let tooltipCurrencies = ['CAD'];
+  let timezone = 'America/Vancouver';
+  let granularity = 86_400;
+  let fromMs = Date.now() - (90 * 24 * 60 * 60_000);
+  let toMs = Date.now();
+  let pageLayouts: Record<string, string[]> = {};
+  let collapsedBlocks: Record<string, string[]> = {};
+  let tableColumns: Record<string, string[]> = {};
+  let tableDashboardName = 'Address holdings';
+  let savedGraphs: SavedGraph[] = [];
+  let dismissedNotices: string[] = [];
+  let pageOrder = [...defaultPageOrder];
+  let holdingColumnOptions = buildHoldingColumnOptions(['CAD']);
+  let defaultHoldingColumns = buildDefaultHoldingColumns('CAD');
+  let selectedHoldingColumns = [...defaultHoldingColumns];
+  let holdingGroups: Array<{ addressId: string; rows: Holding[] }> = [];
+  let selectedNewAssetIds = new Set<string>();
+  let addressAssetSelections: Record<string, string[]> = {};
+  $: activeCurrencies = configuredCurrencies({
+    primaryCurrency,
+    listedCurrencies: tooltipCurrencies
+  });
+  $: {
+    const grouped = new Map<string, Holding[]>();
+    for (const holding of holdings) {
+      const rows = grouped.get(holding.addressId) ?? [];
+      rows.push(holding);
+      grouped.set(holding.addressId, rows);
+    }
+    holdingGroups = [...grouped.entries()].map(([addressId, rows]) => ({
+      addressId,
+      rows
+    }));
+  }
+
+  const mainnetFor = (networkId: string) => mainnets.find((option) => option.id === networkId);
+  const selectableTokens = (networkId: string) => {
+    const mainnet = mainnetFor(networkId);
+    return mainnet?.enabledAssets.filter((asset) => (
+      asset.id !== mainnet.nativeAssetId && asset.contractOrMint
+    )) ?? [];
+  };
+
+  const toggleNewAsset = (assetId: string) => {
+    const next = new Set(selectedNewAssetIds);
+    if (next.has(assetId)) next.delete(assetId);
+    else next.add(assetId);
+    selectedNewAssetIds = next;
+  };
+
+  const toggleAddressAsset = ({ addressId, assetId }: { addressId: string; assetId: string }) => {
+    const selected = new Set(addressAssetSelections[addressId] ?? []);
+    if (selected.has(assetId)) selected.delete(assetId);
+    else selected.add(assetId);
+    addressAssetSelections = {
+      ...addressAssetSelections,
+      [addressId]: [...selected]
+    };
+  };
+
+  const formatDate = (value: string | null) => (
+    value
+      ? formatDateTime({ value, timezone })
+      : 'not reached'
+  );
+
+  const formatCurrentValue = ({
+    holding,
+    currency
+  }: {
+    holding: Holding;
+    currency: string;
+  }) => {
+    if (!holding.balanceObserved) return 'balance unavailable';
+    const value = holding.currentValues[currency];
+    if (value === null || value === undefined) return `unpriced (${currency})`;
+    return Number(value).toLocaleString(undefined, {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
+  };
+
+  const partialMessage = () => {
+    const labels = addresses
+      .filter((item) => item.history.status !== 'complete')
+      .map((item) => `${item.label} (${item.history.status})`);
+    const unpricedCount = holdings.filter((holding) => Number(holding.pricedCoveragePercent) < 100).length;
+    const parts = [];
+    if (labels.length > 0) parts.push(`Incomplete provider history: ${labels.join(', ')}.`);
+    if (unpricedCount > 0) parts.push(`${unpricedCount} holding${unpricedCount === 1 ? ' is' : 's are'} not fully priced.`);
+    parts.push('Settings → Synchronization shows whether work is active and the oldest point reached.');
+    return parts.join(' ');
+  };
+
+  const load = async () => {
+    loading = true;
+    error = '';
+    try {
+      const settingsPayload = await apiRequest<{
+        settings: {
+          primaryCurrency: string;
+          tooltipCurrencies: string[];
+          timezone: string;
+          pageLayouts: Record<string, string[]>;
+          collapsedBlocks: Record<string, string[]>;
+          tableColumns: Record<string, string[]>;
+          savedGraphs: SavedGraph[];
+          dismissedNotices: string[];
+        };
+      }>({ url: '/api/settings' });
+      primaryCurrency = settingsPayload.settings.primaryCurrency;
+      tooltipCurrencies = settingsPayload.settings.tooltipCurrencies;
+      timezone = settingsPayload.settings.timezone;
+      pageLayouts = settingsPayload.settings.pageLayouts;
+      collapsedBlocks = settingsPayload.settings.collapsedBlocks ?? {};
+      tableColumns = settingsPayload.settings.tableColumns;
+      savedGraphs = settingsPayload.settings.savedGraphs;
+      dismissedNotices = settingsPayload.settings.dismissedNotices ?? [];
+      const requestedCurrencies = configuredCurrencies({
+        primaryCurrency,
+        listedCurrencies: tooltipCurrencies
+      });
+      holdingColumnOptions = buildHoldingColumnOptions(requestedCurrencies);
+      defaultHoldingColumns = buildDefaultHoldingColumns(primaryCurrency);
+      pageOrder = normalizeOrder({ saved: pageLayouts.addresses, defaults: defaultPageOrder });
+      const savedHoldingColumns = tableColumns.addressHoldings?.flatMap((id) => (
+        id === 'value' ? [`value:${primaryCurrency}`] : [id]
+      ));
+      selectedHoldingColumns = savedHoldingColumns?.length
+        ? savedHoldingColumns.filter((id) => holdingColumnOptions.some((column) => column.id === id))
+        : [...defaultHoldingColumns];
+      const [addressPayload, networkPayload, holdingPayload, seriesPayload] = await Promise.all([
+        apiRequest<{ addresses: TrackedAddress[] }>({ url: '/api/addresses' }),
+        apiRequest<{
+          mainnets: MainnetOption[];
+          unmappedAssets: Array<{ id: string; symbol: string }>;
+        }>({ url: '/api/addresses/networks' }),
+        apiRequest<{ holdings: Holding[] }>({
+          url: `/api/addresses/holdings?quoteCurrency=${primaryCurrency}&quoteCurrencies=${encodeURIComponent(requestedCurrencies.join(','))}`
+        }),
+        apiRequest<{ data: {
+          series: ChartSeries[];
+          events: ChartEvent[];
+          denominationOptions: ChartDenominationOption[];
+          partial: boolean;
+          stale: boolean;
+          granularitySeconds: number;
+        } }>({
+          url: `/api/addresses/series?quoteCurrency=${primaryCurrency}&quoteCurrencies=${encodeURIComponent(tooltipCurrencies.join(','))}&from=${fromMs}&to=${toMs}&granularitySeconds=${granularity}`
+        })
+      ]);
+      addresses = addressPayload.addresses;
+      addressAssetSelections = Object.fromEntries(addresses.map((item) => [
+        item.id,
+        item.assets.filter((asset) => asset.enabled).map((asset) => asset.canonicalAssetId)
+      ]));
+      mainnets = networkPayload.mainnets;
+      unmappedMainnetAssets = networkPayload.unmappedAssets;
+      if (!mainnets.some((option) => option.id === network && option.supported)) {
+        const firstSupported = mainnets.find((option) => option.supported);
+        if (firstSupported) network = firstSupported.id as Network;
+      }
+      holdings = holdingPayload.holdings;
+      series = seriesPayload.data.series;
+      events = seriesPayload.data.events;
+      denominationOptions = seriesPayload.data.denominationOptions;
+      partial = seriesPayload.data.partial;
+      stale = seriesPayload.data.stale;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : 'Addresses failed to load.';
+    } finally {
+      loading = false;
+    }
+  };
+
+  const addAddress = async () => {
+    error = '';
+    const selectedMainnet = mainnets.find((option) => option.id === network);
+    if (!selectedMainnet?.supported) {
+      error = selectedMainnet?.reason ?? 'Choose a configured mainnet before adding an address.';
+      return;
+    }
+    const knownAssets = selectableTokens(network)
+      .filter((asset) => selectedNewAssetIds.has(asset.id))
+      .map((asset) => ({
+        canonicalAssetId: asset.id,
+        contractOrMint: asset.contractOrMint
+      }));
+    const assets = [
+      ...knownAssets,
+      ...(optionalAssetId && contractOrMint && !knownAssets.some((asset) => (
+        asset.canonicalAssetId === optionalAssetId
+      ))
+        ? [{ canonicalAssetId: optionalAssetId, contractOrMint }]
+        : [])
+    ];
+    try {
+      await apiRequest({
+        url: '/api/addresses',
+        method: 'POST',
+        body: {
+          network,
+          address,
+          label,
+          enabled: true,
+          assets
+        }
+      });
+      address = '';
+      label = '';
+      optionalAssetId = '';
+      contractOrMint = '';
+      selectedNewAssetIds = new Set();
+      await load();
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : 'Address could not be added.';
+    }
+  };
+
+  const toggle = async ({ item }: { item: TrackedAddress }) => {
+    await apiRequest({
+      url: `/api/addresses/${item.id}`,
+      method: 'PATCH',
+      body: {
+        enabled: !item.enabled
+      }
+    });
+    await load();
+  };
+
+  const refresh = async ({ item }: { item: TrackedAddress }) => {
+    const result = await apiRequest<{ skipped?: boolean }>({
+      url: `/api/addresses/${item.id}/refresh`,
+      method: 'POST',
+      body: {}
+    });
+    message = result.skipped
+      ? `${item.label} was not queued because its chain-history provider is not configured.`
+      : `Refresh queued for ${item.label}. Settings shows its live progress and oldest point reached.`;
+    await load();
+  };
+
+  const saveAddressAssets = async ({ item }: { item: TrackedAddress }) => {
+    const mainnet = mainnetFor(item.network);
+    const selected = new Set(addressAssetSelections[item.id] ?? []);
+    const assets = (mainnet?.enabledAssets ?? [])
+      .filter((asset) => (
+        asset.id !== mainnet?.nativeAssetId
+        && selected.has(asset.id)
+        && asset.contractOrMint
+      ))
+      .map((asset) => ({
+        canonicalAssetId: asset.id,
+        contractOrMint: asset.contractOrMint
+      }));
+    try {
+      const result = await apiRequest<{ refresh: { skipped?: boolean } }>({
+        url: `/api/addresses/${item.id}/assets`,
+        method: 'PUT',
+        body: { assets }
+      });
+      message = result.refresh.skipped
+        ? `Saved tracked assets for ${item.label}. History will remain unavailable until its chain provider is configured.`
+        : `Saved tracked assets for ${item.label}; a full read-only history replay was queued.`;
+      await load();
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : 'Tracked assets could not be saved.';
+    }
+  };
+
+  const remove = async ({ item }: { item: TrackedAddress }) => {
+    if (!confirm(`Delete ${item.label}? Address-specific history will be removed; shared market cache remains.`)) return;
+    await apiRequest({
+      url: `/api/addresses/${item.id}`,
+      method: 'DELETE'
+    });
+    await load();
+  };
+
+  const moveBlock = async (event: CustomEvent<{ id: string; direction: 'up' | 'down' }>) => {
+    pageOrder = moveInOrder({ order: pageOrder, id: event.detail.id, direction: event.detail.direction });
+    pageLayouts = { ...pageLayouts, addresses: pageOrder };
+    await savePreferences({ pageLayouts });
+  };
+
+  const toggleBlockCollapse = async (event: CustomEvent<{ id: string }>) => {
+    collapsedBlocks = {
+      ...collapsedBlocks,
+      addresses: toggleCollapsed({ collapsed: collapsedBlocks.addresses ?? [], id: event.detail.id })
+    };
+    await savePreferences({ collapsedBlocks });
+  };
+
+  const updateHoldingColumns = async (event: CustomEvent<{ selected: string[] }>) => {
+    selectedHoldingColumns = event.detail.selected;
+    tableColumns = { ...tableColumns, addressHoldings: selectedHoldingColumns };
+    await savePreferences({ tableColumns });
+  };
+
+  const saveTable = async () => {
+    const name = tableDashboardName.trim() || 'Address holdings';
+    if (savedGraphNameExists({ savedGraphs, name })) {
+      error = `A dashboard item named “${name}” already exists. Choose a unique name.`;
+      message = '';
+      return;
+    }
+    error = '';
+    const table = createSavedGraph({
+      name,
+      type: 'addresses',
+      config: {
+        dashboardView: 'table',
+        tableId: 'addressHoldings',
+        columns: selectedHoldingColumns,
+        currency: primaryCurrency,
+        timezone
+      }
+    });
+    savedGraphs = [...savedGraphs, table];
+    await savePreferences({ savedGraphs });
+    message = `Saved table “${table.name}” to the dashboard.`;
+  };
+
+  const dismissNotice = async (event: CustomEvent<{ id: string }>) => {
+    dismissedNotices = [...new Set([...dismissedNotices, event.detail.id])];
+    await savePreferences({ dismissedNotices });
+  };
+
+  const graphStateChanged = (event: CustomEvent<{
+    range: string;
+    granularity: string;
+    customFromMs: number | null;
+    customToMs: number | null;
+    customRangeMode: 'dates' | 'ago';
+    customAgoValue: number;
+    customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
+  }>) => {
+    const ranges: Record<string, number> = {
+      '24h': 24 * 60 * 60_000,
+      '7d': 7 * 24 * 60 * 60_000,
+      '30d': 30 * 24 * 60 * 60_000,
+      '90d': 90 * 24 * 60 * 60_000,
+      '1y': 365 * 24 * 60 * 60_000,
+      all: 5 * 365 * 24 * 60 * 60_000,
+      custom: 90 * 24 * 60 * 60_000
+    };
+    toMs = event.detail.range === 'custom' && event.detail.customToMs !== null
+      ? event.detail.customToMs
+      : Date.now();
+    fromMs = event.detail.range === 'all'
+      ? 0
+      : event.detail.range === 'custom' && event.detail.customFromMs !== null
+        ? event.detail.customFromMs
+        : toMs - (ranges[event.detail.range] ?? ranges['90d']);
+    granularity = event.detail.granularity === 'auto' ? 86_400 : Number(event.detail.granularity);
+    void load();
+  };
+
+  const saveGraph = async (event: CustomEvent<{
+    name: string;
+    range: string;
+    granularity: string;
+    chartMode: 'line' | 'candlestick';
+    scale: 'linear' | 'log';
+    normalized: boolean;
+    showEvents: boolean;
+    showVolume: boolean;
+    yAxisUnit: string;
+    customFromMs: number | null;
+    customToMs: number | null;
+    customRangeMode: 'dates' | 'ago';
+    customAgoValue: number;
+    customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
+  }>) => {
+    if (savedGraphNameExists({ savedGraphs, name: event.detail.name })) {
+      error = `A dashboard item named “${event.detail.name.trim()}” already exists. Choose a unique name.`;
+      message = '';
+      return;
+    }
+    error = '';
+    const graph = createSavedGraph({
+      name: event.detail.name,
+      type: 'addresses',
+      config: {
+        currency: primaryCurrency,
+        tooltipCurrencies: [...new Set([primaryCurrency, ...tooltipCurrencies])],
+        timezone,
+        ...event.detail
+      }
+    });
+    savedGraphs = [...savedGraphs, graph];
+    await savePreferences({ savedGraphs });
+    message = `Saved “${graph.name}” to the dashboard.`;
+  };
+
+  onMount(() => {
+    void load();
+  });
+</script>
+
+<main class="page">
+  <header>
+    <p class="eyebrow">Public blockchain history</p>
+    <h1>{strings['cryptotracker-addresses-title']}</h1>
+    <p class="muted">Track only public addresses and explicitly selected assets. CryptoTracker never asks for a private key, seed phrase, xpub, or signature.</p>
+  </header>
+
+  {#if error}<div class="alert danger" role="alert">{error}</div>{/if}
+  {#if message}<div class="alert mid" role="status">{message}</div>{/if}
+  {#if addresses.some((item) => item.history.status !== 'complete')}
+    <div class="alert warning">{partialMessage()}</div>
+  {/if}
+
+  <div class="address-page-grid">
+  {#each pageOrder as blockId, index (blockId)}
+    <div class:wide-address-block={blockId === 'chart' || blockId === 'holdings'}>
+    <ReorderableBlock
+      {blockId}
+      label={blockId}
+      {index}
+      total={pageOrder.length}
+      collapsed={collapsedBlocks.addresses?.includes(blockId) ?? false}
+      on:move={moveBlock}
+      on:toggle={toggleBlockCollapse}
+    >
+      {#if blockId === 'add'}
+        <section class="panel">
+          <p class="eyebrow">Add an address</p>
+          <h2>Native asset plus optional selected token</h2>
+          <DismissableNotice
+            noticeId="addresses-provider-privacy"
+            dismissed={dismissedNotices.includes('addresses-provider-privacy')}
+            on:dismiss={dismissNotice}
+          >{strings['cryptotracker-address_privacy-label']}</DismissableNotice>
+          <form class="address-form" on:submit|preventDefault={addAddress}>
+            <div class="field">
+              <label for="network">Network</label>
+              <select id="network" bind:value={network}>
+                {#each mainnets as mainnet (mainnet.id)}
+                  <option value={mainnet.id} disabled={!mainnet.supported}>
+                    {mainnet.label} · {mainnet.enabledAssets.map((asset) => asset.symbol).join(', ')}
+                    {mainnet.supported ? '' : ' · provider required'}
+                  </option>
+                {/each}
+              </select>
+            </div>
+            <div class="field grow">
+              <label for="address">Public address</label>
+              <input id="address" bind:value={address} required autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="label">Label</label>
+              <input id="label" bind:value={label} required />
+            </div>
+            {#if network === 'ethereum' || network === 'solana'}
+              {#each selectableTokens(network) as asset (asset.id)}
+                <label class="check token-choice">
+                  <input
+                    type="checkbox"
+                    checked={selectedNewAssetIds.has(asset.id)}
+                    on:change={() => toggleNewAsset(asset.id)}
+                  />
+                  Track {asset.symbol}
+                </label>
+              {/each}
+              <div class="field">
+                <label for="optional-asset">Other canonical asset ID</label>
+                <input id="optional-asset" bind:value={optionalAssetId} placeholder={network === 'ethereum' ? 'usd-coin-ethereum' : 'usd-coin-solana'} />
+              </div>
+              <div class="field grow">
+                <label for="contract-mint">{network === 'ethereum' ? 'ERC-20 contract' : 'SPL mint'}</label>
+                <input id="contract-mint" bind:value={contractOrMint} />
+              </div>
+            {/if}
+            <button
+              type="submit"
+              disabled={!mainnets.some((option) => option.id === network && option.supported)}
+            >Add and synchronize</button>
+          </form>
+          {#each mainnets.filter((mainnet) => !mainnet.supported) as mainnet (mainnet.id)}
+            <p class="muted">{mainnet.label} is shown because {mainnet.enabledAssets.map((asset) => asset.symbol).join(', ')} is enabled. {mainnet.reason}</p>
+          {/each}
+          {#if mainnets.some((mainnet) => !mainnet.supported)}
+            <p class="muted">
+              Kraken, Coinbase, and CoinGecko provide market prices; they do not provide transaction history for arbitrary public wallet addresses.
+            </p>
+          {/if}
+          {#if unmappedMainnetAssets.length > 0}
+            <p class="muted">
+              No reviewed mainnet mapping is available yet for
+              {unmappedMainnetAssets.map((asset) => asset.symbol).join(', ')}.
+            </p>
+          {/if}
+        </section>
+
+      {:else if blockId === 'tracked'}
+        <section class="panel">
+          <p class="eyebrow">Tracked addresses</p>
+          <h2>Synchronization and series state</h2>
+          <div class="address-list">
+            {#each addresses as item}
+              <article class="card address-card">
+                <div>
+                  <span class="badge {item.enabled ? 'mid' : 'warning'}">{item.enabled ? 'enabled' : 'disabled'}</span>
+                  <span class="badge {item.history.status === 'complete' ? 'mid' : item.history.status === 'error' ? 'danger' : 'warning'}">{item.history.status}</span>
+                </div>
+                <h3>{item.label}</h3>
+                <code>{item.address}</code>
+                <p class="muted">Oldest reconstructed: {formatDate(item.history.oldestReconstructedAt)} · last successful check: {formatDate(item.history.lastSuccessfulSync)}</p>
+                <div class="asset-badges">
+                  {#each item.assets as asset}
+                    <span class="badge {asset.enabled ? 'start' : ''}">{asset.canonicalAssetId}</span>
+                  {/each}
+                </div>
+                {#if mainnetFor(item.network) && !mainnetFor(item.network)?.supported}
+                  <div class="alert warning provider-required">
+                    <strong>{mainnetFor(item.network)?.label} synchronization is unavailable.</strong>
+                    {mainnetFor(item.network)?.reason}
+                  </div>
+                {/if}
+                {#if selectableTokens(item.network).length > 0}
+                  <div class="tracked-assets">
+                    <span class="label">Assets tracked for this address</span>
+                    <div class="tracked-asset-options">
+                      <label class="check">
+                        <input type="checkbox" checked disabled />
+                        {mainnetFor(item.network)?.enabledAssets.find((asset) => (
+                          asset.id === mainnetFor(item.network)?.nativeAssetId
+                        ))?.symbol ?? mainnetFor(item.network)?.nativeAssetId}
+                        · native asset
+                      </label>
+                      {#each selectableTokens(item.network) as asset (asset.id)}
+                        <label class="check">
+                          <input
+                            type="checkbox"
+                            checked={(addressAssetSelections[item.id] ?? []).includes(asset.id)}
+                            on:change={() => toggleAddressAsset({
+                              addressId: item.id,
+                              assetId: asset.id
+                            })}
+                          />
+                          {asset.symbol}
+                        </label>
+                      {/each}
+                      <button class="secondary compact" type="button" on:click={() => saveAddressAssets({ item })}>
+                        Save tracked assets
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+                <div class="toolbar">
+                  <button class="secondary" type="button" on:click={() => toggle({ item })}>{item.enabled ? 'Disable' : 'Enable'}</button>
+                  <button class="ghost" type="button" on:click={() => refresh({ item })}>Refresh</button>
+                  <button class="danger" type="button" on:click={() => remove({ item })}>Delete</button>
+                </div>
+              </article>
+            {/each}
+          </div>
+        </section>
+
+      {:else if blockId === 'chart'}
+        <PortfolioChart
+          title="Address portfolio history"
+          {series}
+          chartMode="line"
+          currency={primaryCurrency}
+          tooltipCurrencies={activeCurrencies}
+          {denominationOptions}
+          source="combined"
+          {timezone}
+          {granularity}
+          {partial}
+          {stale}
+          {events}
+          busy={loading}
+          saveable
+          partialMessage={partialMessage()}
+          emptyMessage="No address portfolio history is cached yet. Add a public address or use Refresh on a tracked address, then follow progress in Settings → Synchronization."
+          on:stateChange={graphStateChanged}
+          on:saveGraph={saveGraph}
+        />
+
+      {:else if blockId === 'holdings'}
+        <section class="panel">
+          <p class="eyebrow">Holdings</p>
+          <h2>Quantity, priced value, and coverage</h2>
+          <ColumnConfigurator
+            label="Configure holdings columns"
+            columns={holdingColumnOptions}
+            selected={selectedHoldingColumns}
+            defaults={defaultHoldingColumns}
+            on:change={updateHoldingColumns}
+          />
+          <div class="toolbar save-table">
+            <div class="field grow">
+              <label for="address-table-dashboard-name">Dashboard table name</label>
+              <input id="address-table-dashboard-name" maxlength="120" bind:value={tableDashboardName} />
+            </div>
+            <button class="secondary" type="button" on:click={saveTable}>Save table to dashboard</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  {#each selectedHoldingColumns as columnId}
+                    <th>{holdingColumnOptions.find((column) => column.id === columnId)?.label ?? columnId}</th>
+                  {/each}
+                </tr>
+              </thead>
+              <tbody>
+                {#each holdingGroups as group (group.addressId)}
+                  {#each group.rows as holding, holdingIndex (`${holding.addressId}:${holding.assetId}`)}
+                    <tr>
+                      {#each selectedHoldingColumns as columnId}
+                        {#if !['label', 'address'].includes(columnId) || holdingIndex === 0}
+                        <td rowspan={['label', 'address'].includes(columnId) ? group.rows.length : undefined}>
+                        {#if columnId === 'label'}
+                          {holding.label}
+                        {:else if columnId === 'address'}
+                          <code>{holding.address}</code>
+                        {:else if columnId === 'network'}
+                          {holding.network}
+                        {:else if columnId === 'asset'}
+                          <strong>{holding.assetSymbol}</strong>
+                          <span class="asset-name">{holding.assetName}</span>
+                        {:else if columnId === 'quantity'}
+                          {#if holding.balanceObserved}
+                            {formatDisplayNumber({ value: holding.quantity })}
+                          {:else}
+                            <span class="unavailable" title={holding.balanceReason ?? ''}>unavailable</span>
+                          {/if}
+                        {:else if columnId.startsWith('value:')}
+                          {@const currency = columnId.slice('value:'.length)}
+                          <span class:unavailable={!holding.balanceObserved} title={holding.balanceReason ?? ''}>
+                            {formatCurrentValue({ holding, currency })}
+                          </span>
+                        {:else if columnId === 'coverage'}
+                          {holding.balanceObserved
+                            ? `${formatPercent(holding.pricedCoveragePercent)}% priced`
+                            : 'unavailable'}
+                        {:else if columnId === 'history'}
+                          {holding.completeness}
+                        {:else if columnId === 'oldest'}
+                          {formatDate(holding.oldestReconstructedAt)}
+                        {:else if columnId === 'lastSync'}
+                          {formatDate(holding.lastSuccessfulSync)}
+                        {/if}
+                      </td>
+                        {/if}
+                      {/each}
+                    </tr>
+                  {/each}
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      {/if}
+    </ReorderableBlock>
+    </div>
+  {/each}
+  </div>
+</main>
+
+<style>
+  .address-page-grid {
+    display: block;
+  }
+
+  .unavailable {
+    color: var(--color-warning);
+    text-decoration: underline dotted;
+    text-underline-offset: 0.2rem;
+    cursor: help;
+  }
+
+  .asset-name {
+    display: block;
+    color: var(--color-muted);
+    font-size: 0.8rem;
+  }
+
+  .address-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.7rem;
+  }
+
+  .address-list {
+    display: grid;
+    gap: 0.8rem;
+  }
+
+  .address-card code,
+  td code {
+    display: block;
+    max-width: 28rem;
+    overflow-wrap: anywhere;
+  }
+
+  .address-card h3 {
+    margin: 0.7rem 0 0.3rem;
+  }
+
+  .asset-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .token-choice {
+    align-self: center;
+    min-height: 2.8rem;
+  }
+
+  .tracked-assets {
+    margin-bottom: 0.8rem;
+    padding: 0.7rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-panel);
+  }
+
+  .tracked-asset-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.7rem;
+    margin-top: 0.5rem;
+  }
+
+  .provider-required {
+    margin: 0 0 0.8rem;
+  }
+
+  @media (min-width: 80rem) {
+    .address-list {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+</style>

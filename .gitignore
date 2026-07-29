@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.svelte-kit/
+coverage/
+playwright-report/
+test-results/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+build-info.json
+config/cryptotracker.config.json5
+config/cryptotracker.secrets.json5
+data/
+.env
+/C:/

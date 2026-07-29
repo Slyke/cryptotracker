@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cryptotracker-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cryptotracker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cryptotracker
+  template:
+    metadata:
+      labels:
+        app: cryptotracker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cryptotracker
+          image: your-registry/cryptotracker:v0.1.0-commit
+          ports:
+            - name: http
+              containerPort: 8192
+          env:
+            - name: CRYPTOTRACKER_CONFIG_PATH
+              value: /app/config/cryptotracker.config.json5
+            - name: CRYPTOTRACKER_SECRETS_PATH
+              value: /app/config/cryptotracker.secrets.json5
+            - name: CRYPTOTRACKER_DB_KIND
+              value: sqlite
+            - name: CRYPTOTRACKER_SQLITE_PATH
+              value: /app/data/cryptotracker.sqlite
+            - name: LOG_K8S_METADATA_ENABLED
+              value: "true"
+            - name: TMPDIR
+              value: /tmp/cryptotracker
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: config
+              mountPath: /app/config/cryptotracker.config.json5
+              subPath: cryptotracker.config.json5
+              readOnly: true
+            - name: secrets
+              mountPath: /app/config/cryptotracker.secrets.json5
+              subPath: cryptotracker.secrets.json5
+              readOnly: true
+            - name: temp
+              mountPath: /tmp/cryptotracker
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cryptotracker-data
+        - name: config
+          configMap:
+            name: cryptotracker
+        - name: secrets
+          secret:
+            secretName: cryptotracker
+        - name: temp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cryptotracker
+spec:
+  selector:
+    app: cryptotracker
+  ports:
+    - name: http
+      port: 8192
+      targetPort: http

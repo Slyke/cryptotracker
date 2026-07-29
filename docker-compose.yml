@@ -1,0 +1,61 @@
+services:
+  cryptotracker:
+    env_file:
+      - path: .env
+        required: false
+    build:
+      context: .
+      dockerfile: dockerfiles/cryptotracker.Dockerfile
+      args:
+        BUILD_HASH: ${BUILD_HASH:-unknown}
+    restart: unless-stopped
+    init: true
+    environment:
+      CRYPTOTRACKER_CONFIG_PATH: /app/config/cryptotracker.config.json5
+      CRYPTOTRACKER_SECRETS_PATH: /app/config/cryptotracker.secrets.json5
+      CRYPTOTRACKER_DB_KIND: ${CRYPTOTRACKER_DB_KIND:-sqlite}
+      CRYPTOTRACKER_SQLITE_PATH: /app/data/cryptotracker.sqlite
+      CRYPTOTRACKER_PUBLIC_BASE_URL: ${CRYPTOTRACKER_PUBLIC_BASE_URL:-http://localhost:8192}
+      TMPDIR: /tmp/cryptotracker
+      LOG_K8S_METADATA_ENABLED: "false"
+    volumes:
+      - ./config/cryptotracker.config.json5:/app/config/cryptotracker.config.json5:ro
+      - ./config/cryptotracker.secrets.json5:/app/config/cryptotracker.secrets.json5:ro
+      - cryptotracker-data:/app/data
+      - type: tmpfs
+        target: /tmp/cryptotracker
+    ports:
+      - "8192:8192"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8192/readyz').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  postgres:
+    image: postgres:17.6-bookworm
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cryptotracker
+      POSTGRES_USER: cryptotracker
+      POSTGRES_PASSWORD: ${CRYPTOTRACKER_POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - cryptotracker-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cryptotracker -d cryptotracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  cryptotracker-data:
+  cryptotracker-postgres:

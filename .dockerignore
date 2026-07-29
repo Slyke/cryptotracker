@@ -1,0 +1,17 @@
+.git
+.github
+node_modules
+**/node_modules
+**/.svelte-kit
+**/dist
+**/build
+coverage
+playwright-report
+test-results
+data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+config/cryptotracker.config.json5
+config/cryptotracker.secrets.json5
+.env

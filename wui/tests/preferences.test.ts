@@ -1,0 +1,87 @@
+import { describe, expect, it } from 'vitest';
+import {
+  formatDateTime,
+  formatDisplayNumber,
+  formatPercent,
+  moveInOrder,
+  normalizeOrder,
+  relativeRangeWindow,
+  savedGraphNameExists,
+  toggleCollapsed
+} from '../src/lib/preferences.js';
+
+describe('database-backed UI preferences', () => {
+  it('normalizes saved block order without duplicates or unknown blocks', () => {
+    expect(normalizeOrder({
+      saved: ['chart', 'unknown', 'chart', 'controls'],
+      defaults: ['controls', 'chart', 'table']
+    })).toEqual(['chart', 'controls', 'table']);
+  });
+
+  it('moves blocks one position and leaves boundary moves unchanged', () => {
+    expect(moveInOrder({
+      order: ['one', 'two', 'three'],
+      id: 'two',
+      direction: 'up'
+    })).toEqual(['two', 'one', 'three']);
+    expect(moveInOrder({
+      order: ['one', 'two', 'three'],
+      id: 'one',
+      direction: 'up'
+    })).toEqual(['one', 'two', 'three']);
+  });
+
+  it('toggles a block in the persisted collapsed list', () => {
+    expect(toggleCollapsed({ collapsed: ['sync'], id: 'storage' })).toEqual(['sync', 'storage']);
+    expect(toggleCollapsed({ collapsed: ['sync', 'storage'], id: 'sync' })).toEqual(['storage']);
+  });
+
+  it('rounds displayed pricing percentages to two decimals', () => {
+    expect(formatPercent('7.1428571428571428571')).toBe('7.14');
+    expect(formatPercent(100)).toBe('100.00');
+  });
+
+  it('rounds values at magnitude ten to two decimals while retaining small-value precision', () => {
+    expect(formatDisplayNumber({
+      value: '11103.908554971',
+      locale: 'en-CA'
+    })).toBe('11,103.91');
+    expect(formatDisplayNumber({ value: '0.12345678', locale: 'en-CA' })).toBe('0.12345678');
+    expect(formatDisplayNumber({ value: '-10.005', locale: 'en-CA' })).toBe('-10.01');
+  });
+
+  it('formats all displayed timestamps as YYYY-MM-DD and 24-hour time', () => {
+    expect(formatDateTime({ value: '2026-07-28T19:45:00Z', timezone: 'UTC' }))
+      .toBe('2026-07-28, 19:45');
+  });
+
+  it('detects duplicate dashboard item names without case or surrounding-space differences', () => {
+    const savedGraphs = [{
+      id: 'existing',
+      name: 'Market History',
+      type: 'market' as const,
+      hidden: false,
+      config: {}
+    }];
+    expect(savedGraphNameExists({ savedGraphs, name: ' market history ' })).toBe(true);
+    expect(savedGraphNameExists({
+      savedGraphs,
+      name: 'Market History',
+      excludingId: 'existing'
+    })).toBe(false);
+    expect(savedGraphNameExists({ savedGraphs, name: 'Kraken History' })).toBe(false);
+  });
+
+  it('resolves rolling custom ranges in hours, days, weeks, months, and years', () => {
+    const toMs = Date.UTC(2026, 6, 28, 12);
+    expect(relativeRangeWindow({ value: 6, unit: 'hours', toMs })?.from)
+      .toBe(Date.UTC(2026, 6, 28, 6));
+    expect(relativeRangeWindow({ value: 2, unit: 'weeks', toMs })?.from)
+      .toBe(Date.UTC(2026, 6, 14, 12));
+    expect(relativeRangeWindow({ value: 3, unit: 'months', toMs })?.from)
+      .toBe(Date.UTC(2026, 3, 28, 12));
+    expect(relativeRangeWindow({ value: 1, unit: 'years', toMs })?.from)
+      .toBe(Date.UTC(2025, 6, 28, 12));
+    expect(relativeRangeWindow({ value: 0, unit: 'days', toMs })).toBeNull();
+  });
+});

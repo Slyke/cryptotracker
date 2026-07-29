@@ -1,0 +1,145 @@
+{
+  appName: 'CryptoTracker',
+  publicBaseUrl: 'http://localhost:8192',
+  api: {
+    host: '0.0.0.0',
+    port: 8192,
+    trustProxy: false,
+    bodyLimit: '256kb',
+  },
+  wui: {
+    upstreamBaseUrl: 'http://127.0.0.1:3000',
+    healthPath: '/wui-health',
+    timeoutMs: 10000,
+  },
+  ui: {
+    locale: 'en-CA',
+    timezone: 'America/Vancouver',
+    defaultTheme: 'dark',
+    defaultFont: 'ui-mono',
+    defaultContentWidth: 'standard',
+    defaultPrimaryCurrency: 'CAD',
+    defaultTooltipCurrencies: ['CAD'],
+    defaultMarketSource: 'combined',
+    defaultProviderDisagreementThresholdPercent: 5,
+    defaultWatchedAssets: ['bitcoin'],
+    defaultCostBasisMethod: 'acb',
+  },
+  auth: {
+    local: {
+      enabled: true,
+      username: 'admin',
+      sessionTtlMinutes: 1440,
+    },
+    header: {
+      enabled: false,
+      trustedCidrs: ['127.0.0.1/32', '::1/128'],
+      usernameHeader: 'Remote-User',
+      groupsHeader: 'Remote-Groups',
+      groupsSeparator: ',',
+      allowedUsers: [],
+      allowedGroups: [],
+      signedIdentity: {
+        enabled: false,
+        headerName: 'X-Oauth-Identity',
+        issuer: null,
+        audience: null,
+        clockSkewSeconds: 30,
+      },
+    },
+  },
+  database: {
+    sqlite: {
+      busyTimeoutMs: 5000,
+      synchronous: 'FULL',
+    },
+    postgres: {
+      host: 'postgres',
+      port: 5432,
+      database: 'cryptotracker',
+      user: 'cryptotracker',
+      poolMax: 10,
+      ssl: false,
+      rejectUnauthorized: true,
+    },
+  },
+  providers: {
+    market: {
+      coinGecko: {
+        enabled: true,
+        baseUrl: 'https://api.coingecko.com/api/v3',
+      },
+      coinbase: {
+        // Public candles are keyless; this integration never calls private endpoints.
+        enabled: true,
+        baseUrl: 'https://api.exchange.coinbase.com',
+      },
+      kraken: {
+        enabled: true,
+        baseUrl: 'https://api.kraken.com',
+      },
+    },
+    chains: {
+      bitcoin: {
+        enabled: true,
+        provider: 'esplora',
+        baseUrl: 'https://blockstream.info/api',
+        confirmations: 6,
+      },
+      dogecoin: {
+        // Public read-only address history works without a token; a token raises limits.
+        enabled: true,
+        provider: 'blockcypher',
+        baseUrl: 'https://api.blockcypher.com/v1/doge/main',
+        confirmations: 6,
+      },
+      ethereum: {
+        enabled: true,
+        provider: 'etherscan',
+        baseUrl: 'https://api.etherscan.io',
+        // Current balances remain available without an Etherscan history key.
+        rpcBaseUrl: 'https://ethereum-rpc.publicnode.com',
+        chainId: 1,
+        confirmations: 12,
+      },
+      polkadot: {
+        // Requires providers.subscanApiKey in the secrets file.
+        enabled: true,
+        provider: 'subscan',
+        baseUrl: 'https://polkadot.api.subscan.io',
+      },
+      solana: {
+        enabled: true,
+        provider: 'helius',
+        baseUrl: 'https://api.helius.xyz',
+        cluster: 'mainnet-beta',
+      },
+    },
+  },
+  sync: {
+    pollMinutes: 30,
+    maxConcurrentJobs: 2,
+    staleAfterMinutes: 90,
+    overlapBuckets: 3,
+  },
+  exports: {
+    directory: '/app/data/exports',
+    artifactTtlHours: 24,
+  },
+  logging: {
+    sinks: {
+      console: {
+        enabled: true,
+        format: 'text',
+        levels: [],
+      },
+    },
+    gates: {
+      SERVICE_BOOT_DIAGNOSTICS: {
+        enabled: true,
+        level: 'info',
+        console: true,
+      },
+    },
+  },
+}

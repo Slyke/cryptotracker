@@ -1,0 +1,29 @@
+{
+  "name": "cryptotracker-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "api",
+    "wui"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "npm run build:api && npm run build:wui",
+    "build:api": "npm run build --workspace cryptotracker-api",
+    "build:wui": "npm run build --workspace cryptotracker-wui",
+    "check": "npm run check:api && npm run check:wui",
+    "check:api": "npm run check --workspace cryptotracker-api",
+    "check:wui": "npm run check --workspace cryptotracker-wui",
+    "dev": "node runtime/dev-launcher.mjs",
+    "start": "node runtime/launcher.mjs",
+    "test": "npm run test:api && npm run test:wui",
+    "test:api": "npm run test --workspace cryptotracker-api",
+    "test:wui": "npm run test --workspace cryptotracker-wui",
+    "test:browser": "npm run test:browser --workspace cryptotracker-wui",
+    "write-build-info": "node scripts/write-build-info.mjs",
+    "error-validate": "npm run error-validate --workspace cryptotracker-api"
+  }
+}

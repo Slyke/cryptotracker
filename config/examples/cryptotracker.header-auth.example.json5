@@ -1,0 +1,26 @@
+{
+  publicBaseUrl: 'https://crypto.example.ca',
+  api: {
+    trustProxy: true,
+  },
+  auth: {
+    local: {
+      enabled: false,
+    },
+    header: {
+      enabled: true,
+      trustedCidrs: ['10.42.0.0/16'],
+      usernameHeader: 'Remote-User',
+      groupsHeader: 'Remote-Groups',
+      groupsSeparator: ',',
+      allowedUsers: ['operator'],
+      allowedGroups: ['crypto-viewers'],
+      signedIdentity: {
+        enabled: true,
+        headerName: 'X-Oauth-Identity',
+        issuer: 'https://oauth.example.ca',
+        audience: 'cryptotracker',
+      },
+    },
+  },
+}
