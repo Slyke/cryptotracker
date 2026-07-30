@@ -238,6 +238,8 @@
   let chartPoints: ChartPoint[] = [];
   let hasPlottedData = false;
   let renderedTimestamps: number[] = [];
+  let renderedRangeFromMs: number | null = null;
+  let renderedRangeToMs: number | null = null;
   let zoomWindow: { fromMs: number; toMs: number } | null = null;
   let lastDispatchedZoomKey = '';
   let zoomDispatchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -272,6 +274,28 @@
     [86_400, '1 day'],
     [604_800, '1 week']
   ]).get(seconds) ?? `${seconds.toLocaleString()} seconds`;
+  const selectedDisplayWindow = () => {
+    if (range === 'all') return null;
+    if (range === 'custom') {
+      const customWindow = customRangeWindow();
+      return customWindow.from !== null
+        && customWindow.to !== null
+        && customWindow.from < customWindow.to
+        ? { fromMs: customWindow.from, toMs: customWindow.to }
+        : null;
+    }
+    const durationMs = new Map([
+      ['24h', 24 * 60 * 60_000],
+      ['7d', 7 * 24 * 60 * 60_000],
+      ['30d', 30 * 24 * 60 * 60_000],
+      ['90d', 90 * 24 * 60 * 60_000],
+      ['1y', 365 * 24 * 60 * 60_000],
+      ['4y', 4 * 365 * 24 * 60 * 60_000]
+    ]).get(range);
+    if (durationMs === undefined) return null;
+    const toMs = Date.now();
+    return { fromMs: toMs - durationMs, toMs };
+  };
   const requestedGranularitySeconds = () => {
     const numeric = Number(selectedGranularity);
     return selectedGranularity === 'auto' || !Number.isFinite(numeric)
@@ -644,10 +668,17 @@
     const sourceSeries = normalized && chartMode === 'line'
       ? series.map((item) => ({ ...item, points: normalizedSeries(item) }))
       : series;
-    const timestamps = [...new Set(sourceSeries.flatMap((item) => (
+    const dataTimestamps = sourceSeries.flatMap((item) => (
       item.points.map((point) => point.timestampMs)
-    )))].sort((left, right) => left - right);
+    ));
+    const displayWindow = selectedDisplayWindow();
+    const timestamps = [...new Set([
+      ...dataTimestamps,
+      ...(displayWindow ? [displayWindow.fromMs, displayWindow.toMs] : [])
+    ])].sort((left, right) => left - right);
     renderedTimestamps = timestamps;
+    renderedRangeFromMs = displayWindow?.fromMs ?? timestamps[0] ?? null;
+    renderedRangeToMs = displayWindow?.toMs ?? timestamps.at(-1) ?? null;
     const retainedZoom = zoomWindow && timestamps.length > 1
       ? {
           startValue: timestamps.find((timestampMs) => timestampMs >= zoomWindow!.fromMs)
@@ -663,11 +694,21 @@
           id: item.id,
           name: item.label,
           type: 'candlestick',
+          encode: {
+            x: 0,
+            y: [1, 2, 3, 4]
+          },
           data: timestamps.map((timestampMs) => {
             const point = pointsByTimestamp.get(timestampMs);
             if (!point) {
               return {
-                value: [Number.NaN, Number.NaN, Number.NaN, Number.NaN],
+                value: [
+                  timestampMs,
+                  Number.NaN,
+                  Number.NaN,
+                  Number.NaN,
+                  Number.NaN
+                ],
                 meta: null
               };
             }
@@ -676,7 +717,7 @@
             const low = showWicks ? Number(point.low ?? Math.min(open, close)) : Math.min(open, close);
             const high = showWicks ? Number(point.high ?? Math.max(open, close)) : Math.max(open, close);
             return {
-              value: [open, close, low, high],
+              value: [timestampMs, open, close, low, high],
               meta: point
             };
           }),
@@ -716,11 +757,14 @@
           data: timestamps.map((timestampMs) => {
             const point = pointsByTimestamp.get(timestampMs);
             return {
-              value: point
-                ? normalized && chartMode === 'line'
-                  ? scaledValue(point.normalizedPercent)
-                  : scaledValue(plottedPointValue(point))
-                : null,
+              value: [
+                timestampMs,
+                point
+                  ? normalized && chartMode === 'line'
+                    ? scaledValue(point.normalizedPercent)
+                    : scaledValue(plottedPointValue(point))
+                  : null
+              ],
               meta: point ?? null
             };
           })
@@ -732,10 +776,6 @@
       point.timestampMs,
       point
     ]));
-    const timestampIndexes = new Map(timestamps.map((timestampMs, index) => [
-      timestampMs,
-      index
-    ]));
     if (showVolume && meaningfulVolume()) {
       chartSeries.push({
         id: 'volume',
@@ -745,9 +785,12 @@
         yAxisIndex: 1,
         data: timestamps.map((timestampMs) => {
           const point = primaryPointsByTimestamp.get(timestampMs);
-          return point?.volume === null || point?.volume === undefined
-            ? null
-            : Number(point.volume);
+          return [
+            timestampMs,
+            point?.volume === null || point?.volume === undefined
+              ? null
+              : Number(point.volume)
+          ];
         }),
         itemStyle: {
           color: 'rgba(0, 182, 255, 0.45)'
@@ -773,11 +816,9 @@
           : current
       ), null);
       if (!nearest) return [];
-      const categoryIndex = timestampIndexes.get(nearest.point.timestampMs);
-      if (categoryIndex === undefined) return [];
       return [{
         name: event.category,
-        coord: [categoryIndex, nearest.value],
+        coord: [nearest.point.timestampMs, nearest.value],
         value: event.category,
         event,
         pinnedTimestampMs: nearest.point.timestampMs,
@@ -888,27 +929,28 @@
       xAxis: showVolume && meaningfulVolume()
         ? [
             {
-              type: 'category',
-              data: timestamps,
-              axisLabel: { formatter: (value: string) => formatInTimezone({ timestampMs: Number(value), timezone }) },
+              type: 'time',
+              axisLabel: {
+                hideOverlap: true,
+                formatter: (value: number) => formatInTimezone({ timestampMs: value, timezone })
+              },
               axisPointer: { show: true },
-              boundaryGap: chartMode === 'candlestick',
+              boundaryGap: [0, 0],
               gridIndex: 0
             },
             {
-              type: 'category',
-              data: timestamps,
+              type: 'time',
               axisLabel: { show: false },
               gridIndex: 1
             }
           ]
         : {
-            type: 'category',
-            data: timestamps,
-            boundaryGap: chartMode === 'candlestick',
+            type: 'time',
+            boundaryGap: [0, 0],
             axisLabel: {
               color: mutedColor,
-              formatter: (value: string) => formatInTimezone({ timestampMs: Number(value), timezone })
+              hideOverlap: true,
+              formatter: (value: number) => formatInTimezone({ timestampMs: value, timezone })
             },
             axisPointer: { show: true }
           },
@@ -1062,7 +1104,7 @@
             const pixel = dataIndex >= 0 && plottedValue !== null
               ? chart?.convertToPixel(
                   { seriesIndex },
-                  [dataIndex, plottedValue]
+                  [point.timestampMs, plottedValue]
                 )
               : null;
             const distance = (
@@ -1085,6 +1127,7 @@
               distance
             }];
           });
+          if (tooltipPoints.length === 0) return '';
           const closestTooltipPoint = closestCandidateWithinRadius({
             candidates: tooltipPoints,
             radius: tooltipProximityRadius
@@ -1218,11 +1261,11 @@
       zoomDispatchTimer = null;
       return;
     }
-    const lastIndex = renderedTimestamps.length - 1;
-    const fromIndex = Math.max(0, Math.min(lastIndex, Math.floor((start / 100) * lastIndex)));
-    const toIndex = Math.max(fromIndex, Math.min(lastIndex, Math.ceil((end / 100) * lastIndex)));
-    const fromMs = renderedTimestamps[fromIndex]!;
-    const toMs = renderedTimestamps[toIndex]!;
+    const earliestTimestampMs = renderedTimestamps[0]!;
+    const latestTimestampMs = renderedTimestamps.at(-1)!;
+    const durationMs = Math.max(0, latestTimestampMs - earliestTimestampMs);
+    const fromMs = Math.round(earliestTimestampMs + (start / 100) * durationMs);
+    const toMs = Math.round(earliestTimestampMs + (end / 100) * durationMs);
     zoomWindow = { fromMs, toMs };
     if (zoomDispatchTimer) clearTimeout(zoomDispatchTimer);
     zoomDispatchTimer = setTimeout(() => {
@@ -1367,12 +1410,17 @@
 
   const showInspectionPoint = () => {
     if (busy) return;
+    const timestampMs = series[0]?.points[inspectionIndex]?.timestampMs;
+    const renderedDataIndex = timestampMs === undefined
+      ? -1
+      : renderedTimestamps.indexOf(timestampMs);
+    if (renderedDataIndex < 0) return;
     tooltipPointerPosition = null;
     scheduleChartHighlight(null);
     chart?.dispatchAction({
       type: 'showTip',
       seriesIndex: 0,
-      dataIndex: inspectionIndex
+      dataIndex: renderedDataIndex
     });
     describeInspectionPoint();
   };
@@ -1756,6 +1804,19 @@
     selectedGranularitySetting !== null
     && selectedGranularity !== selectedGranularitySetting
   ) selectedGranularity = selectedGranularitySetting;
+  $: if (compact) {
+    customRangeMode = initialCustomRangeMode;
+    customAgoValue = initialCustomAgoValue;
+    customAgoUnit = initialCustomAgoUnit;
+    customFrom = formatZonedDateTimeInput({
+      timestampMs: initialCustomFromMs ?? Date.now() - 30 * 24 * 60 * 60_000,
+      timezone
+    });
+    customTo = formatZonedDateTimeInput({
+      timestampMs: initialCustomToMs ?? Date.now(),
+      timezone
+    });
+  }
   $: if (
     !busy
     &&
@@ -1775,6 +1836,9 @@
   data-denomination-option-count={denominationOptions.length}
   data-active-axis-option-count={activeAxisDenominationOptions.length}
   data-effective-axis-option-count={effectiveDenominationOptionList.length}
+  data-chart-axis="time"
+  data-rendered-range-from-ms={renderedRangeFromMs ?? ''}
+  data-rendered-range-to-ms={renderedRangeToMs ?? ''}
 >
   {#if !compact}
   <div class="toolbar chart-toolbar">

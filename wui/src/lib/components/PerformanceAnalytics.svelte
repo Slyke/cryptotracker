@@ -348,7 +348,10 @@
     granularity={86_400}
     compact
     minimalChrome
-    initialRange="all"
+    initialRange={performanceRange}
+    initialCustomRangeMode="ago"
+    initialCustomAgoValue={customAgoValue}
+    initialCustomAgoUnit={customAgoUnit}
     minimumValuedObservations={2}
     emptyMessage="At least two valued observations are needed for performance analytics."
   />

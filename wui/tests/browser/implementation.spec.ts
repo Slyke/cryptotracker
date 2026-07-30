@@ -160,11 +160,12 @@ test('currency popup, refresh state, SHIB holdings, and Earn coverage work on re
     name: /address portfolio history keyboard chart inspector/i
   }).click();
   await expect(page.getByText('Exact asset amounts', { exact: true })).toHaveCount(0);
-  const combinedAddressLabel = page.getByText('Combined addresses', { exact: true });
-  await expect(combinedAddressLabel).toHaveCount(1);
-  const chartTooltip = combinedAddressLabel.locator(
-    'xpath=ancestor::div[contains(@style,"position: absolute")][1]'
+  const addressChartSurface = page.locator('.chart[aria-label^="Address portfolio history"]');
+  const chartTooltip = addressChartSurface.locator(
+    ':scope > div[style*="position: absolute"]'
   );
+  await expect(chartTooltip).toBeVisible();
+  await expect(chartTooltip.getByText('Combined addresses', { exact: true })).toHaveCount(1);
   const tooltipText = await chartTooltip.innerText();
   expect(tooltipText.match(/Combined addresses/g)).toHaveLength(1);
   expect(tooltipText).not.toContain('native');
@@ -236,6 +237,29 @@ test('Kraken Earn rates, configured currencies, and chart inspection controls ar
       name: 'Kraken portfolio history keyboard chart inspector'
     })
   });
+  const earnPanel = page.locator('.chart-panel').filter({
+    has: page.locator('.chart[aria-label^="Kraken Earn history."]')
+  });
+  const assertRenderedWindow = async ({
+    panel,
+    expectedDays
+  }: {
+    panel: typeof portfolioPanel;
+    expectedDays: number;
+  }) => {
+    await expect(panel).toHaveAttribute('data-chart-axis', 'time');
+    await expect(panel).not.toHaveAttribute('data-rendered-range-from-ms', '');
+    await expect(panel).not.toHaveAttribute('data-rendered-range-to-ms', '');
+    const renderedDays = await panel.evaluate((element) => (
+      (
+        Number(element.getAttribute('data-rendered-range-to-ms'))
+        - Number(element.getAttribute('data-rendered-range-from-ms'))
+      ) / 86_400_000
+    ));
+    expect(renderedDays).toBeCloseTo(expectedDays, 3);
+  };
+  await assertRenderedWindow({ panel: portfolioPanel, expectedDays: 30 });
+  await assertRenderedWindow({ panel: earnPanel, expectedDays: 365 });
   const showAll = portfolioPanel.getByLabel(
     'Show all, including disabled/inactive, in popup'
   );

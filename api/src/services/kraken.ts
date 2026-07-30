@@ -2225,14 +2225,6 @@ export class KrakenService {
     ) {
       timeline.add(timestampMs);
     }
-    for (const timestampMs of [
-      ...earnLedgerRows.map((row) => Number(row.occurred_at_ms)),
-      ...ledgerDeltas.keys(),
-      ...snapshotStates.keys(),
-      ...allocationObservationStates.keys()
-    ]) {
-      if (timestampMs >= effectiveFromMs && timestampMs <= toMs) timeline.add(timestampMs);
-    }
     const timestamps = [...timeline].sort((left, right) => left - right);
     const quoteAt = await this.historicalQuoteLookup({
       assetIds: priceAssetIds,

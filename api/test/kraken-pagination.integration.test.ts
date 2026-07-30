@@ -596,20 +596,21 @@ describe('Kraken read-only import', () => {
         quoteCurrencies: ['CAD']
       });
       expect(overview.series.find((item) => item.id === 'kraken-earn-total')?.points)
-        .toEqual(expect.arrayContaining([
+        .toEqual([
+          expect.objectContaining({ timestampMs: 1_000 }),
           expect.objectContaining({
-            timestampMs: 2_000,
+            timestampMs: 3_000,
             value: '70',
             quantities: {
               ethereum: '1',
               polkadot: '10'
             }
           })
-        ]));
+        ]);
       expect(overview.series.find((item) => item.id === 'kraken-earn:polkadot')?.points)
         .toEqual(expect.arrayContaining([
           expect.objectContaining({
-            timestampMs: 2_000,
+            timestampMs: 3_000,
             quantities: { polkadot: '10' }
           })
         ]));
