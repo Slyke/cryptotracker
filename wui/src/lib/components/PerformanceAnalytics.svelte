@@ -1,6 +1,8 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import PortfolioChart from './PortfolioChart.svelte';
+  import SearchableMultiSelect from './SearchableMultiSelect.svelte';
+  import type { ChartAxisOption } from '$lib/chart-axis-options';
   import {
     formatPercent,
     relativeRangeWindow,
@@ -19,6 +21,14 @@
   export let returnMethod: 'price' | 'value' = 'value';
   export let busy = false;
   export let saveable = false;
+  export let initialMode: PerformanceMode = 'return';
+  export let initialAnalysisId = '';
+  export let initialBenchmarkId = '';
+  export let initialRange = '30d';
+  export let initialCustomAgoValue = 1;
+  export let initialCustomAgoUnit: RelativeRangeUnit = 'years';
+  export let initialVisibleSeriesIds: string[] | null = null;
+  export let initialSaveGraphName = title;
 
   const dispatch = createEventDispatcher<{
     rangeChange: {
@@ -27,6 +37,9 @@
       toMs: number;
       customAgoValue: number;
       customAgoUnit: RelativeRangeUnit;
+    };
+    displayChange: {
+      visibleSeriesIds: string[];
     };
     saveGraph: {
       name: string;
@@ -37,6 +50,7 @@
       customRangeMode: 'ago';
       customAgoValue: number;
       customAgoUnit: RelativeRangeUnit;
+      visibleSeriesIds: string[];
     };
   }>();
 
@@ -50,19 +64,33 @@
     maxDrawdown: number | null;
   };
 
-  let mode: PerformanceMode = 'return';
-  let analysisId = '';
-  let benchmarkId = '';
-  let performanceRange = '30d';
-  let customAgoValue = 1;
-  let customAgoUnit: RelativeRangeUnit = 'years';
-  let saveGraphName = title;
+  let mode: PerformanceMode = initialMode;
+  let analysisId = initialAnalysisId;
+  let benchmarkId = initialBenchmarkId;
+  let performanceRange = initialRange;
+  let customAgoValue = initialCustomAgoValue;
+  let customAgoUnit: RelativeRangeUnit = initialCustomAgoUnit;
+  let useAllSeriesByDefault = initialVisibleSeriesIds === null;
+  let visibleSeriesIds = initialVisibleSeriesIds === null
+    ? []
+    : [...new Set(initialVisibleSeriesIds)];
+  let saveGraphName = initialSaveGraphName;
   let saveValidation = '';
   let metrics: Metric[] = [];
   let filteredSeries: ChartSeries[] = [];
   let transformedSeries: ChartSeries[] = [];
+  let displayedSeries: ChartSeries[] = [];
+  let displayedSeriesOptions: ChartAxisOption[] = [];
   let selectedMetric: Metric | null = null;
   let benchmarkMetric: Metric | null = null;
+  let appliedInitialMode = initialMode;
+  let appliedInitialAnalysisId = initialAnalysisId;
+  let appliedInitialBenchmarkId = initialBenchmarkId;
+  let appliedInitialRange = initialRange;
+  let appliedInitialCustomAgoValue = initialCustomAgoValue;
+  let appliedInitialCustomAgoUnit = initialCustomAgoUnit;
+  let appliedInitialVisibleSeriesKey = initialVisibleSeriesIds?.join('\u0000') ?? '*';
+  let appliedInitialSaveGraphName = initialSaveGraphName;
 
   const median = (values: number[]) => {
     if (values.length === 0) return null;
@@ -188,7 +216,17 @@
       range: performanceRange,
       customRangeMode: 'ago',
       customAgoValue: Math.max(1, Math.floor(Number(customAgoValue))),
-      customAgoUnit
+      customAgoUnit,
+      visibleSeriesIds: series.filter((item) => (
+        useAllSeriesByDefault || visibleSeriesIds.includes(item.id)
+      )).map((item) => item.id)
+    });
+  };
+  const displayedSeriesChanged = () => {
+    useAllSeriesByDefault = false;
+    dispatch('displayChange', {
+      visibleSeriesIds: series.filter((item) => visibleSeriesIds.includes(item.id))
+        .map((item) => item.id)
     });
   };
 
@@ -201,15 +239,72 @@
       ))
     }));
   }
+  $: if (appliedInitialMode !== initialMode) {
+    mode = initialMode;
+    appliedInitialMode = initialMode;
+  }
+  $: if (appliedInitialAnalysisId !== initialAnalysisId) {
+    analysisId = initialAnalysisId;
+    appliedInitialAnalysisId = initialAnalysisId;
+  }
+  $: if (appliedInitialBenchmarkId !== initialBenchmarkId) {
+    benchmarkId = initialBenchmarkId;
+    appliedInitialBenchmarkId = initialBenchmarkId;
+  }
+  $: if (appliedInitialRange !== initialRange) {
+    performanceRange = initialRange;
+    appliedInitialRange = initialRange;
+  }
+  $: if (appliedInitialCustomAgoValue !== initialCustomAgoValue) {
+    customAgoValue = initialCustomAgoValue;
+    appliedInitialCustomAgoValue = initialCustomAgoValue;
+  }
+  $: if (appliedInitialCustomAgoUnit !== initialCustomAgoUnit) {
+    customAgoUnit = initialCustomAgoUnit;
+    appliedInitialCustomAgoUnit = initialCustomAgoUnit;
+  }
+  $: {
+    const nextInitialVisibleSeriesKey = initialVisibleSeriesIds?.join('\u0000') ?? '*';
+    if (appliedInitialVisibleSeriesKey !== nextInitialVisibleSeriesKey) {
+      useAllSeriesByDefault = initialVisibleSeriesIds === null;
+      visibleSeriesIds = initialVisibleSeriesIds === null
+        ? series.map((item) => item.id)
+        : [...new Set(initialVisibleSeriesIds)];
+      appliedInitialVisibleSeriesKey = nextInitialVisibleSeriesKey;
+    }
+  }
+  $: if (appliedInitialSaveGraphName !== initialSaveGraphName) {
+    saveGraphName = initialSaveGraphName;
+    appliedInitialSaveGraphName = initialSaveGraphName;
+  }
   $: metrics = filteredSeries.map(metricFor);
-  $: if (!metrics.some((metric) => metric.id === analysisId)) analysisId = metrics[0]?.id ?? '';
-  $: if (benchmarkId && !metrics.some((metric) => metric.id === benchmarkId)) benchmarkId = '';
+  $: if (metrics.length > 0 && !metrics.some((metric) => metric.id === analysisId)) {
+    analysisId = metrics[0]?.id ?? '';
+  }
+  $: if (metrics.length > 0 && benchmarkId && !metrics.some((metric) => metric.id === benchmarkId)) {
+    benchmarkId = '';
+  }
   $: selectedMetric = metrics.find((metric) => metric.id === analysisId) ?? null;
   $: benchmarkMetric = metrics.find((metric) => metric.id === benchmarkId) ?? null;
   $: transformedSeries = transformPerformanceSeries({
     series: filteredSeries,
     mode
   });
+  $: if (useAllSeriesByDefault) {
+    const allSeriesIds = series.map((item) => item.id);
+    if (visibleSeriesIds.join('\u0000') !== allSeriesIds.join('\u0000')) {
+      visibleSeriesIds = allSeriesIds;
+    }
+  }
+  $: displayedSeries = transformedSeries.filter((item) => (
+    useAllSeriesByDefault || visibleSeriesIds.includes(item.id)
+  ));
+  $: displayedSeriesOptions = series.map((item) => ({
+    value: item.id,
+    label: item.label,
+    group: 'Display units' as const,
+    searchText: `${item.id} ${item.label} performance chart line`
+  }));
 </script>
 
 <section class="panel performance-panel">
@@ -281,6 +376,18 @@
         {/each}
       </select>
     </div>
+    <div class="field">
+      <label for={controlId('displayed-series')}>Displayed lines</label>
+      <SearchableMultiSelect
+        id={controlId('displayed-series')}
+        bind:value={visibleSeriesIds}
+        options={displayedSeriesOptions}
+        label="performance lines"
+        maximum={Math.max(displayedSeriesOptions.length, 1)}
+        disabled={displayedSeriesOptions.length === 0}
+        on:change={displayedSeriesChanged}
+      />
+    </div>
   </div>
 
   {#if selectedMetric}
@@ -338,7 +445,7 @@
 
   <PortfolioChart
     title={`${title} ${mode}`}
-    series={transformedSeries}
+    series={displayedSeries}
     chartMode="line"
     currency="%"
     tooltipCurrencies={['%']}

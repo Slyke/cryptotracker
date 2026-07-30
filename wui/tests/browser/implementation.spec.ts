@@ -240,13 +240,7 @@ test('Kraken Earn rates, configured currencies, and chart inspection controls ar
   const earnPanel = page.locator('.chart-panel').filter({
     has: page.locator('.chart[aria-label^="Kraken Earn history."]')
   });
-  const assertRenderedWindow = async ({
-    panel,
-    expectedDays
-  }: {
-    panel: typeof portfolioPanel;
-    expectedDays: number;
-  }) => {
+  const assertRenderedWindow = async (panel: typeof portfolioPanel) => {
     await expect(panel).toHaveAttribute('data-chart-axis', 'time');
     await expect(panel).not.toHaveAttribute('data-rendered-range-from-ms', '');
     await expect(panel).not.toHaveAttribute('data-rendered-range-to-ms', '');
@@ -256,10 +250,20 @@ test('Kraken Earn rates, configured currencies, and chart inspection controls ar
         - Number(element.getAttribute('data-rendered-range-from-ms'))
       ) / 86_400_000
     ));
-    expect(renderedDays).toBeCloseTo(expectedDays, 3);
+    const selectedRange = await panel.getByLabel('Range', { exact: true }).inputValue();
+    const expectedDays = new Map([
+      ['24h', 1],
+      ['7d', 7],
+      ['30d', 30],
+      ['90d', 90],
+      ['1y', 365],
+      ['4y', 4 * 365]
+    ]).get(selectedRange);
+    if (expectedDays === undefined) expect(renderedDays).toBeGreaterThan(0);
+    else expect(renderedDays).toBeCloseTo(expectedDays, 3);
   };
-  await assertRenderedWindow({ panel: portfolioPanel, expectedDays: 30 });
-  await assertRenderedWindow({ panel: earnPanel, expectedDays: 365 });
+  await assertRenderedWindow(portfolioPanel);
+  await assertRenderedWindow(earnPanel);
   const showAll = portfolioPanel.getByLabel(
     'Show all, including disabled/inactive, in popup'
   );
@@ -341,4 +345,179 @@ test('saving failed-job retention omits unrelated legacy dashboard data', async 
   expect(submitted!.failedJobRetentionHours).toBe(168);
   expect(submitted).not.toHaveProperty('savedGraphs');
   expect(submitted).not.toHaveProperty('dashboardRows');
+});
+
+test('dashboard graph editing restores display state and replacement keeps its identity', async ({ page }) => {
+  test.setTimeout(90_000);
+  await signIn(page);
+  const fixture = await page.evaluate(async () => {
+    const [settingsResponse, assetsResponse, meResponse] = await Promise.all([
+      fetch('/api/settings'),
+      fetch('/api/watchlist/assets'),
+      fetch('/api/me')
+    ]);
+    const settings = (await settingsResponse.json()).settings as {
+      primaryCurrency: string;
+      tooltipCurrencies: string[];
+      timezone: string;
+      savedGraphs: Array<Record<string, unknown>>;
+      dashboardRows: Array<Record<string, unknown>>;
+      graphDefaults: Record<string, unknown>;
+    };
+    const assets = (await assetsResponse.json()).assets as Array<{
+      canonicalId: string;
+      enabled: boolean;
+    }>;
+    const csrfToken = String((await meResponse.json()).csrfToken);
+    const assetIds = assets.filter((asset) => asset.enabled)
+      .map((asset) => asset.canonicalId)
+      .slice(0, 2);
+    const id = `browser-chart-edit-${Date.now()}`;
+    const name = `Browser chart edit ${Date.now()}`;
+    const original = {
+      savedGraphs: settings.savedGraphs,
+      dashboardRows: settings.dashboardRows,
+      graphDefaults: settings.graphDefaults
+    };
+    if (assetIds.length < 2) {
+      return { id, name, assetIds, original, created: false };
+    }
+    const graph = {
+      id,
+      name,
+      type: 'market',
+      hidden: false,
+      config: {
+        assetIds,
+        source: 'combined',
+        primaryCurrency: settings.primaryCurrency,
+        tooltipCurrencies: settings.tooltipCurrencies,
+        timezone: settings.timezone,
+        range: '30d',
+        granularity: '86400',
+        chartMode: 'candlestick',
+        scale: 'linear',
+        normalized: false,
+        showEvents: true,
+        showVolume: false,
+        yAxisUnit: settings.primaryCurrency,
+        tooltipUnits: [settings.primaryCurrency],
+        visibleSeriesIds: assetIds,
+        rightYAxisSeriesId: assetIds[1] ?? ''
+      }
+    };
+    const response = await fetch('/api/settings', {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken
+      },
+      body: JSON.stringify({
+        savedGraphs: [...settings.savedGraphs, graph]
+      })
+    });
+    if (!response.ok) throw new Error(`Fixture save failed: ${response.status}`);
+    return {
+      id,
+      name,
+      assetIds,
+      original,
+      created: true
+    };
+  });
+  test.skip(!fixture.created, 'Two enabled market assets are required.');
+
+  try {
+    await page.goto('/dashboard', { waitUntil: 'networkidle' });
+    const expandGraphs = page.getByRole('button', { name: 'Expand graphs' });
+    if (await expandGraphs.isVisible()) await expandGraphs.click();
+    const showFluff = page.getByRole('button', { name: 'Show fluff', exact: true });
+    if (await showFluff.isVisible()) await showFluff.click();
+    await expect(page.getByRole('button', { name: 'Hide fluff', exact: true })).toBeVisible();
+
+    const card = page.locator('article.saved-chart').filter({
+      has: page.getByRole('heading', { name: fixture.name, exact: true })
+    });
+    await expect(card).toBeVisible();
+    await expect(card.getByRole('link', { name: 'Edit', exact: true })).toBeVisible();
+    await card.getByRole('link', { name: 'Edit', exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/markets\\?[^#]*editGraph=${fixture.id}#market-price-chart`));
+
+    const chartPanel = page.locator('#market-price-chart .chart-panel');
+    await expect(chartPanel).toBeVisible();
+    await expect(chartPanel.getByLabel('Mode', { exact: true })).toHaveValue('candlestick');
+    await expect(chartPanel).toHaveAttribute('data-visible-series-count', '2');
+    await expect(chartPanel).toHaveAttribute('data-rendered-candlestick-series-count', '2');
+    await expect(chartPanel).toHaveAttribute(
+      'data-right-y-axis-series-id',
+      fixture.assetIds[1]!
+    );
+
+    await chartPanel.getByText('Scale bounds, display, events, and exports', {
+      exact: true
+    }).click();
+    await chartPanel.getByLabel('Displayed lines', { exact: true }).click();
+    await chartPanel.locator(
+      `#watched-market-prices-displayed-series-option-${fixture.assetIds[1]}`
+    ).click();
+    await chartPanel.getByLabel('Displayed lines', { exact: true }).click();
+    await expect(chartPanel).toHaveAttribute('data-visible-series-count', '1');
+    await expect(chartPanel).toHaveAttribute('data-right-y-axis-series-id', '');
+    await expect(chartPanel.locator('.chart')).toHaveAttribute('aria-busy', 'false');
+
+    page.once('dialog', async (dialog) => {
+      expect(dialog.message()).toContain('already exists');
+      await dialog.accept();
+    });
+    const saveButton = chartPanel.getByRole('button', { name: 'Save to dashboard' });
+    await expect(saveButton).toBeVisible();
+    await saveButton.click();
+    await expect(page.getByText(`Saved “${fixture.name}” to the dashboard.`)).toBeVisible();
+    const replaced = await page.evaluate(async (id) => {
+      const response = await fetch('/api/settings');
+      const settings = (await response.json()).settings as {
+        savedGraphs: Array<{
+          id: string;
+          config: Record<string, unknown>;
+        }>;
+      };
+      return settings.savedGraphs.find((graph) => graph.id === id) ?? null;
+    }, fixture.id);
+    expect(replaced).not.toBeNull();
+    expect(replaced!.config.visibleSeriesIds).toEqual([fixture.assetIds[0]]);
+    expect(replaced!.config.rightYAxisSeriesId).toBe('');
+
+    await page.goto('/dashboard', { waitUntil: 'networkidle' });
+    const expandGraphsAgain = page.getByRole('button', { name: 'Expand graphs' });
+    if (await expandGraphsAgain.isVisible()) await expandGraphsAgain.click();
+    const showFluffAgain = page.getByRole('button', { name: 'Show fluff', exact: true });
+    if (await showFluffAgain.isVisible()) await showFluffAgain.click();
+    await expect(page.getByRole('button', { name: 'Hide fluff', exact: true })).toBeVisible();
+    const replacedCard = page.locator('article.saved-chart').filter({
+      has: page.getByRole('heading', { name: fixture.name, exact: true })
+    });
+    page.once('dialog', async (dialog) => {
+      await dialog.dismiss();
+    });
+    await replacedCard.getByRole('button', { name: 'Remove', exact: true }).click();
+    await expect(replacedCard).toBeVisible();
+    page.once('dialog', async (dialog) => {
+      await dialog.accept();
+    });
+    await replacedCard.getByRole('button', { name: 'Remove', exact: true }).click();
+    await expect(replacedCard).toBeHidden();
+  } finally {
+    await page.evaluate(async (original) => {
+      const meResponse = await fetch('/api/me');
+      const csrfToken = String((await meResponse.json()).csrfToken);
+      await fetch('/api/settings', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          'x-csrf-token': csrfToken
+        },
+        body: JSON.stringify(original)
+      });
+    }, fixture.original);
+  }
 });

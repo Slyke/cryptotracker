@@ -53,6 +53,8 @@ export interface ChartDisplayState {
   showVolume: boolean;
   yAxisUnit: string;
   tooltipUnits: string[];
+  visibleSeriesIds: string[] | null;
+  rightYAxisSeriesId: string;
 }
 
 export const defaultChartQueryState = ({
@@ -95,7 +97,9 @@ export const defaultChartDisplayState = (
   showEvents: true,
   showVolume: false,
   yAxisUnit: currency,
-  tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] })
+  tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] }),
+  visibleSeriesIds: null,
+  rightYAxisSeriesId: ''
 });
 
 export const chartQueryStateFromSetting = ({
@@ -149,7 +153,16 @@ export const chartDisplayStateFromSetting = ({
     tooltipUnits: normalizeTooltipUnits({
       value: candidate.tooltipUnits,
       fallback: fallback.tooltipUnits
-    })
+    }),
+    visibleSeriesIds: Array.isArray(candidate.visibleSeriesIds)
+      ? [...new Set(candidate.visibleSeriesIds
+          .filter((id): id is string => typeof id === 'string')
+          .map((id) => id.trim())
+          .filter(Boolean))]
+      : fallback.visibleSeriesIds,
+    rightYAxisSeriesId: typeof candidate.rightYAxisSeriesId === 'string'
+      ? candidate.rightYAxisSeriesId
+      : fallback.rightYAxisSeriesId
   };
 };
 
@@ -293,6 +306,39 @@ export const savedGraphNameExists = ({
     && graph.name.trim().toLocaleLowerCase() === normalized
   ));
 };
+
+export const savedGraphWithName = ({
+  savedGraphs,
+  name
+}: {
+  savedGraphs: SavedGraph[];
+  name: string;
+}) => {
+  const normalized = name.trim().toLocaleLowerCase();
+  return normalized.length === 0
+    ? null
+    : savedGraphs.find((graph) => (
+        graph.name.trim().toLocaleLowerCase() === normalized
+      )) ?? null;
+};
+
+export const replaceSavedGraph = ({
+  savedGraphs,
+  replacement,
+  replacedId
+}: {
+  savedGraphs: SavedGraph[];
+  replacement: SavedGraph;
+  replacedId: string;
+}) => savedGraphs.map((graph) => (
+  graph.id === replacedId
+    ? {
+        ...replacement,
+        id: graph.id,
+        hidden: false
+      }
+    : graph
+));
 
 export const relativeRangeWindow = ({
   value,

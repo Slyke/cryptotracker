@@ -56,7 +56,7 @@
       limitMessage = '';
     } else {
       if (value.length >= maximum) {
-        limitMessage = `Choose up to ${maximum} popup units. Untick one before adding another.`;
+        limitMessage = `Choose up to ${maximum} ${label}. Untick one before adding another.`;
         return;
       }
       value = [...value, option.value];

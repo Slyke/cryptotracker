@@ -17,7 +17,7 @@ The application has four primary product areas:
    - Retrieve historical market prices from CoinGecko, Coinbase, and Kraken.
    - Let the user select an individual provider or a combined price source.
    - Display multiple watched assets as interactive price lines.
-   - Display a single focused asset as OHLC candlesticks with optional wicks.
+   - Display one or more watched assets as OHLC candlesticks with optional wicks.
    - Show a crosshair tooltip containing all visible asset values in up to five selected quote currencies.
 2. Addresses
    - Track user-added Bitcoin, Dogecoin, Ethereum, Polkadot, and Solana mainnet addresses through reviewed adapters.
@@ -835,7 +835,7 @@ The user explicitly enables assets from the catalog.
 - One search field filters the catalog table by symbol, name, canonical ID, or rank; there is no duplicate enable-asset picker.
 - Catalog rows provide the only Enable/Disable controls. There are no ranked bulk-enable controls.
 - When BTC is the only enabled asset, applicable pages link directly to the catalog filter.
-- Enabling an asset selects it on the chart, changes candlestick mode to line mode when necessary, and immediately queues supported initial history.
+- Enabling an asset selects it on the chart and immediately queues supported initial history.
 - Each catalog row includes rank and catalog source when known.
 - Canonical identity must use provider IDs and contract/mint identity, not symbol alone.
 - Ambiguous symbols require user confirmation.
@@ -909,10 +909,9 @@ Line mode:
 
 Candlestick mode:
 
-- focuses on one active crypto asset
+- supports one or more active crypto assets
 - uses standard open/close bodies
 - supports visible or hidden high/low wicks
-- may show other selected assets as optional close-only comparison lines
 - displays OHLC values in the crosshair details
 
 Native candles are used when the provider returns OHLC.
@@ -1049,6 +1048,10 @@ The popup-unit selector uses the same searchable fiat-and-crypto catalog, suppor
 unticking multiple choices without closing, permits zero selections, and enforces a maximum of
 five. Popup-unit state is independent from the Y-axis unit.
 
+Every full chart also exposes a searchable multi-select for displayed series. Legend clicks update
+that source-chart selection, so it is included when the graph is saved. An optional right Y-axis is
+off by default and may independently scale one displayed line or candlestick series.
+
 USD is the internal reserve quote for crypto-unit conversion. If a direct
 primary-currency/crypto pair is unavailable for a portfolio timestamp, the graph
 divides the portfolio's USD value by that crypto asset's USD price. USD does not
@@ -1163,12 +1166,16 @@ Market-performance graphs are also saveable. Saved graph configuration is databa
 includes its source type, selected assets where applicable, source/currency/timezone, range,
 granularity, chart mode, scale, normalized state, event state, volume state, and performance mode
 where applicable. It also retains its selected popup units, scale bounds, candlestick-wick choice,
-and exact plotted asset or series IDs. A later watchlist disable stops new synchronization but does
-not filter a disabled asset out of an existing saved graph's cached series.
+displayed-series selection, optional right-axis assignment, and exact plotted asset or series IDs.
+A later watchlist disable stops new synchronization but does not filter a disabled asset out of an
+existing saved graph's cached series.
 
 The Dashboard supports one, two, three, or four graphs per row and unlimited rows subject to normal page performance. Dashboard graphs use a compact presentation without duplicating the full configuration toolbar.
 
-A saved graph may be hidden from the Dashboard, restored, renamed, removed from the Dashboard, or permanently deleted in Settings. “Remove” on the Dashboard hides it so accidental removal is reversible.
+A saved graph may be edited at its source, hidden from the Dashboard, restored, renamed, removed
+from the Dashboard, or permanently deleted in Settings. “Remove” on the Dashboard asks for
+confirmation and then hides it so accidental removal is reversible. Legend clicks made directly on
+a Dashboard graph remain transient and reset when that page is reloaded.
 
 ### 10.8 Performance Analytics
 
@@ -1869,9 +1876,9 @@ Dashboard:
 - provider and sync health
 - warnings for partial history, stale data, disputed prices, unpriced assets, and incomplete cost basis
 - optional cached-data refresh every 30 seconds, 1, 2, 5, 10, or 30 minutes, or 1 hour
-- a compact “Remove fluff” mode for saved items
+- a compact “Hide fluff” mode for saved items
 
-Markets, Addresses, and Kraken expose “Save table to dashboard” beside each configured table, while chart options expose “Save to dashboard”. The saved table retains its selected columns and source context.
+Markets, Addresses, and Kraken expose “Save table to dashboard” beside each configured table, while chart options expose “Save to dashboard”. The saved table retains its selected columns and source context. Saved charts expose an Edit action while dashboard fluff is shown; it returns to the source chart and restores the saved controls. Duplicate names prompt for replacement instead of being rejected, and replacement preserves the existing dashboard item identity and row placement.
 
 The Dashboard stores an ordered set of named rows. Every row independently selects one, two, three, or four columns and may contain any mix of saved charts and tables. Items can move between rows, rows can be added or removed, and hiding an item does not delete its configuration.
 
@@ -2114,7 +2121,7 @@ Health responses include:
 ```json
 {
   "ok": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "buildHash": "abc1234def56"
 }
 ```

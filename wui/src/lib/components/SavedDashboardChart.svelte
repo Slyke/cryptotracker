@@ -45,6 +45,35 @@
       ? Number(graph.config[key])
       : fallback
   );
+  const stringArrayConfig = (key: string, fallback: string[] | null = null) => (
+    Array.isArray(graph.config[key])
+      ? [...new Set((graph.config[key] as unknown[]).map(String).filter(Boolean))]
+      : fallback
+  );
+  const sourceRoute = () => graph.type === 'portfolio'
+    ? '/markets'
+    : graph.type === 'market'
+      ? '/markets'
+      : graph.type === 'addresses'
+        ? '/addresses'
+        : '/kraken';
+  const editHref = () => {
+    const params = new URLSearchParams({ editGraph: graph.id });
+    const anchor = graph.type === 'portfolio'
+      ? 'combined-portfolio-chart'
+      : graph.type === 'market' && graph.config.analytics === 'performance'
+        ? 'market-performance-chart'
+        : graph.type === 'market'
+          ? 'market-price-chart'
+          : graph.type === 'addresses'
+            ? 'address-portfolio-chart'
+            : 'kraken-portfolio-chart';
+    return `${sourceRoute()}?${params}#${anchor}`;
+  };
+  const requestRemove = () => {
+    if (!confirm(`Remove the dashboard graph “${graph.name}”?`)) return;
+    dispatch('hide', { id: graph.id });
+  };
   const isPerformanceChart = () => (
     graph.type === 'market' && graph.config.analytics === 'performance'
   );
@@ -346,7 +375,10 @@
         <span class="badge start">{graph.type}</span>
         <h3>{graph.name}</h3>
       </div>
-      <button class="ghost compact" type="button" on:click={() => dispatch('hide', { id: graph.id })}>Remove</button>
+      <div class="saved-chart-actions">
+        <a class="button ghost compact" href={editHref()}>Edit</a>
+        <button class="ghost compact" type="button" on:click={requestRemove}>Remove</button>
+      </div>
     </div>
   {/if}
   {#if error}<div class="alert danger">{error}</div>{/if}
@@ -398,6 +430,11 @@
     initialShowWicks={graph.config.showWicks !== false}
     initialShowEvents={graph.config.showEvents !== false}
     initialShowVolume={Boolean(graph.config.showVolume)}
+    initialVisibleSeriesIds={stringArrayConfig(
+      'visibleSeriesIds',
+      stringArrayConfig('seriesIds')
+    )}
+    initialRightYAxisSeriesId={stringConfig('rightYAxisSeriesId', '')}
   />
 </article>
 
@@ -419,6 +456,13 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 0.7rem;
+  }
+
+  .saved-chart-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.4rem;
   }
 
   h3 {

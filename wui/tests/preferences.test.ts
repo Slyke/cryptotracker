@@ -10,8 +10,10 @@ import {
   historyDepthRetentionWarning,
   moveInOrder,
   normalizeOrder,
+  replaceSavedGraph,
   relativeRangeWindow,
   savedGraphNameExists,
+  savedGraphWithName,
   toggleCollapsed
 } from '../src/lib/preferences.js';
 
@@ -78,7 +80,9 @@ describe('database-backed UI preferences', () => {
       showEvents: false,
       showVolume: true,
       yAxisUnit: 'ethereum',
-      tooltipUnits: ['CAD', 'USD', 'bitcoin', 'ethereum', 'dogecoin']
+      tooltipUnits: ['CAD', 'USD', 'bitcoin', 'ethereum', 'dogecoin'],
+      visibleSeriesIds: null,
+      rightYAxisSeriesId: ''
     });
     expect(chartQueryStateFromSetting({
       value: { customAgoValue: 0, customAgoUnit: 'centuries' },
@@ -147,6 +151,36 @@ describe('database-backed UI preferences', () => {
       excludingId: 'existing'
     })).toBe(false);
     expect(savedGraphNameExists({ savedGraphs, name: 'Kraken History' })).toBe(false);
+    expect(savedGraphWithName({ savedGraphs, name: ' market HISTORY ' })?.id)
+      .toBe('existing');
+    expect(savedGraphWithName({ savedGraphs, name: 'Kraken History' })).toBeNull();
+  });
+
+  it('replaces a dashboard item in place so its row placement remains valid', () => {
+    const savedGraphs = [{
+      id: 'existing',
+      name: 'Market History',
+      type: 'market' as const,
+      hidden: true,
+      config: { range: '30d' }
+    }];
+    expect(replaceSavedGraph({
+      savedGraphs,
+      replacement: {
+        id: 'temporary',
+        name: 'Market History',
+        type: 'market',
+        hidden: false,
+        config: { range: '1y' }
+      },
+      replacedId: 'existing'
+    })).toEqual([{
+      id: 'existing',
+      name: 'Market History',
+      type: 'market',
+      hidden: false,
+      config: { range: '1y' }
+    }]);
   });
 
   it('resolves rolling custom ranges in hours, days, weeks, months, and years', () => {

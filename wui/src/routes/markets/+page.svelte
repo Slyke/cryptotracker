@@ -22,11 +22,13 @@
     moveInOrder,
     normalizeOrder,
     relativeRangeWindow,
+    replaceSavedGraph,
     savePreferences,
-    savedGraphNameExists,
+    savedGraphWithName,
     toggleCollapsed,
     type ChartDisplayState,
     type ChartQueryState,
+    type RelativeRangeUnit,
     type SavedGraph
   } from '$lib/preferences';
 
@@ -107,6 +109,13 @@
   let message = '';
   let catalogFilter = '';
   let savedGraphs: SavedGraph[] = [];
+  let watchedEditConfig: Record<string, unknown> = {};
+  let portfolioEditConfig: Record<string, unknown> = {};
+  let watchedSaveName = 'Watched market prices';
+  let portfolioSaveName = 'Combined portfolio history';
+  let performanceEditConfig: Record<string, unknown> = {};
+  let performanceSaveName = 'Market performance';
+  let performanceVisibleSeriesIds: string[] | null = null;
   let pageLayouts: Record<string, string[]> = {};
   let collapsedBlocks: Record<string, string[]> = {};
   let tableColumns: Record<string, string[]> = {};
@@ -148,6 +157,19 @@
     [86_400, '1 day'],
     [604_800, '1 week']
   ]).get(seconds) ?? `${seconds.toLocaleString()} seconds`;
+  const configString = (
+    config: Record<string, unknown>,
+    key: string,
+    fallback = ''
+  ) => typeof config[key] === 'string' ? String(config[key]) : fallback;
+  const boundMode = (
+    config: Record<string, unknown>,
+    key: 'minimumMode' | 'maximumMode'
+  ): 'auto' | 'absolute' | 'relative' => (
+    ['absolute', 'relative'].includes(configString(config, key))
+      ? configString(config, key) as 'absolute' | 'relative'
+      : 'auto'
+  );
   const chartWindow = (state: ChartQueryState) => {
     const now = Date.now();
     if (state.range === 'custom' && state.customRangeMode === 'ago') {
@@ -258,29 +280,101 @@
     graphDefaults = settingsPayload.settings.graphDefaults ?? {};
     savedGraphs = settingsPayload.settings.savedGraphs ?? [];
     if (!chartPreferencesReady) {
+      const editGraphId = new URLSearchParams(location.search).get('editGraph');
+      const editGraph = savedGraphs.find((graph) => (
+        graph.id === editGraphId
+        && graph.config.dashboardView !== 'table'
+        && (graph.type === 'market' || graph.type === 'portfolio')
+      )) ?? null;
+      if (editGraph?.type === 'portfolio') {
+        portfolioEditConfig = editGraph.config;
+        portfolioSaveName = editGraph.name;
+        collapsedBlocks = {
+          ...collapsedBlocks,
+          markets: (collapsedBlocks.markets ?? []).filter((id) => id !== 'portfolio')
+        };
+      } else if (editGraph?.config.analytics === 'performance') {
+        performanceEditConfig = editGraph.config;
+        performanceSaveName = editGraph.name;
+        performanceVisibleSeriesIds = Array.isArray(editGraph.config.visibleSeriesIds)
+          ? editGraph.config.visibleSeriesIds.map(String)
+          : null;
+        collapsedBlocks = {
+          ...collapsedBlocks,
+          markets: (collapsedBlocks.markets ?? []).filter((id) => id !== 'performance')
+        };
+        const performanceState = chartQueryStateFromSetting({
+          value: editGraph.config,
+          fallback: defaultChartQueryState()
+        });
+        const performanceWindow = chartWindow(performanceState);
+        performanceFromMs = performanceWindow.from;
+        performanceToMs = performanceWindow.to;
+        const savedAssetIds = Array.isArray(editGraph.config.assetIds)
+          ? editGraph.config.assetIds.map(String).filter(Boolean)
+          : [];
+        if (savedAssetIds.length > 0) selected = new Set(savedAssetIds.slice(0, 10));
+        if (['combined', 'coingecko', 'coinbase', 'kraken'].includes(String(editGraph.config.source))) {
+          source = String(editGraph.config.source) as typeof source;
+        }
+      } else if (editGraph?.type === 'market') {
+        watchedEditConfig = editGraph.config;
+        watchedSaveName = editGraph.name;
+        collapsedBlocks = {
+          ...collapsedBlocks,
+          markets: (collapsedBlocks.markets ?? []).filter((id) => id !== 'chart')
+        };
+        const savedAssetIds = Array.isArray(editGraph.config.assetIds)
+          ? editGraph.config.assetIds.map(String).filter(Boolean)
+          : [];
+        if (savedAssetIds.length > 0) selected = new Set(savedAssetIds.slice(0, 10));
+        if (['combined', 'coingecko', 'coinbase', 'kraken'].includes(String(editGraph.config.source))) {
+          source = String(editGraph.config.source) as typeof source;
+        }
+      }
+      if (
+        performanceVisibleSeriesIds === null
+        && Array.isArray(graphDefaults.marketsPerformanceVisibleSeries)
+      ) {
+        performanceVisibleSeriesIds = graphDefaults.marketsPerformanceVisibleSeries.map(String);
+      }
       watchedChartState = chartQueryStateFromSetting({
-        value: graphDefaults.marketsWatchedChartState,
+        value: Object.keys(watchedEditConfig).length > 0
+          ? watchedEditConfig
+          : graphDefaults.marketsWatchedChartState,
         fallback: defaultChartQueryState()
       });
       portfolioChartState = chartQueryStateFromSetting({
-        value: graphDefaults.marketsPortfolioChartState,
+        value: Object.keys(portfolioEditConfig).length > 0
+          ? portfolioEditConfig
+          : graphDefaults.marketsPortfolioChartState,
         fallback: defaultChartQueryState()
       });
       watchedDisplayState = chartDisplayStateFromSetting({
-        value: graphDefaults.marketsWatchedDisplayState,
+        value: Object.keys(watchedEditConfig).length > 0
+          ? watchedEditConfig
+          : graphDefaults.marketsWatchedDisplayState,
         fallback: defaultChartDisplayState(primaryCurrency, configuredCurrencies({
           primaryCurrency,
           listedCurrencies: tooltipCurrencies
         }))
       });
       portfolioDisplayState = chartDisplayStateFromSetting({
-        value: graphDefaults.marketsPortfolioDisplayState,
+        value: Object.keys(portfolioEditConfig).length > 0
+          ? portfolioEditConfig
+          : graphDefaults.marketsPortfolioDisplayState,
         fallback: defaultChartDisplayState(primaryCurrency, configuredCurrencies({
           primaryCurrency,
           listedCurrencies: tooltipCurrencies
         }))
       });
-      chartMode = graphDefaults.marketsWatchedChartMode === 'candlestick'
+      chartMode = (
+        watchedEditConfig.chartMode === 'candlestick'
+        || (
+          Object.keys(watchedEditConfig).length === 0
+          && graphDefaults.marketsWatchedChartMode === 'candlestick'
+        )
+      )
         ? 'candlestick'
         : 'line';
       range = watchedChartState.range;
@@ -462,7 +556,9 @@
         range,
         granularity
       });
-      history.replaceState(null, '', `/markets?${urlState}`);
+      const editGraphId = new URLSearchParams(location.search).get('editGraph');
+      if (editGraphId) urlState.set('editGraph', editGraphId);
+      history.replaceState(null, '', `/markets?${urlState}${location.hash}`);
     } catch (caught) {
       if (requestId !== seriesRequestId) return;
       error = caught instanceof Error ? caught.message : 'Market series failed.';
@@ -643,9 +739,6 @@
     if (next.has(canonicalId)) next.delete(canonicalId);
     else next.add(canonicalId);
     selected = next;
-    if (chartMode === 'candlestick' && selected.size > 1) {
-      selected = new Set([canonicalId]);
-    }
     void Promise.all([loadSeries(), loadPerformanceSeries()]);
   };
 
@@ -680,9 +773,6 @@
       } else {
         selected.delete(canonicalId);
         selected = new Set(selected);
-      }
-      if (enabled && chartMode === 'candlestick' && selected.size > 1) {
-        chartMode = 'line';
       }
       if (enabled) await queueInitialAssetHistory(canonicalId);
       await Promise.all([loadSeries(), loadPerformanceSeries()]);
@@ -772,7 +862,18 @@
     item: SavedGraph;
     successMessage: string;
   }) => {
-    const nextSavedGraphs = [...savedGraphs, item];
+    const duplicate = savedGraphWithName({ savedGraphs, name: item.name });
+    if (
+      duplicate
+      && !confirm(`A dashboard item named “${duplicate.name}” already exists. Replace it?`)
+    ) return;
+    const nextSavedGraphs = duplicate
+      ? replaceSavedGraph({
+          savedGraphs,
+          replacement: item,
+          replacedId: duplicate.id
+        })
+      : [...savedGraphs, item];
     try {
       await savePreferences({ savedGraphs: nextSavedGraphs });
       savedGraphs = nextSavedGraphs;
@@ -788,11 +889,6 @@
 
   const saveTable = async () => {
     const name = tableDashboardName.trim() || 'Markets catalog';
-    if (savedGraphNameExists({ savedGraphs, name })) {
-      error = `A dashboard item named “${name}” already exists. Choose a unique name.`;
-      message = '';
-      return;
-    }
     error = '';
     const table = createSavedGraph({
       name,
@@ -827,12 +923,8 @@
     customRangeMode: 'dates' | 'ago';
     customAgoValue: number;
     customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
+    visibleSeriesIds: string[];
   }>) => {
-    if (savedGraphNameExists({ savedGraphs, name: event.detail.name })) {
-      error = `A dashboard item named “${event.detail.name.trim()}” already exists. Choose a unique name.`;
-      message = '';
-      return;
-    }
     error = '';
     const graph = createSavedGraph({
       name: event.detail.name,
@@ -903,12 +995,8 @@
     customRangeMode: 'dates' | 'ago';
     customAgoValue: number;
     customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
+    visibleSeriesIds: string[];
   }>) => {
-    if (savedGraphNameExists({ savedGraphs, name: event.detail.name })) {
-      error = `A dashboard item named “${event.detail.name.trim()}” already exists. Choose a unique name.`;
-      message = '';
-      return;
-    }
     const graph = createSavedGraph({
       name: event.detail.name,
       type: 'portfolio',
@@ -937,6 +1025,17 @@
     void loadPerformanceSeries();
   };
 
+  const performanceDisplayChanged = async (
+    event: CustomEvent<{ visibleSeriesIds: string[] }>
+  ) => {
+    performanceVisibleSeriesIds = event.detail.visibleSeriesIds;
+    graphDefaults = {
+      ...graphDefaults,
+      marketsPerformanceVisibleSeries: performanceVisibleSeriesIds
+    };
+    await savePreferences({ graphDefaults });
+  };
+
   const savePerformanceGraph = async (event: CustomEvent<{
     name: string;
     performanceMode: 'return' | 'drawdown';
@@ -946,12 +1045,8 @@
     customRangeMode: 'ago';
     customAgoValue: number;
     customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
+    visibleSeriesIds: string[];
   }>) => {
-    if (savedGraphNameExists({ savedGraphs, name: event.detail.name })) {
-      error = `A dashboard item named “${event.detail.name.trim()}” already exists. Choose a unique name.`;
-      message = '';
-      return;
-    }
     error = '';
     const graph = createSavedGraph({
       name: event.detail.name,
@@ -1046,14 +1141,8 @@
       marketsWatchedChartState: watchedChartState,
       marketsWatchedChartMode: chartMode
     };
-    let performanceSelectionChanged = false;
-    if (chartMode === 'candlestick' && selected.size > 1) {
-      selected = new Set([[...selected][0]!]);
-      performanceSelectionChanged = true;
-    }
     await savePreferences({ graphDefaults });
     void loadSeries();
-    if (performanceSelectionChanged) void loadPerformanceSeries();
   };
 
   const graphViewChanged = async (event: CustomEvent<ChartDisplayState>) => {
@@ -1076,6 +1165,11 @@
         loadPerformanceSeries(),
         loadPortfolioSeries()
       ]);
+      if (location.hash) {
+        requestAnimationFrame(() => document.querySelector(location.hash)?.scrollIntoView({
+          block: 'start'
+        }));
+      }
     } catch (caught) {
       error = caught instanceof Error ? caught.message : 'Markets failed to load.';
       loading = false;
@@ -1158,6 +1252,7 @@
   {:else if blockId === 'portfolio'}
 
   {#if chartPreferencesReady}
+  <div id="combined-portfolio-chart">
   <PortfolioChart
     title="Combined portfolio history"
     series={portfolioSeries}
@@ -1189,6 +1284,14 @@
     initialNormalized={portfolioDisplayState.normalized}
     initialShowEvents={portfolioDisplayState.showEvents}
     initialShowVolume={portfolioDisplayState.showVolume}
+    initialVisibleSeriesIds={portfolioDisplayState.visibleSeriesIds}
+    initialRightYAxisSeriesId={portfolioDisplayState.rightYAxisSeriesId}
+    initialMinimumMode={boundMode(portfolioEditConfig, 'minimumMode')}
+    initialMaximumMode={boundMode(portfolioEditConfig, 'maximumMode')}
+    initialMinimumValue={configString(portfolioEditConfig, 'minimumValue')}
+    initialMaximumValue={configString(portfolioEditConfig, 'maximumValue')}
+    initialShowWicks={portfolioEditConfig.showWicks !== false}
+    initialSaveGraphName={portfolioSaveName}
     preferenceKey="markets:combined-portfolio"
     partialMessage="Some observed balances or market valuations are unavailable. Portfolio history starts with locally retained snapshots and is not retroactively fabricated."
     emptyMessage="No combined portfolio snapshot exists yet. The first locally observed snapshot is recorded when this chart loads; historical balances are not guessed."
@@ -1197,11 +1300,13 @@
     on:zoomRange={portfolioGraphZoomed}
     on:saveGraph={savePortfolioGraph}
   />
+  </div>
   {/if}
 
   {:else if blockId === 'chart'}
 
   {#if chartPreferencesReady}
+  <div id="market-price-chart">
   <PortfolioChart
     title="Watched market prices"
     {series}
@@ -1233,6 +1338,14 @@
     initialNormalized={watchedDisplayState.normalized}
     initialShowEvents={watchedDisplayState.showEvents}
     initialShowVolume={watchedDisplayState.showVolume}
+    initialVisibleSeriesIds={watchedDisplayState.visibleSeriesIds}
+    initialRightYAxisSeriesId={watchedDisplayState.rightYAxisSeriesId}
+    initialMinimumMode={boundMode(watchedEditConfig, 'minimumMode')}
+    initialMaximumMode={boundMode(watchedEditConfig, 'maximumMode')}
+    initialMinimumValue={configString(watchedEditConfig, 'minimumValue')}
+    initialMaximumValue={configString(watchedEditConfig, 'maximumValue')}
+    initialShowWicks={watchedEditConfig.showWicks !== false}
+    initialSaveGraphName={watchedSaveName}
     preferenceKey="markets:watched-prices"
     partialMessage={partialMessage || strings['cryptotracker-data_partial-label']}
     emptyMessage="No cached market prices are available for the selected assets and range. Use Queue backfill in Market controls, then follow progress in Settings → Synchronization."
@@ -1241,9 +1354,11 @@
     on:zoomRange={graphZoomed}
     on:saveGraph={saveGraph}
   />
+  </div>
   {/if}
 
   {:else if blockId === 'performance'}
+  <div id="market-performance-chart">
   <PerformanceAnalytics
     title="Market performance"
     series={performanceSeries}
@@ -1251,9 +1366,27 @@
     returnMethod="price"
     busy={performanceLoading}
     saveable
+    initialMode={configString(performanceEditConfig, 'performanceMode', 'return') === 'drawdown'
+      ? 'drawdown'
+      : 'return'}
+    initialAnalysisId={configString(performanceEditConfig, 'performanceAnalysisId')}
+    initialBenchmarkId={configString(performanceEditConfig, 'performanceBenchmarkId')}
+    initialRange={configString(performanceEditConfig, 'range', '30d')}
+    initialCustomAgoValue={typeof performanceEditConfig.customAgoValue === 'number'
+      ? performanceEditConfig.customAgoValue
+      : 1}
+    initialCustomAgoUnit={['hours', 'days', 'weeks', 'months', 'years'].includes(
+      configString(performanceEditConfig, 'customAgoUnit')
+    )
+      ? configString(performanceEditConfig, 'customAgoUnit') as RelativeRangeUnit
+      : 'years'}
+    initialVisibleSeriesIds={performanceVisibleSeriesIds}
+    initialSaveGraphName={performanceSaveName}
     on:rangeChange={performanceRangeChanged}
+    on:displayChange={performanceDisplayChanged}
     on:saveGraph={savePerformanceGraph}
   />
+  </div>
 
   {:else if blockId === 'watchlist'}
   <section class="panel" id="market-asset-catalog">

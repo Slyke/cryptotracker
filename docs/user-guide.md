@@ -42,10 +42,12 @@ Charts and tables saved from Markets, Addresses, or Kraken appear in named Dashb
 - can be added or removed; removing a row moves its items to the first remaining row;
 - lets each item be moved to another row.
 
-“Remove” on a saved item hides it without deleting its configuration. Settings can show it again or
-delete it permanently. “Remove fluff” switches saved items to a compact presentation, and “Show
-options” reveals row and placement controls. The Dashboard also summarizes enabled market assets,
-the Kraken surfaces in use, and raw provider/cache health.
+“Remove” on a saved item asks for confirmation, then hides it without deleting its configuration.
+Settings can show it again or delete it permanently. With fluff shown, saved charts also provide an
+“Edit” link that opens the source page with the chart controls restored. “Hide fluff” switches saved
+items to a compact presentation, and “Show options” reveals row and placement controls. The
+Dashboard also summarizes enabled market assets, the Kraken surfaces in use, and raw
+provider/cache health.
 
 Dashboard, Markets, Addresses, Kraken, and Settings blocks have Up, Down, and expand/collapse
 controls. Their order and collapsed state persist in the application database.
@@ -72,14 +74,14 @@ refresh queues a background job. “Queue backfill” requests the chosen range 
 provider, or each supported provider in Combined mode; unsupported provider/asset pairs are reported
 as skipped.
 
-Line mode can display multiple assets. Candlestick mode displays one selected asset and supports
-optional wicks. Volume is available only where a single provider supplies meaningful volume;
+Line and candlestick modes can display multiple assets, and candlesticks support optional wicks.
+Volume is available only where a single provider supplies meaningful volume;
 Combined volume is intentionally unavailable because exchange volumes cannot be safely summed.
 
 The catalog table can be filtered by symbol, name, rank, or canonical ID. Its searchable column
 configurator saves the selected columns and their order. The configured table, market-price chart,
-combined-portfolio chart, and market-performance chart can be saved to the Dashboard under a
-unique name.
+combined-portfolio chart, and market-performance chart can be saved to the Dashboard. Reusing a
+name asks whether the existing item should be replaced.
 
 ## Addresses
 
@@ -221,6 +223,7 @@ Full charts provide:
 - linear/logarithmic scale and a searchable Y-axis unit chosen from configured currencies and
   every activated crypto denomination;
 - a searchable multi-select for showing zero to five fiat or crypto units in graph popups;
+- a searchable displayed-lines selector and an optional independently scaled right Y-axis;
 - independent automatic, absolute, or percentage-padded minimum and maximum;
 - normalization to 0%, candlestick wicks, volume, and event toggles where applicable;
 - wheel/gesture pan and zoom after the plot is clicked or focused, drag zoom, and Reset zoom;
@@ -230,14 +233,15 @@ Full charts provide:
 - searchable event evidence in pages of 25;
 - a keyboard inspector: activate it, use Left/Right, Home/End, and Escape;
 - PNG/SVG snapshots and CSV/JSON data export;
-- unique-name Dashboard saving on supported source charts.
+- Dashboard saving on supported source charts, with confirmation before replacing an existing name.
 
 Compact Dashboard and calculation charts intentionally omit the full configuration toolbar.
 Markets, Addresses, and Kraken full charts store their range, granularity, custom lookback, scale,
-Y-axis unit, popup units, normalization, event, and volume choices in the database and restore them
-on refresh. The keyboard inspector and optional inactive-asset popup toggle sit below the graph's
-source, resolution, and latest-timestamp labels. Data-quality details use the yellow indicator at
-the right side of the graph-options accordion header.
+Y-axis unit, popup units, displayed lines, optional right-axis assignment, normalization, event,
+and volume choices in the database and restore them on refresh. The keyboard inspector and
+optional inactive-asset popup toggle sit below the graph's source, resolution, and latest-timestamp
+labels. Data-quality details use the yellow indicator at the right side of the graph-options
+accordion header.
 
 ## Settings and diagnostics
 

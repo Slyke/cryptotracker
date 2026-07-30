@@ -29,8 +29,9 @@
     normalizeOrder,
     normalizeTooltipUnits,
     relativeRangeWindow,
+    replaceSavedGraph,
     savePreferences,
-    savedGraphNameExists,
+    savedGraphWithName,
     toggleCollapsed,
     type SavedGraph
   } from '$lib/preferences';
@@ -298,6 +299,8 @@
     showVolume: boolean;
     yAxisUnit: string;
     tooltipUnits: string[];
+    visibleSeriesIds: string[] | null;
+    rightYAxisSeriesId: string;
   };
   const defaultChartQueryState = (): ChartQueryState => ({
     range: '1y',
@@ -317,7 +320,9 @@
     showEvents: true,
     showVolume: false,
     yAxisUnit: currency,
-    tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] })
+    tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] }),
+    visibleSeriesIds: null,
+    rightYAxisSeriesId: ''
   });
   let krakenChartState = defaultChartQueryState();
   let earnChartState = { ...defaultChartQueryState(), granularity: '86400' };
@@ -325,6 +330,9 @@
   let earnDisplayState = defaultChartDisplayState(primaryCurrency);
   let earnApyDisplayState = defaultChartDisplayState('%', ['%']);
   let chartPreferencesReady = false;
+  let krakenEditConfig: Record<string, unknown> = {};
+  let krakenSaveName = 'Kraken portfolio history';
+  let krakenPerformanceVisibleSeriesIds: string[] | null = null;
   const changeColumns = [
     ['change24h', '24-hour change'],
     ['change7d', '7-day change'],
@@ -341,6 +349,18 @@
     primaryCurrency,
     listedCurrencies: tooltipCurrencies
   });
+  const editConfigString = (key: string, fallback = '') => (
+    typeof krakenEditConfig[key] === 'string'
+      ? String(krakenEditConfig[key])
+      : fallback
+  );
+  const editBoundMode = (
+    key: 'minimumMode' | 'maximumMode'
+  ): 'auto' | 'absolute' | 'relative' => (
+    ['absolute', 'relative'].includes(editConfigString(key))
+      ? editConfigString(key) as 'absolute' | 'relative'
+      : 'auto'
+  );
   const buildEarnColumnOptions = () => [
     { id: 'asset', label: 'Asset' },
     { id: 'quantity', label: 'Staked quantity' },
@@ -406,7 +426,13 @@
       tooltipUnits: normalizeTooltipUnits({
         value: candidate.tooltipUnits,
         fallback: fallback.tooltipUnits
-      })
+      }),
+      visibleSeriesIds: Array.isArray(candidate.visibleSeriesIds)
+        ? [...new Set(candidate.visibleSeriesIds.map(String).filter(Boolean))]
+        : fallback.visibleSeriesIds,
+      rightYAxisSeriesId: typeof candidate.rightYAxisSeriesId === 'string'
+        ? candidate.rightYAxisSeriesId
+        : fallback.rightYAxisSeriesId
     };
   };
   const chartWindow = (state: ChartQueryState) => {
@@ -502,6 +528,10 @@
   const seriesIsDisabled = (item: ChartSeries) => (
     !seriesHasValues(item) || !seriesIsEnabled(item)
   );
+  const savedEditSeriesIncludes = (id: string) => (
+    Array.isArray(krakenEditConfig.seriesIds)
+    && krakenEditConfig.seriesIds.map(String).includes(id)
+  );
   const seriesStateDetail = (item: ChartSeries) => {
     if (!seriesHasValues(item)) return 'Disabled · no priced snapshots';
     if (!seriesIsEnabled(item)) return 'Disabled in Markets';
@@ -513,7 +543,9 @@
 
   $: selectableKrakenSeries = [...new Map(series.map((item) => [item.id, item])).values()];
   $: displayedKrakenSeries = selectableKrakenSeries.filter((item) => (
-    visibleKrakenSeries.has(item.id) && !seriesIsDisabled(item)
+    visibleKrakenSeries.has(item.id)
+    && seriesHasValues(item)
+    && (seriesIsEnabled(item) || savedEditSeriesIncludes(item.id))
   ));
   $: displayedEarnSeries = earnOverview.series.filter((item) => (
     visibleEarnSeries.has(item.id) && seriesHasValues(item)
@@ -783,8 +815,28 @@
         watchlistPayload.assets.filter((asset) => asset.enabled).map((asset) => asset.canonicalId)
       );
       if (!chartPreferencesReady) {
+        const editGraphId = new URLSearchParams(location.search).get('editGraph');
+        const editGraph = savedGraphs.find((graph) => (
+          graph.id === editGraphId
+          && graph.type === 'kraken'
+          && graph.config.dashboardView !== 'table'
+        )) ?? null;
+        krakenEditConfig = editGraph?.config ?? {};
+        krakenSaveName = editGraph?.name ?? 'Kraken portfolio history';
+        if (editGraph) {
+          collapsedBlocks = {
+            ...collapsedBlocks,
+            kraken: (collapsedBlocks.kraken ?? []).filter((id) => id !== 'chart')
+          };
+        }
+        if (Array.isArray(editGraph?.config.seriesIds)) {
+          graphDefaults = {
+            ...graphDefaults,
+            krakenVisibleSeries: editGraph.config.seriesIds.map(String)
+          };
+        }
         krakenChartState = chartStateFromSetting({
-          value: graphDefaults.krakenChartState,
+          value: editGraph?.config ?? graphDefaults.krakenChartState,
           fallback: defaultChartQueryState()
         });
         earnChartState = chartStateFromSetting({
@@ -792,7 +844,7 @@
           fallback: { ...defaultChartQueryState(), granularity: '86400' }
         });
         krakenDisplayState = chartDisplayFromSetting({
-          value: graphDefaults.krakenDisplayState,
+          value: editGraph?.config ?? graphDefaults.krakenDisplayState,
           fallback: defaultChartDisplayState(primaryCurrency, activeCurrencies())
         });
         earnDisplayState = chartDisplayFromSetting({
@@ -803,6 +855,11 @@
           value: graphDefaults.krakenEarnApyDisplayState,
           fallback: defaultChartDisplayState('%', ['%'])
         });
+        krakenPerformanceVisibleSeriesIds = Array.isArray(
+          graphDefaults.krakenPerformanceVisibleSeries
+        )
+          ? graphDefaults.krakenPerformanceVisibleSeries.map(String)
+          : null;
         chartPreferencesReady = true;
       }
       const mainWindow = chartWindow(krakenChartState);
@@ -959,13 +1016,32 @@
     await savePreferences({ tableColumns });
   };
 
+  const persistDashboardItem = async ({
+    item,
+    successMessage
+  }: {
+    item: SavedGraph;
+    successMessage: string;
+  }) => {
+    const duplicate = savedGraphWithName({ savedGraphs, name: item.name });
+    if (
+      duplicate
+      && !confirm(`A dashboard item named “${duplicate.name}” already exists. Replace it?`)
+    ) return;
+    savedGraphs = duplicate
+      ? replaceSavedGraph({
+          savedGraphs,
+          replacement: item,
+          replacedId: duplicate.id
+        })
+      : [...savedGraphs, item];
+    await savePreferences({ savedGraphs });
+    error = '';
+    message = successMessage;
+  };
+
   const saveTable = async () => {
     const name = tableDashboardName.trim() || 'Kraken balances';
-    if (savedGraphNameExists({ savedGraphs, name })) {
-      error = `A dashboard item named “${name}” already exists. Choose a unique name.`;
-      message = '';
-      return;
-    }
     error = '';
     const table = createSavedGraph({
       name,
@@ -978,18 +1054,14 @@
         timezone
       }
     });
-    savedGraphs = [...savedGraphs, table];
-    await savePreferences({ savedGraphs });
-    message = `Saved table “${table.name}” to the dashboard.`;
+    await persistDashboardItem({
+      item: table,
+      successMessage: `Saved table “${table.name}” to the dashboard.`
+    });
   };
 
   const saveEarnTable = async () => {
     const name = earnTableDashboardName.trim() || 'Kraken Earn assets';
-    if (savedGraphNameExists({ savedGraphs, name })) {
-      error = `A dashboard item named “${name}” already exists. Choose a unique name.`;
-      message = '';
-      return;
-    }
     error = '';
     const table = createSavedGraph({
       name,
@@ -1002,9 +1074,10 @@
         timezone
       }
     });
-    savedGraphs = [...savedGraphs, table];
-    await savePreferences({ savedGraphs });
-    message = `Saved table “${table.name}” to the dashboard.`;
+    await persistDashboardItem({
+      item: table,
+      successMessage: `Saved table “${table.name}” to the dashboard.`
+    });
   };
 
   const dismissNotice = async (event: CustomEvent<{ id: string }>) => {
@@ -1112,11 +1185,6 @@
     customAgoValue: number;
     customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
   }>) => {
-    if (savedGraphNameExists({ savedGraphs, name: event.detail.name })) {
-      error = `A dashboard item named “${event.detail.name.trim()}” already exists. Choose a unique name.`;
-      message = '';
-      return;
-    }
     error = '';
     const graph = createSavedGraph({
       name: event.detail.name,
@@ -1129,9 +1197,10 @@
         ...event.detail
       }
     });
-    savedGraphs = [...savedGraphs, graph];
-    await savePreferences({ savedGraphs });
-    message = `Saved “${graph.name}” to the dashboard.`;
+    await persistDashboardItem({
+      item: graph,
+      successMessage: `Saved “${graph.name}” to the dashboard.`
+    });
   };
 
   const refresh = async () => {
@@ -1191,6 +1260,17 @@
         : target === 'earn'
           ? 'krakenEarnDisplayState'
           : 'krakenEarnApyDisplayState']: next
+    };
+    await savePreferences({ graphDefaults });
+  };
+
+  const performanceDisplayChanged = async (
+    event: CustomEvent<{ visibleSeriesIds: string[] }>
+  ) => {
+    krakenPerformanceVisibleSeriesIds = event.detail.visibleSeriesIds;
+    graphDefaults = {
+      ...graphDefaults,
+      krakenPerformanceVisibleSeries: krakenPerformanceVisibleSeriesIds
     };
     await savePreferences({ graphDefaults });
   };
@@ -1299,7 +1379,12 @@
   };
 
   onMount(() => {
-    void load();
+    void load().then(() => {
+      if (!location.hash) return;
+      requestAnimationFrame(() => document.querySelector(location.hash)?.scrollIntoView({
+        block: 'start'
+      }));
+    });
   });
 </script>
 
@@ -1587,6 +1672,8 @@
         initialNormalized={earnDisplayState.normalized}
         initialShowEvents={earnDisplayState.showEvents}
         initialShowVolume={earnDisplayState.showVolume}
+        initialVisibleSeriesIds={earnDisplayState.visibleSeriesIds}
+        initialRightYAxisSeriesId={earnDisplayState.rightYAxisSeriesId}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
         on:viewChange={(event) => void graphViewChanged({ target: 'earn', event })}
         on:zoomRange={earnGraphZoomed}
@@ -1624,6 +1711,8 @@
         initialNormalized={earnApyDisplayState.normalized}
         initialShowEvents={earnApyDisplayState.showEvents}
         initialShowVolume={earnApyDisplayState.showVolume}
+        initialVisibleSeriesIds={earnApyDisplayState.visibleSeriesIds}
+        initialRightYAxisSeriesId={earnApyDisplayState.rightYAxisSeriesId}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
         on:viewChange={(event) => void graphViewChanged({ target: 'earnApy', event })}
         on:zoomRange={earnGraphZoomed}
@@ -1784,7 +1873,7 @@
     </section>
 
   {:else if blockId === 'chart'}
-  <section class="panel kraken-series-panel">
+  <section class="panel kraken-series-panel" id="kraken-portfolio-chart">
     <div>
       <p class="eyebrow">Visible chart series</p>
       <h2>Total and asset values</h2>
@@ -1843,6 +1932,14 @@
     initialNormalized={krakenDisplayState.normalized}
     initialShowEvents={krakenDisplayState.showEvents}
     initialShowVolume={krakenDisplayState.showVolume}
+    initialVisibleSeriesIds={krakenDisplayState.visibleSeriesIds}
+    initialRightYAxisSeriesId={krakenDisplayState.rightYAxisSeriesId}
+    initialMinimumMode={editBoundMode('minimumMode')}
+    initialMaximumMode={editBoundMode('maximumMode')}
+    initialMinimumValue={editConfigString('minimumValue')}
+    initialMaximumValue={editConfigString('maximumValue')}
+    initialShowWicks={krakenEditConfig.showWicks !== false}
+    initialSaveGraphName={krakenSaveName}
     saveable
     on:stateChange={(event) => void graphStateChanged({ target: 'portfolio', event })}
     on:viewChange={(event) => void graphViewChanged({ target: 'portfolio', event })}
@@ -1857,6 +1954,8 @@
     series={displayedKrakenSeries}
     {timezone}
     returnMethod="value"
+    initialVisibleSeriesIds={krakenPerformanceVisibleSeriesIds}
+    on:displayChange={performanceDisplayChanged}
   />
 
   {:else if blockId === 'cost-basis'}

@@ -28,8 +28,9 @@
     moveInOrder,
     normalizeOrder,
     relativeRangeWindow,
+    replaceSavedGraph,
     savePreferences,
-    savedGraphNameExists,
+    savedGraphWithName,
     toggleCollapsed,
     type ChartDisplayState,
     type ChartQueryState,
@@ -175,6 +176,9 @@
   });
   let addressDisplayState = defaultChartDisplayState(primaryCurrency);
   let chartPreferencesReady = false;
+  let addressEditConfig: Record<string, unknown> = {};
+  let addressSaveName = 'Address portfolio history';
+  let addressPerformanceVisibleSeriesIds: string[] | null = null;
   let loadRequestId = 0;
   let zoomRequestId = 0;
   let dismissedNotices: string[] = [];
@@ -203,6 +207,18 @@
   }
 
   const mainnetFor = (networkId: string) => mainnets.find((option) => option.id === networkId);
+  const configString = (key: string, fallback = '') => (
+    typeof addressEditConfig[key] === 'string'
+      ? String(addressEditConfig[key])
+      : fallback
+  );
+  const boundMode = (
+    key: 'minimumMode' | 'maximumMode'
+  ): 'auto' | 'absolute' | 'relative' => (
+    ['absolute', 'relative'].includes(configString(key))
+      ? configString(key) as 'absolute' | 'relative'
+      : 'auto'
+  );
   const chartWindow = (state: ChartQueryState) => {
     const now = Date.now();
     if (state.range === 'custom' && state.customRangeMode === 'ago') {
@@ -377,20 +393,39 @@
       savedGraphs = settingsPayload.settings.savedGraphs;
       dismissedNotices = settingsPayload.settings.dismissedNotices ?? [];
       if (!chartPreferencesReady) {
+        const editGraphId = new URLSearchParams(location.search).get('editGraph');
+        const editGraph = savedGraphs.find((graph) => (
+          graph.id === editGraphId
+          && graph.type === 'addresses'
+          && graph.config.dashboardView !== 'table'
+        )) ?? null;
+        addressEditConfig = editGraph?.config ?? {};
+        addressSaveName = editGraph?.name ?? 'Address portfolio history';
+        if (editGraph) {
+          collapsedBlocks = {
+            ...collapsedBlocks,
+            addresses: (collapsedBlocks.addresses ?? []).filter((id) => id !== 'chart')
+          };
+        }
         addressChartState = chartQueryStateFromSetting({
-          value: graphDefaults.addressesChartState,
+          value: editGraph?.config ?? graphDefaults.addressesChartState,
           fallback: defaultChartQueryState({
             range: '90d',
             granularity: '86400'
           })
         });
         addressDisplayState = chartDisplayStateFromSetting({
-          value: graphDefaults.addressesDisplayState,
+          value: editGraph?.config ?? graphDefaults.addressesDisplayState,
           fallback: defaultChartDisplayState(primaryCurrency, configuredCurrencies({
             primaryCurrency,
             listedCurrencies: tooltipCurrencies
           }))
         });
+        addressPerformanceVisibleSeriesIds = Array.isArray(
+          graphDefaults.addressesPerformanceVisibleSeries
+        )
+          ? graphDefaults.addressesPerformanceVisibleSeries.map(String)
+          : null;
         chartRange = addressChartState.range;
         selectedGranularity = addressChartState.granularity;
         const window = chartWindow(addressChartState);
@@ -582,13 +617,32 @@
     await savePreferences({ tableColumns });
   };
 
+  const persistDashboardItem = async ({
+    item,
+    successMessage
+  }: {
+    item: SavedGraph;
+    successMessage: string;
+  }) => {
+    const duplicate = savedGraphWithName({ savedGraphs, name: item.name });
+    if (
+      duplicate
+      && !confirm(`A dashboard item named “${duplicate.name}” already exists. Replace it?`)
+    ) return;
+    savedGraphs = duplicate
+      ? replaceSavedGraph({
+          savedGraphs,
+          replacement: item,
+          replacedId: duplicate.id
+        })
+      : [...savedGraphs, item];
+    await savePreferences({ savedGraphs });
+    error = '';
+    message = successMessage;
+  };
+
   const saveTable = async () => {
     const name = tableDashboardName.trim() || 'Address holdings';
-    if (savedGraphNameExists({ savedGraphs, name })) {
-      error = `A dashboard item named “${name}” already exists. Choose a unique name.`;
-      message = '';
-      return;
-    }
     error = '';
     const table = createSavedGraph({
       name,
@@ -601,9 +655,10 @@
         timezone
       }
     });
-    savedGraphs = [...savedGraphs, table];
-    await savePreferences({ savedGraphs });
-    message = `Saved table “${table.name}” to the dashboard.`;
+    await persistDashboardItem({
+      item: table,
+      successMessage: `Saved table “${table.name}” to the dashboard.`
+    });
   };
 
   const dismissNotice = async (event: CustomEvent<{ id: string }>) => {
@@ -641,6 +696,17 @@
     graphDefaults = {
       ...graphDefaults,
       addressesDisplayState: addressDisplayState
+    };
+    await savePreferences({ graphDefaults });
+  };
+
+  const performanceDisplayChanged = async (
+    event: CustomEvent<{ visibleSeriesIds: string[] }>
+  ) => {
+    addressPerformanceVisibleSeriesIds = event.detail.visibleSeriesIds;
+    graphDefaults = {
+      ...graphDefaults,
+      addressesPerformanceVisibleSeries: addressPerformanceVisibleSeriesIds
     };
     await savePreferences({ graphDefaults });
   };
@@ -692,11 +758,6 @@
     customAgoValue: number;
     customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
   }>) => {
-    if (savedGraphNameExists({ savedGraphs, name: event.detail.name })) {
-      error = `A dashboard item named “${event.detail.name.trim()}” already exists. Choose a unique name.`;
-      message = '';
-      return;
-    }
     error = '';
     const graph = createSavedGraph({
       name: event.detail.name,
@@ -708,13 +769,19 @@
         ...event.detail
       }
     });
-    savedGraphs = [...savedGraphs, graph];
-    await savePreferences({ savedGraphs });
-    message = `Saved “${graph.name}” to the dashboard.`;
+    await persistDashboardItem({
+      item: graph,
+      successMessage: `Saved “${graph.name}” to the dashboard.`
+    });
   };
 
   onMount(() => {
-    void load();
+    void load().then(() => {
+      if (!location.hash) return;
+      requestAnimationFrame(() => document.querySelector(location.hash)?.scrollIntoView({
+        block: 'start'
+      }));
+    });
   });
 </script>
 
@@ -887,6 +954,7 @@
 
       {:else if blockId === 'chart'}
         {#if chartPreferencesReady}
+        <div id="address-portfolio-chart">
         <PortfolioChart
           title="Address portfolio history"
           {series}
@@ -915,6 +983,14 @@
           initialNormalized={addressDisplayState.normalized}
           initialShowEvents={addressDisplayState.showEvents}
           initialShowVolume={addressDisplayState.showVolume}
+          initialVisibleSeriesIds={addressDisplayState.visibleSeriesIds}
+          initialRightYAxisSeriesId={addressDisplayState.rightYAxisSeriesId}
+          initialMinimumMode={boundMode('minimumMode')}
+          initialMaximumMode={boundMode('maximumMode')}
+          initialMinimumValue={configString('minimumValue')}
+          initialMaximumValue={configString('maximumValue')}
+          initialShowWicks={addressEditConfig.showWicks !== false}
+          initialSaveGraphName={addressSaveName}
           preferenceKey="addresses:portfolio"
           partialMessage={partialMessage()}
           emptyMessage="No address portfolio history is cached yet. Add a public address or use Refresh on a tracked address, then follow progress in Settings → Synchronization."
@@ -923,6 +999,7 @@
           on:zoomRange={graphZoomed}
           on:saveGraph={saveGraph}
         />
+        </div>
         {/if}
 
       {:else if blockId === 'performance'}
@@ -931,6 +1008,8 @@
           {series}
           {timezone}
           returnMethod="value"
+          initialVisibleSeriesIds={addressPerformanceVisibleSeriesIds}
+          on:displayChange={performanceDisplayChanged}
         />
 
       {:else if blockId === 'holdings'}

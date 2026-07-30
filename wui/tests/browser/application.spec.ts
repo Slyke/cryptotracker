@@ -11,6 +11,11 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
 
   await page.getByRole('link', { name: 'Markets', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Markets', exact: true })).toBeVisible();
+  await page.waitForLoadState('networkidle');
+  for (const block of ['Market chart', 'Performance analytics', 'Watchlist']) {
+    const expand = page.getByRole('button', { name: `Expand ${block}` });
+    if (await expand.isVisible()) await expand.click();
+  }
   const catalogFilter = page.getByLabel(/filter catalog table/i);
   await expect(catalogFilter).toBeVisible();
   await catalogFilter.fill('ethereum');
@@ -25,8 +30,12 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await expect(page.locator('#market-performance-ago-value')).toBeVisible();
   await expect(page.locator('#market-performance-ago-unit')).toBeVisible();
   await performanceRange.selectOption('30d');
-  await page.getByText(/scale bounds, display, events, and exports/i).click();
-  const yAxisUnit = page.getByLabel(/y-axis unit/i);
+  const marketChart = page.locator('#market-price-chart .chart-panel');
+  const marketChartOptions = marketChart.locator('details.chart-options');
+  if (await marketChartOptions.getAttribute('open') === null) {
+    await marketChart.getByText(/scale bounds, display, events, and exports/i).click();
+  }
+  const yAxisUnit = marketChart.getByLabel(/y-axis unit/i);
   await expect(yAxisUnit).toBeVisible();
   await yAxisUnit.click();
   const yAxisSearch = page.getByLabel(/search y-axis currencies or crypto assets/i);
@@ -54,7 +63,7 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
         .map((asset) => `${asset.symbol.toUpperCase()} · ${asset.name}`)
     };
   });
-  const yAxisPopover = page.locator('.select-popover');
+  const yAxisPopover = marketChart.locator('.select-popover');
   for (const currency of expectedAxisOptions.currencies) {
     await expect(yAxisPopover.getByRole('option', {
       name: new RegExp(`^${currency} ·`)
@@ -67,16 +76,16 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await expect(page.getByRole('option', { name: /primary currency/i })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(yAxisSearch).toBeHidden();
-  const popupUnits = page.getByLabel(/popup units/i).first();
+  const popupUnits = marketChart.getByLabel(/popup units/i);
   await popupUnits.click();
-  const popupUnitPopover = page.locator('.searchable-multi-select .select-popover').first();
+  const popupUnitPopover = marketChart.locator('.searchable-multi-select .select-popover');
   for (const asset of expectedAxisOptions.assets) {
     await expect(popupUnitPopover.getByRole('option', { name: asset, exact: true })).toBeVisible();
   }
   await page.keyboard.press('Escape');
-  await expect(page.getByLabel(/y scale/i).getByRole('option', { name: /logarithmic/i })).toBeEnabled();
+  await expect(marketChart.getByLabel(/y scale/i).getByRole('option', { name: /logarithmic/i })).toBeEnabled();
 
-  const inspector = page.getByRole('button', { name: /keyboard chart inspector/i });
+  const inspector = marketChart.getByRole('button', { name: /keyboard chart inspector/i });
   await expect(inspector).toBeVisible();
   await inspector.click();
   await expect(page.getByText(/keyboard inspection active/i)).toBeVisible();
@@ -93,13 +102,14 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await expect(page.getByText(/keyboard inspection active/i)).toBeHidden();
 
   await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
+  await page.waitForLoadState('networkidle');
   await expect(page.getByText(/known portfolio value, watched markets/i)).toHaveCount(0);
   await expect(page.getByText(/latest successful check/i)).toHaveCount(0);
   await expect(page.getByLabel(/enable refresh/i)).toBeVisible();
   await page.getByLabel(/enable refresh/i).check();
   await page.getByLabel(/refresh interval/i).selectOption('120');
   await expect(page.getByLabel(/refresh interval/i)).toHaveValue('120');
-  const fluffToggle = page.getByRole('button', { name: /remove fluff|show fluff/i });
+  const fluffToggle = page.getByRole('button', { name: /hide fluff|show fluff/i });
   if (await fluffToggle.getAttribute('aria-pressed') === 'false') await fluffToggle.click();
   await expect(page.getByText(/each row has its own one-to-four-column layout/i)).toHaveCount(0);
   const optionsToggle = page.getByRole('button', { name: /show options|hide options/i });
@@ -111,15 +121,21 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
 
   await page.getByRole('link', { name: 'Kraken', exact: true }).click();
   await expect(page.getByRole('heading', { name: /staked value, rewards, and activity/i })).toBeVisible();
+  await page.waitForLoadState('networkidle');
+  const expandKrakenChart = page.getByRole('button', { name: /expand chart/i });
+  if (await expandKrakenChart.isVisible()) await expandKrakenChart.click();
   await expect(page.getByRole('heading', { name: /payout distribution/i })).toBeVisible();
-  const krakenChart = page.locator('section.chart-panel').filter({
-    has: page.getByText('Kraken portfolio history', { exact: true })
-  });
+  const krakenChart = page.locator(
+    'section.chart-panel[aria-label="Kraken portfolio history"]'
+  );
   await expect(krakenChart).toHaveAttribute(
     'data-effective-axis-option-count',
     String(expectedAxisOptions.assets.length)
   );
-  await krakenChart.getByText(/scale bounds, display, events, and exports/i).click();
+  const krakenChartOptions = krakenChart.locator('details.chart-options');
+  if (await krakenChartOptions.getAttribute('open') === null) {
+    await krakenChart.getByText(/scale bounds, display, events, and exports/i).click();
+  }
   await krakenChart.getByLabel(/y-axis unit/i).click();
   for (const asset of expectedAxisOptions.assets) {
     await expect(krakenChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
@@ -132,17 +148,23 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await page.keyboard.press('Escape');
 
   await page.getByRole('link', { name: 'Addresses', exact: true }).click();
+  await page.waitForLoadState('networkidle');
+  const expandAddressChart = page.getByRole('button', { name: /expand chart/i });
+  if (await expandAddressChart.isVisible()) await expandAddressChart.click();
   const addressNetwork = page.locator('#network');
   await expect(addressNetwork).toBeVisible();
   await expect(addressNetwork.getByRole('option', { name: /bitcoin mainnet/i })).toHaveCount(1);
-  const addressChart = page.locator('section.chart-panel').filter({
-    has: page.getByText('Address portfolio history', { exact: true })
-  });
+  const addressChart = page.locator(
+    'section.chart-panel[aria-label="Address portfolio history"]'
+  );
   await expect(addressChart).toHaveAttribute(
     'data-effective-axis-option-count',
     String(expectedAxisOptions.assets.length)
   );
-  await addressChart.getByText(/scale bounds, display, events, and exports/i).click();
+  const addressChartOptions = addressChart.locator('details.chart-options');
+  if (await addressChartOptions.getAttribute('open') === null) {
+    await addressChart.getByText(/scale bounds, display, events, and exports/i).click();
+  }
   await addressChart.getByLabel(/y-axis unit/i).click();
   for (const asset of expectedAxisOptions.assets) {
     await expect(addressChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
@@ -156,7 +178,7 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
 
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: /how far back each source has reached/i })).toBeVisible();
-  await expect(page.getByText(/Forever \(default\)/i)).toBeVisible();
+  await expect(page.getByRole('option', { name: /Forever \(default\)/i })).toHaveCount(1);
   await page.getByRole('button', { name: /collapse sync/i }).click();
   await expect(page.getByRole('heading', { name: /how far back each source has reached/i })).toBeHidden();
   await page.reload();

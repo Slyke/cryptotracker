@@ -34,6 +34,10 @@
     const safePage = Math.min(pageNumber, pageCount(value));
     return filteredRows(value).slice((safePage - 1) * pageSize, safePage * pageSize);
   };
+  const requestRemove = () => {
+    if (!confirm(`Remove the dashboard table “${item.name}”?`)) return;
+    dispatch('hide', { id: item.id });
+  };
 
   const loadMarkets = async () => {
     const [catalogPayload, watchlistPayload] = await Promise.all([
@@ -320,7 +324,7 @@
     <div class="table-actions">
       {#if !minimalChrome}
         <a class="button ghost compact" href={`/${item.type === 'market' ? 'markets' : item.type}`}>Open source</a>
-        <button class="ghost compact" type="button" on:click={() => dispatch('hide', { id: item.id })}>Remove</button>
+        <button class="ghost compact" type="button" on:click={requestRemove}>Remove</button>
       {/if}
     </div>
   </div>

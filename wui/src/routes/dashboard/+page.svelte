@@ -71,7 +71,7 @@
   const defaultPageOrder = ['summary', 'graphs', 'watchlist', 'kraken', 'diagnostics'];
   let pageOrder = [...defaultPageOrder];
   let showDashboardOptions = false;
-  let removeFluff = false;
+  let hideFluff = false;
   let autoRefreshEnabled = false;
   let refreshIntervalSeconds = 60;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -101,7 +101,7 @@
   const saveDashboardDisplay = async () => {
     settings.graphDefaults = {
       ...settings.graphDefaults,
-      dashboardRemoveFluff: removeFluff,
+      dashboardHideFluff: hideFluff,
       dashboardAutoRefreshEnabled: autoRefreshEnabled,
       dashboardRefreshIntervalSeconds: refreshIntervalSeconds
     };
@@ -166,7 +166,11 @@
       jobs = jobsPayload.progress.jobs;
       pageOrder = normalizeOrder({ saved: settings.pageLayouts.dashboard, defaults: defaultPageOrder });
       settings.dashboardRows = normalizeDashboardRows(settings.dashboardRows ?? []);
-      removeFluff = settings.graphDefaults.dashboardRemoveFluff === true;
+      hideFluff = settings.graphDefaults.dashboardHideFluff === true
+        || (
+          settings.graphDefaults.dashboardHideFluff === undefined
+          && settings.graphDefaults.dashboardRemoveFluff === true
+        );
       autoRefreshEnabled = settings.graphDefaults.dashboardAutoRefreshEnabled === true;
       const savedRefreshSeconds = Number(settings.graphDefaults.dashboardRefreshIntervalSeconds);
       refreshIntervalSeconds = refreshIntervals.some((option) => option.seconds === savedRefreshSeconds)
@@ -422,8 +426,8 @@
 
   {:else if blockId === 'graphs'}
   <section class="panel">
-    <div class:fluff-hidden={removeFluff} class="row dashboard-heading">
-      {#if !removeFluff}
+    <div class:fluff-hidden={hideFluff} class="row dashboard-heading">
+      {#if !hideFluff}
         <div>
           <p class="eyebrow">Saved dashboard items</p>
           <h2>{settings.savedGraphs.filter((item) => !item.hidden).length} visible charts and tables</h2>
@@ -434,12 +438,12 @@
         <button
           class="ghost compact"
           type="button"
-          aria-pressed={removeFluff}
+          aria-pressed={hideFluff}
           on:click={() => {
-            removeFluff = !removeFluff;
+            hideFluff = !hideFluff;
             void saveDashboardDisplay();
           }}
-        >{removeFluff ? 'Show fluff' : 'Remove fluff'}</button>
+        >{hideFluff ? 'Show fluff' : 'Hide fluff'}</button>
         <button
           class="ghost compact"
           type="button"
@@ -506,11 +510,11 @@
                         </div>
                       {/if}
                       {#if item.config.dashboardView === 'table'}
-                        <SavedDashboardTable {item} minimalChrome={removeFluff} on:hide={hideGraph} />
+                        <SavedDashboardTable {item} minimalChrome={hideFluff} on:hide={hideGraph} />
                       {:else}
                         <SavedDashboardChart
                           graph={item}
-                          minimalChrome={removeFluff}
+                          minimalChrome={hideFluff}
                           on:hide={hideGraph}
                         />
                       {/if}
