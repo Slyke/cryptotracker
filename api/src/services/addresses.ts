@@ -617,6 +617,44 @@ export class AddressService {
         const now = Date.now();
         await this.db.transaction({
           task: async (executor) => {
+            const utxoNetwork = address.network === 'bitcoin' || address.network === 'dogecoin';
+            if (utxoNetwork) {
+              const seenTransactionIds = new Set(result.transactions.map((transaction) => transaction.transactionId));
+              const pendingTransactions = await executor.query<{
+                transaction_id: string;
+              }>({
+                sql: `
+                  SELECT transaction_id
+                  FROM chain_transactions
+                  WHERE address_id = ? AND network = ? AND confirmation_state <> 'finalized'
+                `,
+                parameters: [addressId, address.network]
+              });
+              for (const pending of pendingTransactions) {
+                if (seenTransactionIds.has(pending.transaction_id)) continue;
+                const staleEvents = await executor.query<{ id: string }>({
+                  sql: `
+                    SELECT id FROM address_balance_events
+                    WHERE address_id = ? AND transaction_id = ?
+                  `,
+                  parameters: [addressId, pending.transaction_id]
+                });
+                for (const staleEvent of staleEvents) {
+                  await executor.run({
+                    sql: 'DELETE FROM internal_transfer_matches WHERE address_balance_event_id = ?',
+                    parameters: [staleEvent.id]
+                  });
+                }
+                await executor.run({
+                  sql: 'DELETE FROM address_balance_events WHERE address_id = ? AND transaction_id = ?',
+                  parameters: [addressId, pending.transaction_id]
+                });
+                await executor.run({
+                  sql: 'DELETE FROM chain_transactions WHERE address_id = ? AND network = ? AND transaction_id = ?',
+                  parameters: [addressId, address.network, pending.transaction_id]
+                });
+              }
+            }
             for (const transaction of result.transactions) {
               await executor.run({
                 sql: `
@@ -629,6 +667,7 @@ export class AddressService {
                   DO UPDATE SET
                     block_reference = excluded.block_reference,
                     transaction_position = excluded.transaction_position,
+                    occurred_at_ms = excluded.occurred_at_ms,
                     confirmation_state = excluded.confirmation_state,
                     raw_summary_json = excluded.raw_summary_json,
                     warning_json = excluded.warning_json
@@ -648,6 +687,49 @@ export class AddressService {
               });
             }
             for (const event of result.events) {
+              if (utxoNetwork && event.transactionId) {
+                const existingEvents = await executor.query<{ id: string }>({
+                  sql: `
+                    SELECT id
+                    FROM address_balance_events
+                    WHERE address_id = ? AND transaction_id = ? AND canonical_asset_id = ?
+                    ORDER BY finalized DESC, occurred_at_ms DESC, id
+                  `,
+                  parameters: [addressId, event.transactionId, event.canonicalAssetId]
+                });
+                const retained = existingEvents[0];
+                for (const duplicate of existingEvents.slice(1)) {
+                  await executor.run({
+                    sql: 'DELETE FROM internal_transfer_matches WHERE address_balance_event_id = ?',
+                    parameters: [duplicate.id]
+                  });
+                  await executor.run({
+                    sql: 'DELETE FROM address_balance_events WHERE id = ?',
+                    parameters: [duplicate.id]
+                  });
+                }
+                if (retained) {
+                  await executor.run({
+                    sql: `
+                      UPDATE address_balance_events
+                      SET occurred_at_ms = ?, ordering_key = ?, quantity_delta = ?,
+                          fee_quantity = ?, event_type = ?, finalized = ?, provenance_json = ?
+                      WHERE id = ?
+                    `,
+                    parameters: [
+                      event.occurredAtMs,
+                      event.orderingKey,
+                      event.quantityDelta,
+                      event.feeQuantity,
+                      event.eventType,
+                      event.finalized ? 1 : 0,
+                      JSON.stringify(event.provenance),
+                      retained.id
+                    ]
+                  });
+                  continue;
+                }
+              }
               await executor.run({
                 sql: `
                   INSERT INTO address_balance_events(
@@ -656,6 +738,8 @@ export class AddressService {
                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                   ON CONFLICT(address_id, canonical_asset_id, ordering_key, event_type)
                   DO UPDATE SET
+                    transaction_id = excluded.transaction_id,
+                    occurred_at_ms = excluded.occurred_at_ms,
                     quantity_delta = excluded.quantity_delta,
                     fee_quantity = excluded.fee_quantity,
                     finalized = excluded.finalized,
@@ -829,6 +913,7 @@ export class AddressService {
             ON address_asset_selections.address_id = address_balance_events.address_id
            AND address_asset_selections.canonical_asset_id = address_balance_events.canonical_asset_id
            AND address_asset_selections.enabled = 1
+          WHERE address_balance_events.finalized = 1
           ORDER BY address_balance_events.address_id,
                    address_balance_events.canonical_asset_id,
                    address_balance_events.occurred_at_ms,
@@ -1009,6 +1094,7 @@ export class AddressService {
               FROM address_balance_events
               JOIN tracked_addresses ON tracked_addresses.id = address_balance_events.address_id
               WHERE tracked_addresses.enabled = 1
+                AND address_balance_events.finalized = 1
               UNION ALL
               SELECT MIN(address_balance_points.bucket_start_ms) AS oldest
               FROM address_balance_points
@@ -1080,7 +1166,7 @@ export class AddressService {
           sql: `
             SELECT id, address_id, canonical_asset_id, occurred_at_ms, ordering_key, quantity_delta
             FROM address_balance_events
-            WHERE address_id = ? AND occurred_at_ms <= ?
+            WHERE address_id = ? AND occurred_at_ms <= ? AND finalized = 1
               AND canonical_asset_id IN (
                 SELECT canonical_asset_id
                 FROM address_asset_selections

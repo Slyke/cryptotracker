@@ -50,19 +50,28 @@ export const createProviderHttpClient = ({
     }
     const response = await limiter.execute<Response>({
       requestKey: requestKey ?? `${method}:${path}:${JSON.stringify(query)}:${JSON.stringify(jsonBody ?? body ?? null)}`,
-      task: async () => fetch(url, {
-        method,
-        headers: {
-          accept: 'application/json',
-          ...headers,
-          ...(jsonBody !== undefined
-            ? { 'content-type': 'application/json' }
-            : body
-              ? { 'content-type': 'application/x-www-form-urlencoded' }
-              : {})
-        },
-        body: jsonBody === undefined ? body : JSON.stringify(jsonBody)
-      })
+      task: async (signal) => {
+        const fetched = await fetch(url, {
+          method,
+          signal,
+          headers: {
+            accept: 'application/json',
+            ...headers,
+            ...(jsonBody !== undefined
+              ? { 'content-type': 'application/json' }
+              : body
+                ? { 'content-type': 'application/x-www-form-urlencoded' }
+                : {})
+          },
+          body: jsonBody === undefined ? body : JSON.stringify(jsonBody)
+        });
+        const buffered = await fetched.arrayBuffer();
+        return new Response(buffered, {
+          status: fetched.status,
+          statusText: fetched.statusText,
+          headers: fetched.headers
+        });
+      }
     });
     const text = await response.text();
     if (!response.ok) {

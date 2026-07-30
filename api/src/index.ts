@@ -58,7 +58,7 @@ const main = async () => {
   const settings = new SettingsService(db, runtime, userId);
   const portfolio = new PortfolioService(db, runtime);
   const transfers = new TransferService(db);
-  const exports = new ApplicationExportService(db, runtime, jobs, buildInfo);
+  const exports = new ApplicationExportService(db, runtime, jobs, buildInfo, userId);
   const retention = new RetentionService(db);
   const diagnostics = new DiagnosticsService(db, runtime, market, addresses, kraken);
   const scheduler = new Scheduler(db, runtime, market, addresses, kraken, portfolio, settings, retention, logger);

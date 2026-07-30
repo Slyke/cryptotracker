@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import PortfolioChart from '../../lib/components/PortfolioChart.svelte';
+  import PerformanceAnalytics from '../../lib/components/PerformanceAnalytics.svelte';
   import CurrencyValue from '../../lib/components/CurrencyValue.svelte';
   import LargeToggleButton from '../../lib/components/LargeToggleButton.svelte';
   import ColumnConfigurator from '../../lib/components/ColumnConfigurator.svelte';
@@ -255,7 +256,7 @@
   let earnTableDashboardName = 'Kraken Earn assets';
   let dismissedNotices: string[] = [];
   let enabledMarketAssets = new Set<string>();
-  const defaultPageOrder = ['summary', 'balances', 'earn', 'margin', 'chart', 'cost-basis', 'activity'];
+  const defaultPageOrder = ['summary', 'balances', 'earn', 'margin', 'chart', 'performance', 'cost-basis', 'activity'];
   let pageOrder = [...defaultPageOrder];
   let krakenRowOrder: string[] = [];
   let balanceColumns: Array<{ id: string; label: string; description?: string }> = [];
@@ -1698,6 +1699,14 @@
     on:saveGraph={saveGraph}
   />
   {/if}
+
+  {:else if blockId === 'performance'}
+  <PerformanceAnalytics
+    title="Kraken portfolio performance"
+    series={displayedKrakenSeries}
+    {timezone}
+    returnMethod="value"
+  />
 
   {:else if blockId === 'cost-basis'}
   <section class="panel">

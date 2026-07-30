@@ -126,16 +126,25 @@ export class KrakenReadOnlyClient {
       const signature = createHmac('sha512', secret).update(message).digest('base64');
       const response = await this.limiter.execute<Response>({
         requestKey: `${path}:${JSON.stringify(parameters)}`,
-        task: async () => fetch(new URL(path, this.config.baseUrl), {
-          method: 'POST',
-          headers: {
-            accept: 'application/json',
-            'content-type': 'application/x-www-form-urlencoded',
-            'api-key': this.credentials.apiKey!,
-            'api-sign': signature
-          },
-          body: encoded
-        })
+        task: async (signal) => {
+          const fetched = await fetch(new URL(path, this.config.baseUrl), {
+            method: 'POST',
+            signal,
+            headers: {
+              accept: 'application/json',
+              'content-type': 'application/x-www-form-urlencoded',
+              'api-key': this.credentials.apiKey!,
+              'api-sign': signature
+            },
+            body: encoded
+          });
+          const buffered = await fetched.arrayBuffer();
+          return new Response(buffered, {
+            status: fetched.status,
+            statusText: fetched.statusText,
+            headers: fetched.headers
+          });
+        }
       });
       const payload = await response.json() as { error?: string[]; result?: T };
       const errors = payload.error ?? [];

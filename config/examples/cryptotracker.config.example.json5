@@ -56,6 +56,8 @@
         issuer: null,
         audience: null,
         clockSkewSeconds: 30,
+        // Signed identity tokens must contain iat and exp and may live for at most one year.
+        maxTokenTtlSeconds: 31536000,
       },
     },
   },
@@ -136,6 +138,9 @@
   exports: {
     directory: '/app/data/exports',
     artifactTtlHours: 24,
+    // Restore uploads and expanded ZIP contents are capped independently.
+    restoreBodyLimit: '128mb',
+    restoreMaxUncompressedBytes: 536870912,
   },
   logging: {
     sinks: {

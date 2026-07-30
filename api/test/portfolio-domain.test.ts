@@ -116,6 +116,24 @@ describe('owned-transfer reconciliation', () => {
         occurredAtMs: 2_000
       }
     }).confidence).toBe('unmatched');
+    expect(reconcileTransfer({
+      kraken,
+      chain: {
+        id: 'c4',
+        source: 'chain',
+        assetId: 'bitcoin',
+        direction: 'in',
+        quantity: '100',
+        occurredAtMs: 2_000,
+        transactionId: 'abc',
+        network: 'bitcoin'
+      }
+    })).toMatchObject({
+      confidence: 'unmatched',
+      evidence: {
+        reason: 'identifier_amount_mismatch'
+      }
+    });
   });
 
   it('carries proportional basis and isolates fee basis', () => {

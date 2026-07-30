@@ -60,7 +60,7 @@ export class Scheduler {
         });
       }
       if (this.due({ key: 'portfolio-snapshot', intervalMinutes: 30, now })) {
-        await this.portfolio.capture({ capturedAtMs: now });
+        await this.portfolio.capture();
       }
       const quoteCurrencies = [...new Set([
         settings.primaryCurrency,

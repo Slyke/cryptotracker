@@ -132,6 +132,7 @@ export class PortfolioService {
             ON selection.address_id = events.address_id
            AND selection.canonical_asset_id = events.canonical_asset_id
            AND selection.enabled = 1
+          WHERE events.finalized = 1
           ORDER BY events.address_id, events.canonical_asset_id,
                    events.occurred_at_ms, events.ordering_key, events.id
         `
@@ -221,7 +222,8 @@ export class PortfolioService {
     };
   }
 
-  async capture({ capturedAtMs = Date.now() }: { capturedAtMs?: number } = {}) {
+  async capture() {
+    const capturedAtMs = Date.now();
     const bucketMs = 30 * 60_000;
     const bucketStartMs = Math.floor(capturedAtMs / bucketMs) * bucketMs;
     const [{ quantities, incompleteBalanceCount, addressCount, krakenAssetRowCount }, currencyConfig] = await Promise.all([
@@ -315,7 +317,6 @@ export class PortfolioService {
     toMs: number;
     quoteCurrencies?: string[];
   }) {
-    await this.capture({ capturedAtMs: Math.min(Date.now(), toMs) });
     const currencyConfig = await this.configuredCurrencies();
     const currencies = [...new Set([
       currencyConfig.primaryCurrency,

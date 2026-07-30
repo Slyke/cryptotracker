@@ -62,7 +62,7 @@ For SQLite, persist `/app/data`, including the database, WAL, and SHM files. Use
 
 For PostgreSQL, use normal PostgreSQL physical or logical backup tooling and test restores. Protect both database backups and deployment secrets.
 
-The complete application export is a streaming data-portability archive. It is not a transaction-consistent database backup and has no import/restore function. Export artifacts expire after the configured TTL; canonical rows do not.
+Settings can create a streaming ZIP backup and restore selected dependency-safe JSON data groups. Credentials, password hashes, sessions, jobs, audit history, and deployment secrets are always excluded. A restore atomically replaces the selected application data groups, but the ZIP is not a transaction-consistent substitute for SQLite or PostgreSQL operator backups. Generated download artifacts expire after the configured TTL; canonical rows do not.
 
 ## Production container
 

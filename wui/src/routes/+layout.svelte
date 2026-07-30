@@ -26,6 +26,7 @@
     { href: '/markets', label: 'Markets' },
     { href: '/addresses', label: 'Addresses' },
     { href: '/kraken', label: 'Kraken' },
+    { href: '/calculations', label: 'Calculations' },
     { href: '/settings', label: 'Settings' }
   ];
 

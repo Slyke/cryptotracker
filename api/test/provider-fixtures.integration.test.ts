@@ -398,6 +398,7 @@ describe('recorded provider fixtures', () => {
             contractAddress: contract,
             tokenDecimal: '18',
             tokenSymbol: 'SHIB',
+            confirmations: '1',
             value: '1000000000000000000'
           }]
         : [];
@@ -431,7 +432,8 @@ describe('recorded provider fixtures', () => {
     expect(result.events).toContainEqual(expect.objectContaining({
       canonicalAssetId: 'shiba-inu',
       quantityDelta: '1',
-      eventType: 'token_receive'
+      eventType: 'token_receive',
+      finalized: false
     }));
   });
 

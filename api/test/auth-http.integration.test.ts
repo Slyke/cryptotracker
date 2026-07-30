@@ -242,6 +242,87 @@ describe('authentication security', () => {
       })).rejects.toMatchObject({
         errorKey: 'AUTH_SIGNED_IDENTITY_INVALID'
       });
+
+      const missingLifetime = await new SignJWT({
+        preferred_username: 'signed-user',
+        groups: ['operators']
+      })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuer('fixture-issuer')
+        .setAudience('fixture-audience')
+        .sign(new TextEncoder().encode(secret));
+      await expect(auth.authenticate({
+        req: requestFixture({
+          remoteAddress: '127.0.0.1',
+          headers: { 'x-oauth-identity': missingLifetime }
+        }),
+        correlationId: 'missing-lifetime'
+      })).rejects.toMatchObject({
+        errorKey: 'AUTH_SIGNED_IDENTITY_INVALID'
+      });
+
+      const nowSeconds = Math.floor(Date.now() / 1_000);
+      const tooLong = await new SignJWT({
+        preferred_username: 'signed-user',
+        groups: ['operators']
+      })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuer('fixture-issuer')
+        .setAudience('fixture-audience')
+        .setIssuedAt(nowSeconds)
+        .setExpirationTime(nowSeconds + 31_536_001)
+        .sign(new TextEncoder().encode(secret));
+      await expect(auth.authenticate({
+        req: requestFixture({
+          remoteAddress: '127.0.0.1',
+          headers: { 'x-oauth-identity': tooLong }
+        }),
+        correlationId: 'too-long'
+      })).rejects.toMatchObject({
+        errorKey: 'AUTH_SIGNED_IDENTITY_INVALID'
+      });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('blocks a local login source for ten seconds after ten failures', async () => {
+    const runtime = await createTestRuntime();
+    const { db } = await openMigratedTestDatabase({ runtime });
+    const auth = new AuthService(runtime, db, createTestLogger({ runtime }));
+    const responseHeaders = new Map<string, string>();
+    const response = {
+      setHeader: (name: string, value: string) => responseHeaders.set(name, value)
+    } as unknown as import('express').Response;
+    try {
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await expect(auth.login({
+          username: 'missing-user',
+          password: 'wrong',
+          req: requestFixture({
+            remoteAddress: '127.0.0.1',
+            headers: {}
+          }),
+          res: response,
+          correlationId: `failed-${attempt}`
+        })).rejects.toMatchObject({
+          errorKey: 'AUTH_LOGIN_INVALID'
+        });
+      }
+      await expect(auth.login({
+        username: 'missing-user',
+        password: 'wrong',
+        req: requestFixture({
+          remoteAddress: '127.0.0.1',
+          headers: {}
+        }),
+        res: response,
+        correlationId: 'throttled'
+      })).rejects.toMatchObject({
+        errorKey: 'AUTH_LOGIN_THROTTLED',
+        status: 429
+      });
+      expect(responseHeaders.get('Retry-After')).toBe('10');
     } finally {
       await db.close();
     }

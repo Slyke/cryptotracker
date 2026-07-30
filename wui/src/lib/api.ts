@@ -90,6 +90,49 @@ export const apiRequest = async <T>({
   return payload as T;
 };
 
+export const apiBinaryRequest = async <T>({
+  url,
+  body,
+  method = 'POST'
+}: {
+  url: string;
+  body: Blob | ArrayBuffer;
+  method?: 'POST' | 'PUT' | 'PATCH';
+}): Promise<T> => {
+  const response = await fetch(url, {
+    method,
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/zip',
+      ...(csrfToken ? { 'x-csrf-token': csrfToken } : {})
+    },
+    body
+  });
+  const text = await response.text();
+  let payload: unknown = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text) as unknown;
+    } catch {
+      payload = text;
+    }
+  }
+  if (!response.ok) {
+    const message = (
+      payload
+      && typeof payload === 'object'
+      && 'error' in payload
+      && payload.error
+      && typeof payload.error === 'object'
+      && 'message' in payload.error
+    )
+      ? String(payload.error.message)
+      : `${response.status} ${response.statusText}`;
+    throw new ApiError(message, response.status, payload);
+  }
+  return payload as T;
+};
+
 export const bootstrapSession = async () => {
   session.update((current) => ({ ...current, loading: true, error: null }));
   try {

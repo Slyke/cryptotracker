@@ -18,8 +18,8 @@
   "cryptotracker-read_only-label": "Read-only upstream boundary",
   "cryptotracker-retention-label": "Historical market points and derived snapshots are kept forever by default; Settings can apply a finite retention window.",
   "cryptotracker-build-label": "v{$version} · {$buildHash}",
-  "cryptotracker-export-start-label": "Create complete export",
-  "cryptotracker-export-backup_notice-label": "A complete export supports data portability; it is not a transaction-consistent database backup.",
+  "cryptotracker-export-start-label": "Create ZIP backup",
+  "cryptotracker-export-backup_notice-label": "A portable ZIP backup supports selective application-data restore; it is not a transaction-consistent database backup.",
   "cryptotracker-address_privacy-label": "The selected external chain provider receives this public address.",
   "cryptotracker-chart-empty-label": "No cached data is available for this view yet.",
   "cryptotracker-log_disabled-label": "Logarithmic scale requires every visible value to be greater than zero."

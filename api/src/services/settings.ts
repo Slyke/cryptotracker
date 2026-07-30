@@ -16,6 +16,21 @@ export interface DashboardRowSettings {
   itemIds: string[];
 }
 
+export interface SavedCalculationSettings {
+  id: string;
+  name: string;
+  startDate: string;
+  currency: string;
+  principal: number;
+  ratePercent: number;
+  rateKind: 'apy' | 'apr';
+  periodsPerYear: 1 | 12 | 52 | 365;
+  durationValue: number;
+  durationUnit: 'days' | 'months' | 'years';
+  contributionPerPeriod: number;
+  targetAmount: number | null;
+}
+
 export interface UserSettings {
   locale: string;
   timezone: string;
@@ -34,6 +49,7 @@ export interface UserSettings {
   tableColumns: Record<string, string[]>;
   tableRows: Record<string, string[]>;
   savedGraphs: SavedGraphSettings[];
+  savedCalculations: SavedCalculationSettings[];
   dashboardRows: DashboardRowSettings[];
   dashboardGraphColumns: 1 | 2 | 3 | 4;
   dismissedNotices: string[];
@@ -85,6 +101,7 @@ export class SettingsService {
       tableColumns: {},
       tableRows: {},
       savedGraphs: [],
+      savedCalculations: [],
       dashboardRows: [],
       dashboardGraphColumns: 2,
       dismissedNotices: [],

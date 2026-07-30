@@ -9,6 +9,7 @@ const providerRateSchema = z.object({
   concurrency: z.number().int().min(1).max(16).default(1),
   burst: z.number().int().min(1).max(100).default(2),
   refillPerSecond: z.number().positive().max(100).default(0.8),
+  requestTimeoutMs: z.number().int().min(1_000).max(300_000).default(30_000),
   maxRetries: z.number().int().min(0).max(10).default(3),
   baseBackoffMs: z.number().int().positive().default(1_000),
   cooldownThreshold: z.number().int().positive().default(3),
@@ -273,13 +274,15 @@ const configBaseSchema = z.object({
         headerName: z.string().min(1).default('X-Oauth-Identity'),
         issuer: z.string().min(1).nullable().default(null),
         audience: z.string().min(1).nullable().default(null),
-        clockSkewSeconds: z.number().int().min(0).max(300).default(30)
+        clockSkewSeconds: z.number().int().min(0).max(300).default(30),
+        maxTokenTtlSeconds: z.number().int().min(60).max(31_536_000).default(31_536_000)
       }).prefault({
         enabled: false,
         headerName: 'X-Oauth-Identity',
         issuer: null,
         audience: null,
-        clockSkewSeconds: 30
+        clockSkewSeconds: 30,
+        maxTokenTtlSeconds: 31_536_000
       })
     }).prefault({
       enabled: false,
@@ -294,7 +297,8 @@ const configBaseSchema = z.object({
         headerName: 'X-Oauth-Identity',
         issuer: null,
         audience: null,
-        clockSkewSeconds: 30
+        clockSkewSeconds: 30,
+        maxTokenTtlSeconds: 31_536_000
       }
     })
   }).prefault({
@@ -320,7 +324,8 @@ const configBaseSchema = z.object({
         headerName: 'X-Oauth-Identity',
         issuer: null,
         audience: null,
-        clockSkewSeconds: 30
+        clockSkewSeconds: 30,
+        maxTokenTtlSeconds: 31_536_000
       }
     }
   }),
@@ -533,10 +538,14 @@ const configBaseSchema = z.object({
   }),
   exports: z.object({
     directory: z.string().min(1).default('/app/data/exports'),
-    artifactTtlHours: z.number().int().positive().default(24)
+    artifactTtlHours: z.number().int().positive().default(24),
+    restoreBodyLimit: z.string().min(1).max(32).default('128mb'),
+    restoreMaxUncompressedBytes: z.number().int().positive().default(512 * 1024 * 1024)
   }).prefault({
     directory: '/app/data/exports',
-    artifactTtlHours: 24
+    artifactTtlHours: 24,
+    restoreBodyLimit: '128mb',
+    restoreMaxUncompressedBytes: 512 * 1024 * 1024
   }),
   logging: loggingSchema.prefault({})
 });

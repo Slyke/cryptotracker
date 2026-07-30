@@ -16,6 +16,7 @@ const rateConfig = {
   concurrency: 2,
   burst: 10,
   refillPerSecond: 10,
+  requestTimeoutMs: 1_000,
   maxRetries: 1,
   baseBackoffMs: 1,
   cooldownThreshold: 3,
@@ -82,6 +83,26 @@ describe('provider controls', () => {
       }
     })).resolves.toBe('recovered');
     expect(attempts).toBe(2);
+  });
+
+  it('terminates a provider request that exceeds its timeout', async () => {
+    const limiter = new ProviderRateLimiter('fixture-timeout', {
+      ...rateConfig,
+      requestTimeoutMs: 20,
+      maxRetries: 0
+    });
+    await expect(limiter.execute({
+      requestKey: 'never-finishes',
+      task: async () => new Promise<string>(() => undefined)
+    })).rejects.toMatchObject({
+      errorKey: 'PROVIDER_REQUEST_FAILED',
+      status: 504,
+      context: {
+        provider: 'fixture-timeout',
+        failureKind: 'timeout',
+        timeoutMs: 20
+      }
+    });
   });
 
   it('records a terminal HTTP failure once instead of opening the circuit twice', async () => {

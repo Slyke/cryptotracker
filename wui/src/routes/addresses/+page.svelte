@@ -3,6 +3,7 @@
   import ColumnConfigurator from '../../lib/components/ColumnConfigurator.svelte';
   import DismissableNotice from '../../lib/components/DismissableNotice.svelte';
   import PortfolioChart from '../../lib/components/PortfolioChart.svelte';
+  import PerformanceAnalytics from '../../lib/components/PerformanceAnalytics.svelte';
   import ReorderableBlock from '../../lib/components/ReorderableBlock.svelte';
   import type {
     ChartDenominationOption,
@@ -103,7 +104,7 @@
     'coverage',
     'history'
   ];
-  const defaultPageOrder = ['add', 'tracked', 'chart', 'holdings'];
+  const defaultPageOrder = ['add', 'tracked', 'chart', 'performance', 'holdings'];
 
   let addresses: TrackedAddress[] = [];
   let mainnets: MainnetOption[] = [];
@@ -552,7 +553,7 @@
 
   <div class="address-page-grid">
   {#each pageOrder as blockId, index (blockId)}
-    <div class:wide-address-block={blockId === 'chart' || blockId === 'holdings'}>
+    <div class:wide-address-block={blockId === 'chart' || blockId === 'performance' || blockId === 'holdings'}>
     <ReorderableBlock
       {blockId}
       label={blockId}
@@ -717,6 +718,14 @@
           emptyMessage="No address portfolio history is cached yet. Add a public address or use Refresh on a tracked address, then follow progress in Settings → Synchronization."
           on:stateChange={graphStateChanged}
           on:saveGraph={saveGraph}
+        />
+
+      {:else if blockId === 'performance'}
+        <PerformanceAnalytics
+          title="Address portfolio performance"
+          {series}
+          {timezone}
+          returnMethod="value"
         />
 
       {:else if blockId === 'holdings'}

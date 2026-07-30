@@ -37,6 +37,11 @@ interface SessionRow {
   expires_at_ms: number | string;
 }
 
+interface LoginFailureState {
+  failures: number;
+  blockedUntilMs: number;
+}
+
 const normalizeUsername = ({ username }: { username: string }) => username.trim().toLowerCase();
 const normalizeSet = ({ values }: { values: string[] }) => new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean));
 
@@ -58,6 +63,7 @@ export class AuthService {
   private readonly allowedUsers: Set<string>;
   private readonly allowedGroups: Set<string>;
   private readonly sessionCookieName: string;
+  private readonly loginFailures = new Map<string, LoginFailureState>();
   private localUserId: string | null = null;
 
   constructor(
@@ -148,6 +154,20 @@ export class AuthService {
     correlationId: string;
   }) {
     const normalized = normalizeUsername({ username });
+    const sourceIp = req.socket.remoteAddress ?? 'unknown';
+    const failureKey = `${normalizeIpAddress({ value: sourceIp })}:${normalized}`;
+    const previousFailures = this.loginFailures.get(failureKey);
+    if (previousFailures && previousFailures.blockedUntilMs > Date.now()) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((previousFailures.blockedUntilMs - Date.now()) / 1_000));
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      throw new AppError({
+        errorKey: 'AUTH_LOGIN_THROTTLED',
+        reason: `Too many failed login attempts. Try again in ${retryAfterSeconds} seconds.`,
+        status: 429,
+        context: { retryAfterSeconds }
+      });
+    }
+    if (previousFailures?.blockedUntilMs) this.loginFailures.delete(failureKey);
     const user = await this.db.one<UserRow>({
       sql: 'SELECT id, username, password_hash, session_version FROM app_user WHERE username = ?',
       parameters: [normalized]
@@ -158,6 +178,11 @@ export class AuthService {
       && await argon2.verify(user.password_hash, password)
     );
     if (!valid || !user) {
+      const failures = (this.loginFailures.get(failureKey)?.failures ?? 0) + 1;
+      this.loginFailures.set(failureKey, {
+        failures,
+        blockedUntilMs: failures >= 10 ? Date.now() + 10_000 : 0
+      });
       this.logger.warn({
         caller: 'auth::login',
         loggerKey: 'AUTH_LOCAL_LOGIN_DENIED',
@@ -165,7 +190,8 @@ export class AuthService {
         correlationId,
         context: {
           username: normalized,
-          sourceIp: req.socket.remoteAddress ?? null
+          sourceIp: req.socket.remoteAddress ?? null,
+          failures
         }
       });
       await this.audit({
@@ -185,6 +211,7 @@ export class AuthService {
       });
     }
 
+    this.loginFailures.delete(failureKey);
     const id = createOpaqueToken();
     const csrfToken = createOpaqueToken();
     const expiresAtMs = Date.now() + (this.runtime.config.auth.local.sessionTtlMinutes * 60_000);
@@ -371,9 +398,21 @@ export class AuthService {
             algorithms: ['HS256'],
             issuer: config.signedIdentity.issuer!,
             audience: config.signedIdentity.audience!,
-            clockTolerance: config.signedIdentity.clockSkewSeconds
+            clockTolerance: config.signedIdentity.clockSkewSeconds,
+            requiredClaims: ['iat', 'exp']
           }
         );
+        const issuedAt = result.payload.iat;
+        const expiresAt = result.payload.exp;
+        if (
+          typeof issuedAt !== 'number'
+          || typeof expiresAt !== 'number'
+          || expiresAt <= issuedAt
+          || expiresAt - issuedAt > config.signedIdentity.maxTokenTtlSeconds
+          || issuedAt > Math.floor(Date.now() / 1_000) + config.signedIdentity.clockSkewSeconds
+        ) {
+          throw new Error('Signed identity token lifetime is invalid.');
+        }
         username = normalizeUsername({
           username: String(result.payload.preferred_username ?? result.payload.sub ?? '')
         });

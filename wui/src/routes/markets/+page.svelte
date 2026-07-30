@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import PortfolioChart from '../../lib/components/PortfolioChart.svelte';
+  import PerformanceAnalytics from '../../lib/components/PerformanceAnalytics.svelte';
   import LargeToggleButton from '../../lib/components/LargeToggleButton.svelte';
   import ColumnConfigurator from '../../lib/components/ColumnConfigurator.svelte';
   import ReorderableBlock from '../../lib/components/ReorderableBlock.svelte';
@@ -73,7 +74,7 @@
   let pageLayouts: Record<string, string[]> = {};
   let collapsedBlocks: Record<string, string[]> = {};
   let tableColumns: Record<string, string[]> = {};
-  const defaultPageOrder = ['controls', 'portfolio', 'chart', 'watchlist'];
+  const defaultPageOrder = ['controls', 'portfolio', 'chart', 'performance', 'watchlist'];
   let pageOrder = [...defaultPageOrder];
   const watchlistColumnOptions = [
     { id: 'asset', label: 'Asset' },
@@ -673,7 +674,9 @@
           ? 'Combined portfolio chart'
           : blockId === 'chart'
             ? 'Market chart'
-            : 'Watchlist'}
+            : blockId === 'performance'
+              ? 'Performance analytics'
+              : 'Watchlist'}
       {index}
       total={pageOrder.length}
       collapsed={collapsedBlocks.markets?.includes(blockId) ?? false}
@@ -777,6 +780,14 @@
     emptyMessage="No cached market prices are available for the selected assets and range. Use Queue backfill in Market controls, then follow progress in Settings → Synchronization."
     on:stateChange={graphStateChanged}
     on:saveGraph={saveGraph}
+  />
+
+  {:else if blockId === 'performance'}
+  <PerformanceAnalytics
+    title="Market performance"
+    {series}
+    {timezone}
+    returnMethod="price"
   />
 
   {:else if blockId === 'watchlist'}

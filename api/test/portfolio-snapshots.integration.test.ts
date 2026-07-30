@@ -76,7 +76,9 @@ describe('combined portfolio snapshots', () => {
         });
       }
 
-      const result = await new PortfolioService(db, runtime).series({
+      const service = new PortfolioService(db, runtime);
+      await service.capture();
+      const result = await service.series({
         fromMs: 0,
         toMs: now + 1_000,
         quoteCurrencies: ['CAD']
@@ -92,6 +94,15 @@ describe('combined portfolio snapshots', () => {
           bitcoin: '2',
           ethereum: '3'
         }
+      });
+      expect(await db.one<{ count: number }>({
+        sql: 'SELECT COUNT(*) AS count FROM portfolio_snapshots'
+      })).toEqual({ count: 1 });
+
+      await service.series({
+        fromMs: 0,
+        toMs: 1_000,
+        quoteCurrencies: ['CAD']
       });
       expect(await db.one<{ count: number }>({
         sql: 'SELECT COUNT(*) AS count FROM portfolio_snapshots'

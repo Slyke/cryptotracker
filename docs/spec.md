@@ -98,7 +98,7 @@ The following are out of scope unless a later specification adds them:
 - horizontal application scaling
 - automated backup scheduling or restore workflows
 - application-driven SQLite-to-Postgres data migration
-- importing a complete application export back into a running instance
+- importing authentication secrets, sessions, operational jobs, or audit history from an application backup
 
 ## 4. Architecture
 
@@ -357,6 +357,8 @@ There must not be a generic rule that maps every environment variable into arbit
         headerName: 'X-Oauth-Identity',
         issuer: 'https://oauth.example.ca',
         audience: 'cryptotracker',
+        clockSkewSeconds: 30,
+        maxTokenTtlSeconds: 31536000,
       },
     },
   },
@@ -1141,7 +1143,7 @@ The export is a streaming archive containing:
 - chain transactions, balance events, balance points, and sync completeness
 - Kraken trades, ledgers, snapshots, balances, Earn/staking and margin records, and sync completeness
 - internal-transfer matches, cost-basis lots, and calculation runs
-- non-sensitive job and audit history
+- named calculation scenarios stored in user preferences
 
 The archive excludes:
 
@@ -1150,10 +1152,11 @@ The archive excludes:
 - password hashes
 - sessions, cookies, CSRF tokens, and signed identity material
 - deployment-specific trusted proxy secrets
+- operational jobs, audit history, and generated export artifacts
 
 The UI shows progress, estimated or known archive size, completion, failure, and expiry of the generated download. Archive artifacts may expire without deleting canonical data. Generation must be streaming or chunked and must not load the entire database or archive into memory.
 
-This is a data-portability export, not an automated backup or transaction-consistent restore mechanism. Import and restore are out of scope and remain operator-managed.
+The ZIP contains dependency-safe JSON files for preferences, markets, addresses, Kraken, portfolio snapshots, and calculations. Settings can inspect an uploaded ZIP and atomically replace any selected files. This application-level restore is intentionally separate from transaction-consistent database backup and disaster recovery, which remain operator-managed.
 
 ## 12. Address Tracking
 
@@ -2106,7 +2109,7 @@ Image publishing should produce:
 
 ### 21.5 Backup Responsibility
 
-Automated backup, restore, and cross-database migration workflows are not application features. Operators may back up SQLite volumes or Postgres using their normal platform tooling. Documentation must state that the complete application export is for data portability and is not a substitute for a transaction-consistent database backup.
+Application-level ZIP backup and selective restore are available for portable portfolio data. Automated schedules, secret restoration, and transaction-consistent database or cross-database disaster recovery remain operator-managed. Operators may back up SQLite volumes or PostgreSQL using their normal platform tooling; documentation must state that the portable ZIP is not a substitute for those backups.
 
 ## 22. Testing Requirements
 
@@ -2272,7 +2275,7 @@ The initial implementation is acceptable when:
 43. Exact owned transfers between Kraken and tracked addresses do not create false gains, losses, rewards, or duplicated holdings.
 44. Wrapped assets, forks, migrations, redenominations, delistings, and stablecoins follow explicit lifecycle and valuation rules.
 45. Stablecoins are never silently valued at their named peg without observed price data.
-46. A complete application export streams all non-secret retained data with a versioned manifest and excludes credentials, password hashes, and sessions.
+46. An application ZIP backup streams restorable data groups with a versioned manifest and excludes credentials, password hashes, sessions, jobs, and audit history.
 47. Compatible line graphs support normalized percentage comparison without losing raw values.
 48. Available trades, transfers, rewards, and address transactions can be shown as toggleable, accessible event markers.
 49. A synchronized volume subplot is available when the selected source has meaningful volume.

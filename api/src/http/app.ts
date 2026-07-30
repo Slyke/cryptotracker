@@ -355,6 +355,38 @@ const registerRoutes = ({
             }
           });
         }).optional(),
+        savedCalculations: z.array(z.object({
+          id: z.string().min(1).max(200),
+          name: z.string().trim().min(1).max(120),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          currency: z.string().length(3).transform((value) => value.toUpperCase()),
+          principal: z.number().finite().min(0).max(1e15),
+          ratePercent: z.number().finite().min(-99.99).max(10_000),
+          rateKind: z.enum(['apy', 'apr']),
+          periodsPerYear: z.union([
+            z.literal(1),
+            z.literal(12),
+            z.literal(52),
+            z.literal(365)
+          ]),
+          durationValue: z.number().finite().positive().max(200),
+          durationUnit: z.enum(['days', 'months', 'years']),
+          contributionPerPeriod: z.number().finite().min(0).max(1e15),
+          targetAmount: z.number().finite().positive().max(1e18).nullable()
+        }).strict()).max(100).superRefine((calculations, refinement) => {
+          const names = new Set<string>();
+          calculations.forEach((calculation, index) => {
+            const normalized = calculation.name.toLocaleLowerCase();
+            if (names.has(normalized)) {
+              refinement.addIssue({
+                code: 'custom',
+                path: [index, 'name'],
+                message: 'Saved calculation names must be unique.'
+              });
+            }
+            names.add(normalized);
+          });
+        }).optional(),
         dashboardRows: z.array(z.object({
           id: z.string().min(1).max(200),
           name: z.string().min(1).max(120),
@@ -933,7 +965,7 @@ const registerRoutes = ({
   }));
   app.get('/api/exports/application/:id/download', asyncRoute(async (req, res) => {
     const download = await context.exports.download({ id: String(req.params.id) });
-    res.setHeader('Content-Type', 'application/gzip');
+    res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${download.fileName}"`);
     res.setHeader('Content-Length', download.size);
     res.setHeader('X-Checksum-Sha256', download.checksumSha256 ?? '');
@@ -945,6 +977,61 @@ const registerRoutes = ({
       targetIdentifier: String(req.params.id)
     });
     await pipeline(download.stream, res);
+  }));
+  const receiveBackup = express.raw({
+    type: ['application/zip', 'application/octet-stream'],
+    limit: context.runtime.config.exports.restoreBodyLimit
+  });
+  const backupBytes = (req: Request) => {
+    if (!Buffer.isBuffer(req.body) || req.body.byteLength === 0) {
+      throw new AppError({
+        errorKey: 'BACKUP_INVALID',
+        reason: 'A non-empty ZIP backup must be uploaded.',
+        status: 400
+      });
+    }
+    return new Uint8Array(req.body);
+  };
+  app.post('/api/backups/inspect', requireCsrf, receiveBackup, asyncRoute(async (req, res) => {
+    res.json({
+      ok: true,
+      backup: context.exports.inspect({
+        archiveBytes: backupBytes(req)
+      })
+    });
+  }));
+  app.post('/api/backups/restore', requireCsrf, receiveBackup, asyncRoute(async (req, res) => {
+    const query = parse({
+      schema: z.object({
+        domains: z.string().min(1),
+        confirmation: z.literal('replace-selected-data')
+      }),
+      value: req.query
+    });
+    const domains = z.array(z.enum([
+      'preferences',
+      'markets',
+      'addresses',
+      'kraken',
+      'portfolio',
+      'calculations'
+    ])).min(1).parse(query.domains.split(','));
+    const result = await context.exports.restore({
+      archiveBytes: backupBytes(req),
+      domains
+    });
+    await auditMutation({
+      context,
+      req,
+      action: 'application.backup.restore',
+      targetType: 'backup',
+      targetIdentifier: null,
+      details: {
+        domains: result.restoredDomains.map((domain) => domain.id),
+        rowCount: result.restoredDomains.reduce((sum, domain) => sum + domain.rowCount, 0)
+      }
+    });
+    res.json({ ok: true, restore: result });
   }));
 };
 

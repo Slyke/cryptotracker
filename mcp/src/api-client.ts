@@ -117,7 +117,7 @@ export class ApiClient {
         rejectUnauthorized: this.config.verifyTls,
         ...(url.protocol === 'https:' && this.ca ? { ca: this.ca } : {}),
         headers: {
-          accept: 'application/json, text/csv, application/gzip',
+          accept: 'application/json, text/csv, application/zip',
           [this.config.apiKeyHeaderName]: this.apiKey,
           ...(correlationId ? { 'x-correlation-id': correlationId } : {}),
           ...(requestBody ? {

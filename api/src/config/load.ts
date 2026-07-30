@@ -235,6 +235,19 @@ const applyConfigOverrides = ({
       })
     });
   }
+  if (
+    env.CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_MAX_TTL_SECONDS !== undefined
+    && env.CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_MAX_TTL_SECONDS !== ''
+  ) {
+    setPath({
+      target: rawConfig,
+      path: ['auth', 'header', 'signedIdentity', 'maxTokenTtlSeconds'],
+      value: parseNumber({
+        key: 'CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_MAX_TTL_SECONDS',
+        value: env.CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_MAX_TTL_SECONDS
+      })
+    });
+  }
   for (const [key, path] of booleanOverrides) {
     if (env[key] !== undefined && env[key] !== '') {
       setPath({

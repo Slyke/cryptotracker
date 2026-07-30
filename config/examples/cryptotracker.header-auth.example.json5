@@ -20,6 +20,8 @@
         headerName: 'X-Oauth-Identity',
         issuer: 'https://oauth.example.ca',
         audience: 'cryptotracker',
+        // The upstream issuer must set iat and exp; CryptoTracker rejects TTLs over one year.
+        maxTokenTtlSeconds: 31536000,
       },
     },
   },

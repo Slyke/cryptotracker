@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { JobQueue } from '../src/jobs/queue.js';
-import { createChainAdapters } from '../src/providers/chains.js';
+import type { JobHandler, JobQueue, JobRecord } from '../src/jobs/queue.js';
+import { createChainAdapters, type ChainAdapter } from '../src/providers/chains.js';
 import { AddressService } from '../src/services/addresses.js';
 import { openMigratedTestDatabase } from './helpers.js';
 
@@ -224,6 +224,110 @@ describe('enabled address mainnets', () => {
         },
         balanceObserved: true
       });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('updates a UTXO event in place when it confirms and excludes it while pending', async () => {
+    const { db, runtime } = await openMigratedTestDatabase();
+    const now = Date.now();
+    let finalized = false;
+    let syncHandler: JobHandler | null = null;
+    const jobs = {
+      register: vi.fn(({ jobType, handler }: { jobType: string; handler: JobHandler }) => {
+        if (jobType === 'address.sync') syncHandler = handler;
+      }),
+      enqueue: vi.fn(async () => ({ coalesced: false, job: { id: 'queued' } }))
+    } as unknown as JobQueue;
+    const adapter: ChainAdapter = {
+      network: 'bitcoin',
+      fetchHistory: async () => ({
+        transactions: [{
+          transactionId: 'tx-1',
+          blockReference: finalized ? '100' : null,
+          transactionPosition: null,
+          occurredAtMs: now,
+          confirmationState: finalized ? 'finalized' : 'unconfirmed',
+          rawSummary: {},
+          warning: null
+        }],
+        events: [{
+          transactionId: 'tx-1',
+          canonicalAssetId: 'bitcoin',
+          occurredAtMs: now,
+          orderingKey: finalized ? '100:tx-1' : 'unconfirmed:tx-1',
+          quantityDelta: '1',
+          feeQuantity: null,
+          eventType: 'receive',
+          finalized,
+          provenance: { provider: 'fixture' }
+        }],
+        cursor: {},
+        completeness: 'complete',
+        providerBoundary: {},
+        warnings: []
+      }),
+      status: () => ({
+        status: 'healthy',
+        consecutiveFailures: 0,
+        cooldownUntilMs: 0,
+        lastSuccessAtMs: null,
+        lastFailureAtMs: null
+      })
+    };
+    const service = new AddressService(
+      db,
+      runtime,
+      new Map([['bitcoin', adapter]]),
+      jobs
+    );
+    try {
+      await db.run({
+        sql: `
+          INSERT INTO tracked_addresses(
+            id, network, address, normalized_address, label, enabled, created_at_ms, updated_at_ms
+          ) VALUES ('address-bitcoin', 'bitcoin', 'fixture', 'fixture', 'Bitcoin wallet', 1, ?, ?)
+        `,
+        parameters: [now, now]
+      });
+      await db.run({
+        sql: `
+          INSERT INTO address_asset_selections(
+            id, address_id, canonical_asset_id, contract_or_mint, enabled, created_at_ms, updated_at_ms
+          ) VALUES ('selection-bitcoin', 'address-bitcoin', 'bitcoin', NULL, 1, ?, ?)
+        `,
+        parameters: [now, now]
+      });
+      await db.run({
+        sql: `
+          INSERT INTO address_sync_state(
+            address_id, status, cursor_json, provider_boundary_json, warnings_json, updated_at_ms
+          ) VALUES ('address-bitcoin', 'syncing', '{}', '{}', '[]', ?)
+        `,
+        parameters: [now]
+      });
+      service.registerJobs();
+      expect(syncHandler).not.toBeNull();
+      const runSync = async () => syncHandler!({
+        job: {
+          payload_json: JSON.stringify({ addressId: 'address-bitcoin' })
+        } as JobRecord,
+        updateProgress: async () => undefined
+      });
+
+      await runSync();
+      expect(await db.one<{ count: number; finalized: number }>({
+        sql: 'SELECT COUNT(*) AS count, MAX(finalized) AS finalized FROM address_balance_events'
+      })).toEqual({ count: 1, finalized: 0 });
+      expect((await service.holdings({ quoteCurrency: 'CAD' }))[0]?.quantity).toBe('0');
+
+      finalized = true;
+      await runSync();
+      expect(await db.one<{ count: number; finalized: number }>({
+        sql: 'SELECT COUNT(*) AS count, MAX(finalized) AS finalized FROM address_balance_events'
+      })).toEqual({ count: 1, finalized: 1 });
+      expect((await service.holdings({ quoteCurrency: 'CAD' }))[0]?.quantity).toBe('1');
     } finally {
       await db.close();
     }

@@ -231,6 +231,7 @@ export class JobQueue {
         JSON.stringify({
           message: error instanceof Error ? error.message : String(error),
           errorKey: error instanceof AppError ? error.errorKey : 'JOB_EXECUTION_FAILED',
+          ...(error instanceof AppError && error.context ? { context: error.context } : {}),
           ...(circuitOpen ? { retryAtMs: nextRetryAtMs } : {})
         }),
         Date.now(),

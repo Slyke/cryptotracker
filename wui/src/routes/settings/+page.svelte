@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ReorderableBlock from '../../lib/components/ReorderableBlock.svelte';
-  import { apiRequest, setDocumentPreferences } from '$lib/api';
+  import { apiBinaryRequest, apiRequest, setDocumentPreferences } from '$lib/api';
   import { persistAccordionState } from '$lib/accordion-state';
   import {
     formatDateTime,
@@ -101,6 +101,20 @@
     kraken: KrakenCursor[];
   };
 
+  type BackupInspection = {
+    schemaVersion: string;
+    applicationVersion: string;
+    generatedAt: string;
+    restoreMode: string;
+    domains: Array<{
+      id: string;
+      label: string;
+      fileName: string;
+      rowCount: number;
+      tableCounts: Record<string, number>;
+    }>;
+  };
+
   let settings: Settings = {
     locale: 'en-CA',
     timezone: 'America/Vancouver',
@@ -168,6 +182,11 @@
     error?: unknown;
   } | null = null;
   let exportTimer: ReturnType<typeof setInterval> | null = null;
+  let backupFile: File | null = null;
+  let backupInspection: BackupInspection | null = null;
+  let selectedRestoreDomains: string[] = [];
+  let restoreConfirmed = false;
+  let restoreBusy = false;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   let saving = false;
   let error = '';
@@ -489,6 +508,62 @@
     exportState = payload.export;
     if (exportTimer) clearInterval(exportTimer);
     exportTimer = setInterval(() => void pollExport(), 1_000);
+  };
+
+  const inspectBackup = async (event: Event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    backupFile = input.files?.[0] ?? null;
+    backupInspection = null;
+    selectedRestoreDomains = [];
+    restoreConfirmed = false;
+    error = '';
+    message = '';
+    if (!backupFile) return;
+    try {
+      const payload = await apiBinaryRequest<{ backup: BackupInspection }>({
+        url: '/api/backups/inspect',
+        body: backupFile
+      });
+      backupInspection = payload.backup;
+      selectedRestoreDomains = payload.backup.domains.map((domain) => domain.id);
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : 'Backup could not be inspected.';
+    }
+  };
+
+  const toggleRestoreDomain = (domainId: string) => {
+    selectedRestoreDomains = selectedRestoreDomains.includes(domainId)
+      ? selectedRestoreDomains.filter((id) => id !== domainId)
+      : [...selectedRestoreDomains, domainId];
+    restoreConfirmed = false;
+  };
+
+  const restoreBackup = async () => {
+    if (!backupFile || !restoreConfirmed || selectedRestoreDomains.length === 0) return;
+    restoreBusy = true;
+    error = '';
+    message = '';
+    try {
+      const query = new URLSearchParams({
+        domains: selectedRestoreDomains.join(','),
+        confirmation: 'replace-selected-data'
+      });
+      const payload = await apiBinaryRequest<{
+        restore: {
+          restoredDomains: Array<{ id: string; label: string; rowCount: number }>;
+        };
+      }>({
+        url: `/api/backups/restore?${query.toString()}`,
+        body: backupFile
+      });
+      await load();
+      message = `Restored ${payload.restore.restoredDomains.map((domain) => domain.label).join(', ')}.`;
+      restoreConfirmed = false;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : 'Backup restore failed.';
+    } finally {
+      restoreBusy = false;
+    }
   };
 
   const applyFailedJobFilters = () => {
@@ -1056,8 +1131,9 @@
       {:else if blockId === 'export'}
         <section class="panel">
           <p class="eyebrow">Data portability</p>
-          <h2>Complete application export</h2>
-          <div class="alert start">{strings['cryptotracker-export-backup_notice-label']}</div>
+          <h2>Backup and restore</h2>
+          <div class="alert start">Backups contain restorable portfolio data and preferences, but never credentials, passwords, sessions, jobs, or audit logs.</div>
+          <h3>Create a backup</h3>
           <button type="button" disabled={exportState?.status === 'queued' || exportState?.status === 'running'} on:click={startExport}>
             {strings['cryptotracker-export-start-label']}
           </button>
@@ -1066,11 +1142,55 @@
               <span class="badge {exportState.status === 'completed' ? 'mid' : exportState.status === 'failed' ? 'danger' : 'start'}">{exportState.status}</span>
               <span>{exportState.bytesWritten ? formatBytes(exportState.bytesWritten) : 'size pending'}</span>
               {#if exportState.downloadable}
-                <a class="button secondary" href={`/api/exports/application/${exportState.id}/download`}>Download archive</a>
+                <a class="button secondary" href={`/api/exports/application/${exportState.id}/download`}>Download ZIP backup</a>
               {/if}
               {#if exportState.error}<pre>{JSON.stringify(exportState.error, null, 2)}</pre>{/if}
             </div>
           {/if}
+          <div class="restore-section">
+            <h3>Restore from a backup</h3>
+            <p class="muted">Choose a CryptoTracker ZIP. You can remove unwanted JSON files from the ZIP first, or select only the data groups you want below.</p>
+            <div class="field">
+              <label for="backup-file">ZIP backup</label>
+              <input id="backup-file" type="file" accept=".zip,application/zip" on:change={inspectBackup} />
+            </div>
+            {#if backupInspection}
+              <p class="muted">
+                Created {formatDateTime({ value: backupInspection.generatedAt, timezone: settings.timezone })}
+                with CryptoTracker {backupInspection.applicationVersion}.
+              </p>
+              <div class="restore-domains">
+                {#each backupInspection.domains as domain (domain.id)}
+                  <label class="restore-domain">
+                    <input
+                      type="checkbox"
+                      checked={selectedRestoreDomains.includes(domain.id)}
+                      on:change={() => toggleRestoreDomain(domain.id)}
+                    />
+                    <span>
+                      <strong>{domain.label}</strong>
+                      <small>{domain.fileName} · {domain.rowCount.toLocaleString(settings.locale)} rows</small>
+                    </span>
+                  </label>
+                {/each}
+              </div>
+              <div class="alert danger">
+                Restoring replaces every current row in each selected data group. This cannot be undone unless you first create a backup.
+              </div>
+              <label class="restore-confirmation">
+                <input type="checkbox" bind:checked={restoreConfirmed} />
+                I understand that the selected current data will be replaced.
+              </label>
+              <button
+                class="danger"
+                type="button"
+                disabled={restoreBusy || !restoreConfirmed || selectedRestoreDomains.length === 0}
+                on:click={restoreBackup}
+              >
+                {restoreBusy ? 'Restoring…' : 'Restore selected data'}
+              </button>
+            {/if}
+          </div>
         </section>
 
       {:else if blockId === 'providers'}
@@ -1270,6 +1390,49 @@
     margin-top: 1rem;
   }
 
+  .restore-section {
+    display: grid;
+    gap: 0.9rem;
+    margin-top: 1.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .restore-section h3,
+  .restore-section p {
+    margin: 0;
+  }
+
+  .restore-domains {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+
+  .restore-domain {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.75rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+  }
+
+  .restore-domain span {
+    display: grid;
+    gap: 0.15rem;
+  }
+
+  .restore-domain small {
+    color: var(--color-muted);
+  }
+
+  .restore-confirmation {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+  }
+
   pre {
     max-height: 24rem;
     overflow: auto;
@@ -1301,7 +1464,8 @@
     .settings-grid,
     .settings-grid.two,
     .settings-grid.three,
-    .coverage-grid {
+    .coverage-grid,
+    .restore-domains {
       grid-template-columns: 1fr;
     }
   }

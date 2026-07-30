@@ -20,11 +20,11 @@
     "cookie-parser": "1.4.7",
     "decimal.js": "10.6.0",
     "express": "5.2.1",
+    "fflate": "0.8.2",
     "http-proxy": "1.18.1",
     "jose": "6.1.0",
     "json5": "2.2.3",
     "pg": "8.20.0",
-    "tar-stream": "3.1.7",
     "zod": "4.3.6"
   },
   "devDependencies": {
@@ -34,7 +34,6 @@
     "@types/http-proxy": "1.17.17",
     "@types/node": "25.5.0",
     "@types/pg": "8.20.0",
-    "@types/tar-stream": "3.1.4",
     "tsx": "4.23.1",
     "typescript": "5.9.3",
     "vitest": "4.1.2"

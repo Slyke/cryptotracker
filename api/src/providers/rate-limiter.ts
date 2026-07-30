@@ -118,12 +118,39 @@ export class ProviderRateLimiter {
     });
   }
 
+  private async executeAttempt<T>({
+    task
+  }: {
+    task: (signal: AbortSignal) => Promise<T>;
+  }): Promise<T> {
+    const signal = AbortSignal.timeout(this.config.requestTimeoutMs);
+    return new Promise<T>((resolve, reject) => {
+      const timedOut = () => {
+        reject(new AppError({
+          errorKey: 'PROVIDER_REQUEST_FAILED',
+          reason: `${this.provider} timed out after ${this.config.requestTimeoutMs}ms.`,
+          status: 504,
+          context: {
+            provider: this.provider,
+            failureKind: 'timeout',
+            timeoutMs: this.config.requestTimeoutMs
+          }
+        }));
+      };
+      signal.addEventListener('abort', timedOut, { once: true });
+      Promise.resolve()
+        .then(() => task(signal))
+        .then(resolve, reject)
+        .finally(() => signal.removeEventListener('abort', timedOut));
+    });
+  }
+
   async execute<T>({
     requestKey,
     task
   }: {
     requestKey: string;
-    task: () => Promise<T>;
+    task: (signal: AbortSignal) => Promise<T>;
   }): Promise<T> {
     const existing = this.inFlight.get(requestKey) as Promise<T> | undefined;
     if (existing) return existing;
@@ -135,14 +162,18 @@ export class ProviderRateLimiter {
     return execution;
   }
 
-  private async executeWithRetry<T>({ task }: { task: () => Promise<T> }): Promise<T> {
+  private async executeWithRetry<T>({
+    task
+  }: {
+    task: (signal: AbortSignal) => Promise<T>;
+  }): Promise<T> {
     this.assertCircuitAvailable();
     let lastError: unknown = null;
 
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt += 1) {
       await this.acquire();
       try {
-        const result = await task();
+        const result = await this.executeAttempt({ task });
         if (result instanceof Response && !result.ok) {
           const rateLimited = result.status === 429;
           const retryable = rateLimited || result.status >= 500;

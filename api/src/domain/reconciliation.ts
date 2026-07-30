@@ -48,13 +48,25 @@ export const reconcileTransfer = ({
     };
   }
 
+  const krakenQuantity = new Decimal(kraken.quantity).abs();
+  const chainQuantity = new Decimal(chain.quantity).abs();
+  const fee = new Decimal(kraken.feeQuantity ?? chain.feeQuantity ?? '0').abs();
+  const exactAfterFee = krakenQuantity.minus(fee).equals(chainQuantity)
+    || chainQuantity.minus(fee).equals(krakenQuantity);
+  const larger = Decimal.max(krakenQuantity, chainQuantity);
+  const differencePercent = larger.isZero()
+    ? new Decimal(0)
+    : krakenQuantity.minus(chainQuantity).abs().dividedBy(larger).times(100);
   const identifierMatch = Boolean(
     kraken.transactionId
-    && chain.transactionId
-    && kraken.transactionId.toLowerCase() === chain.transactionId.toLowerCase()
-    && (!kraken.network || !chain.network || kraken.network === chain.network)
+      && chain.transactionId
+      && kraken.transactionId.toLowerCase() === chain.transactionId.toLowerCase()
+      && (!kraken.network || !chain.network || kraken.network === chain.network)
   );
-  if (identifierMatch) {
+  const amountMatches = krakenQuantity.equals(chainQuantity)
+    || exactAfterFee
+    || differencePercent.lessThanOrEqualTo(amountTolerancePercent);
+  if (identifierMatch && amountMatches) {
     return {
       leftId: kraken.id,
       rightId: chain.id,
@@ -62,16 +74,24 @@ export const reconcileTransfer = ({
       evidence: {
         transactionId: kraken.transactionId,
         network: kraken.network ?? chain.network ?? null,
-        assetId: kraken.assetId
+        assetId: kraken.assetId,
+        amountDifferencePercent: differencePercent.toString()
+      }
+    };
+  }
+  if (identifierMatch) {
+    return {
+      leftId: kraken.id,
+      rightId: chain.id,
+      confidence: 'unmatched',
+      evidence: {
+        reason: 'identifier_amount_mismatch',
+        transactionId: kraken.transactionId,
+        amountDifferencePercent: differencePercent.toString()
       }
     };
   }
 
-  const krakenQuantity = new Decimal(kraken.quantity).abs();
-  const chainQuantity = new Decimal(chain.quantity).abs();
-  const fee = new Decimal(kraken.feeQuantity ?? chain.feeQuantity ?? '0').abs();
-  const exactAfterFee = krakenQuantity.minus(fee).equals(chainQuantity)
-    || chainQuantity.minus(fee).equals(krakenQuantity);
   const withinWindow = Math.abs(kraken.occurredAtMs - chain.occurredAtMs) <= windowMs;
   if (exactAfterFee && withinWindow) {
     return {
@@ -86,10 +106,6 @@ export const reconcileTransfer = ({
     };
   }
 
-  const larger = Decimal.max(krakenQuantity, chainQuantity);
-  const differencePercent = larger.isZero()
-    ? new Decimal(0)
-    : krakenQuantity.minus(chainQuantity).abs().dividedBy(larger).times(100);
   if (withinWindow && differencePercent.lessThanOrEqualTo(amountTolerancePercent)) {
     return {
       leftId: kraken.id,

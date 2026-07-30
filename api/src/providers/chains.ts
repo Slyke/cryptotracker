@@ -173,7 +173,7 @@ const createBitcoinAdapter = ({
             transactionId: transaction.txid,
             canonicalAssetId: 'bitcoin',
             occurredAtMs,
-            orderingKey: `${transaction.status.block_height ?? 'unconfirmed'}:${transaction.txid}`,
+            orderingKey: `tx:${transaction.txid}:net`,
             quantityDelta: satsToBtc({ satoshis: delta.toString() }),
             feeQuantity: spent.greaterThan(0) && transaction.fee !== undefined
               ? satsToBtc({ satoshis: transaction.fee })
@@ -284,7 +284,7 @@ const createDogecoinAdapter = ({
             transactionId: transaction.hash,
             canonicalAssetId: 'dogecoin',
             occurredAtMs,
-            orderingKey: `${transaction.block_height ?? 'unconfirmed'}:${transaction.block_index ?? 0}:${transaction.hash}`,
+            orderingKey: `tx:${transaction.hash}:net`,
             quantityDelta: koinuToDoge({ koinu: delta.toString() }),
             feeQuantity: spent.greaterThan(0) && transaction.fees !== undefined
               ? koinuToDoge({ koinu: transaction.fees })
@@ -614,11 +614,14 @@ const createEthereumAdapter = ({
         const incoming = item.to?.toLowerCase() === normalized;
         const outgoing = item.from?.toLowerCase() === normalized;
         const value = new Decimal(item.value ?? '0');
+        const succeeded = item.isError !== '1' && item.txreceipt_status !== '0';
+        const transferredValue = succeeded ? value : new Decimal(0);
         const gasFee = outgoing
           ? new Decimal(item.gasUsed ?? item.gas ?? '0').times(item.gasPrice ?? '0')
           : new Decimal(0);
-        const delta = (incoming ? value : new Decimal(0)).minus(outgoing ? value.plus(gasFee) : 0);
-        const finalized = item.isError !== '1';
+        const delta = (incoming ? transferredValue : new Decimal(0))
+          .minus(outgoing ? transferredValue.plus(gasFee) : 0);
+        const finalized = Number(item.confirmations ?? config.confirmations) >= config.confirmations;
         transactionMap.set(item.hash!, {
           transactionId: item.hash!,
           blockReference: item.blockNumber ?? null,
@@ -631,7 +634,7 @@ const createEthereumAdapter = ({
             gasUsed: item.gasUsed,
             status: item.txreceipt_status
           },
-          warning: item.isError === '1' ? { reason: 'execution_failed' } : null
+          warning: succeeded ? null : { reason: 'execution_failed' }
         });
         if (!delta.isZero()) {
           events.push({
@@ -641,7 +644,7 @@ const createEthereumAdapter = ({
             orderingKey: `${item.blockNumber}:${item.transactionIndex}:normal`,
             quantityDelta: weiToEth({ wei: delta.toString() }),
             feeQuantity: outgoing ? weiToEth({ wei: gasFee.toString() }) : null,
-            eventType: incoming ? 'receive' : 'send',
+            eventType: delta.isPositive() ? 'receive' : 'send',
             finalized,
             provenance: { provider: 'etherscan', transferType: 'normal' }
           });
@@ -652,7 +655,10 @@ const createEthereumAdapter = ({
         const incoming = item.to?.toLowerCase() === normalized;
         const outgoing = item.from?.toLowerCase() === normalized;
         const value = new Decimal(item.value ?? '0');
-        const delta = (incoming ? value : new Decimal(0)).minus(outgoing ? value : 0);
+        const succeeded = item.isError !== '1';
+        const delta = succeeded
+          ? (incoming ? value : new Decimal(0)).minus(outgoing ? value : 0)
+          : new Decimal(0);
         if (!delta.isZero()) {
           events.push({
             transactionId: item.hash!,
@@ -661,8 +667,8 @@ const createEthereumAdapter = ({
             orderingKey: `${item.blockNumber}:${item.traceId ?? '0'}:internal`,
             quantityDelta: weiToEth({ wei: delta.toString() }),
             feeQuantity: null,
-            eventType: incoming ? 'internal_receive' : 'internal_send',
-            finalized: item.isError !== '1',
+            eventType: delta.isPositive() ? 'internal_receive' : 'internal_send',
+            finalized: Number(item.confirmations ?? config.confirmations) >= config.confirmations,
             provenance: { provider: 'etherscan', transferType: 'internal' }
           });
         }
@@ -673,15 +679,19 @@ const createEthereumAdapter = ({
         const decimals = Number(item.tokenDecimal ?? 0);
         const quantity = new Decimal(item.value ?? '0').dividedBy(new Decimal(10).pow(decimals));
         const incoming = item.to?.toLowerCase() === normalized;
+        const outgoing = item.from?.toLowerCase() === normalized;
+        if (!incoming && !outgoing) continue;
+        const delta = (incoming ? quantity : new Decimal(0)).minus(outgoing ? quantity : 0);
+        if (delta.isZero()) continue;
         events.push({
           transactionId: item.hash!,
           canonicalAssetId,
           occurredAtMs: Number(item.timeStamp) * 1_000,
           orderingKey: `${item.blockNumber}:${item.transactionIndex}:${item.logIndex ?? '0'}:erc20`,
-          quantityDelta: (incoming ? quantity : quantity.negated()).toString(),
+          quantityDelta: delta.toString(),
           feeQuantity: null,
-          eventType: incoming ? 'token_receive' : 'token_send',
-          finalized: true,
+          eventType: delta.isPositive() ? 'token_receive' : 'token_send',
+          finalized: Number(item.confirmations ?? config.confirmations) >= config.confirmations,
           provenance: {
             provider: 'etherscan',
             transferType: 'erc20',
@@ -694,7 +704,9 @@ const createEthereumAdapter = ({
       const newestBlock = Math.max(
         Number(cursor.newestBlock ?? 0),
         0,
-        ...[...transactionMap.values()].map((transaction) => Number(transaction.blockReference ?? 0))
+        ...normal.map((item) => Number(item.blockNumber ?? 0)),
+        ...internal.map((item) => Number(item.blockNumber ?? 0)),
+        ...tokens.map((item) => Number(item.blockNumber ?? 0))
       );
       return {
         transactions: [...transactionMap.values()],
@@ -803,6 +815,7 @@ const createPolkadotAdapter = ({
         const timestampSeconds = Number(item.block_timestamp ?? item.timestamp ?? 0);
         const occurredAtMs = timestampSeconds > 0 ? timestampSeconds * 1_000 : Date.now();
         const finalized = item.finalized !== false;
+        const delta = (incoming ? amount : new Decimal(0)).minus(outgoing ? amount : 0);
         transactions.push({
           transactionId,
           blockReference: blockNumber > 0 ? String(blockNumber) : null,
@@ -817,14 +830,15 @@ const createPolkadotAdapter = ({
           },
           warning: null
         });
+        if (delta.isZero()) continue;
         events.push({
           transactionId,
           canonicalAssetId: 'polkadot',
           occurredAtMs,
           orderingKey: `${blockNumber}:${String(item.event_index ?? item.extrinsic_index ?? transactionId)}`,
-          quantityDelta: (incoming ? amount : amount.negated()).toString(),
+          quantityDelta: delta.toString(),
           feeQuantity: null,
-          eventType: incoming ? 'receive' : 'send',
+          eventType: delta.isPositive() ? 'receive' : 'send',
           finalized,
           provenance: {
             provider: 'subscan',
@@ -937,14 +951,16 @@ const createSolanaAdapter = ({
           const outgoing = transfer.fromUserAccount === address;
           if (!incoming && !outgoing) continue;
           const quantity = new Decimal(String(transfer.tokenAmount ?? '0'));
+          const delta = (incoming ? quantity : new Decimal(0)).minus(outgoing ? quantity : 0);
+          if (delta.isZero()) continue;
           events.push({
             transactionId: signature,
             canonicalAssetId,
             occurredAtMs: timestamp,
             orderingKey: `${item.slot ?? 0}:${signature}:${index}:spl`,
-            quantityDelta: (incoming ? quantity : quantity.negated()).toString(),
+            quantityDelta: delta.toString(),
             feeQuantity: null,
-            eventType: incoming ? 'token_receive' : 'token_send',
+            eventType: delta.isPositive() ? 'token_receive' : 'token_send',
             finalized: true,
             provenance: {
               provider: 'helius',
