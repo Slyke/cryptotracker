@@ -64,4 +64,4 @@ npm audit --omit=dev
 npm --prefix mcp audit --omit=dev
 ```
 
-As of this implementation, production dependencies audit clean. The current SvelteKit toolchain may report a low-severity development-only `cookie` advisory until an upstream compatible release changes its dependency range.
+Production and development dependency audits are clean. The workspace override keeps SvelteKit's compatible `cookie` dependency on the patched release until its declared range is updated upstream.

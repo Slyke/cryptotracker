@@ -1,9 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import DismissableNotice from '../../lib/components/DismissableNotice.svelte';
   import PortfolioChart from '../../lib/components/PortfolioChart.svelte';
   import type { ChartSeries } from '../../lib/components/chart-types';
   import { apiRequest } from '$lib/api';
-  import { formatDisplayNumber } from '$lib/preferences';
+  import {
+    formatDisplayNumber,
+    savePreferences
+  } from '$lib/preferences';
 
   type SavedCalculation = {
     id: string;
@@ -37,6 +41,7 @@
   let saving = false;
   let error = '';
   let message = '';
+  let dismissedNotices: string[] = [];
 
   const createId = () => globalThis.crypto?.randomUUID?.()
     ?? `calculation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -192,11 +197,13 @@
           primaryCurrency: string;
           timezone: string;
           savedCalculations: SavedCalculation[];
+          dismissedNotices: string[];
         };
       }>({ url: '/api/settings' });
       primaryCurrency = payload.settings.primaryCurrency;
       timezone = payload.settings.timezone;
       savedCalculations = payload.settings.savedCalculations ?? [];
+      dismissedNotices = payload.settings.dismissedNotices ?? [];
       scenario = savedCalculations[0]
         ? { ...savedCalculations[0] }
         : { ...scenario, currency: primaryCurrency };
@@ -287,6 +294,11 @@
     };
   };
 
+  const dismissNotice = async (event: CustomEvent<{ id: string }>) => {
+    dismissedNotices = [...new Set([...dismissedNotices, event.detail.id])];
+    await savePreferences({ dismissedNotices });
+  };
+
   $: projection = project(scenario);
 
   onMount(() => {
@@ -300,6 +312,15 @@
     <h1>Calculations</h1>
     <p class="muted">Project compound growth, recurring contributions, earnings, and the contribution needed to reach a target. Calculations are local planning estimates and never place orders.</p>
   </header>
+
+  <DismissableNotice
+    noticeId="calculations-projection-assumptions"
+    tone="warning"
+    dismissed={dismissedNotices.includes('calculations-projection-assumptions')}
+    on:dismiss={dismissNotice}
+  >
+    This calculator assumes a constant rate and contributions at the end of each complete compounding period. It does not model taxes, fees, inflation, rate changes, or market volatility.
+  </DismissableNotice>
 
   {#if error}<div class="alert danger" role="alert">{error}</div>{/if}
   {#if message}<div class="alert mid" role="status">{message}</div>{/if}
@@ -385,8 +406,10 @@
     </section>
 
     <section class="panel saved-panel">
-      <p class="eyebrow">Saved</p>
-      <h2>Named calculations</h2>
+      <div class="saved-heading">
+        <p class="eyebrow">Saved</p>
+        <h2>Named calculations</h2>
+      </div>
       {#if loading}
         <p class="muted">Loading…</p>
       {:else if savedCalculations.length === 0}
@@ -449,10 +472,6 @@
     initialRange="all"
     emptyMessage="Enter valid projection values to display the calculation."
   />
-
-  <div class="alert start">
-    This calculator assumes a constant rate and contributions at the end of each complete compounding period. It does not model taxes, fees, inflation, rate changes, or market volatility.
-  </div>
 </main>
 
 <style>
@@ -469,6 +488,10 @@
     gap: 1rem;
   }
 
+  .saved-panel {
+    align-content: start;
+  }
+
   .section-heading,
   .saved-item,
   .saved-actions {
@@ -480,8 +503,8 @@
 
   .section-heading h2,
   .section-heading p,
-  .saved-panel h2,
-  .saved-panel p {
+  .saved-heading h2,
+  .saved-heading p {
     margin: 0;
   }
 
@@ -512,6 +535,10 @@
     display: block;
     margin-top: 0.35rem;
     font-size: 1.2rem;
+  }
+
+  .result-grid {
+    margin-block: 1rem;
   }
 
   @media (max-width: 55rem) {

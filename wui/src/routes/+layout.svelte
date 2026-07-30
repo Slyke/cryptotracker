@@ -4,7 +4,6 @@
   import { page } from '$app/stores';
   import Login from '$lib/components/Login.svelte';
   import strings from '$lib/i18n/en-CA.json';
-  import { interpolate } from '$lib/i18n/interpolate';
   import {
     apiRequest,
     bootstrapSession,
@@ -45,6 +44,18 @@
   const logout = async () => {
     await signOut();
   };
+
+  const buildLabel = ({
+    version,
+    buildHash
+  }: {
+    version: string;
+    buildHash: string;
+  }) => (
+    ['unknown', 'development', ''].includes(buildHash.trim().toLowerCase())
+      ? `v${version}`
+      : `v${version} · ${buildHash}`
+  );
 </script>
 
 <svelte:head>
@@ -73,13 +84,9 @@
           >{item.label}</a>
         {/each}
       </nav>
-      <span class="badge mid">{$session.user?.username}</span>
       <button class="ghost" type="button" on:click={logout}>Sign out</button>
       <span class="build-label">
-        {interpolate({
-          template: strings['cryptotracker-build-label'],
-          values: $session.build
-        })}
+        {buildLabel($session.build)}
       </span>
     </header>
     <slot />

@@ -14,6 +14,7 @@
     "cookie": "0.7.2"
   },
   "scripts": {
+    "prebuild": "node scripts/write-build-info.mjs",
     "build": "npm run build:api && npm run build:wui && npm run build:mcp",
     "build:api": "npm run build --workspace cryptotracker-api",
     "build:wui": "npm run build --workspace cryptotracker-wui",
@@ -22,6 +23,7 @@
     "check:api": "npm run check --workspace cryptotracker-api",
     "check:wui": "npm run check --workspace cryptotracker-wui",
     "check:mcp": "npm --prefix mcp run check",
+    "predev": "node scripts/write-build-info.mjs",
     "dev": "node runtime/dev-launcher.mjs",
     "start": "node runtime/launcher.mjs",
     "test": "npm run test:api && npm run test:wui && npm run test:mcp",

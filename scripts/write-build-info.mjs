@@ -24,7 +24,10 @@ const resolveGitDirectory = async ({ worktree }) => {
 };
 
 const resolveBuildHash = async ({ worktree }) => {
-  if (process.env.BUILD_HASH?.trim()) return process.env.BUILD_HASH.trim();
+  const suppliedBuildHash = process.env.BUILD_HASH?.trim();
+  if (suppliedBuildHash && suppliedBuildHash.toLowerCase() !== 'unknown') {
+    return suppliedBuildHash;
+  }
   const gitDirectory = await resolveGitDirectory({ worktree });
   const head = await readText({ path: resolve(gitDirectory, 'HEAD') });
   if (/^[0-9a-f]{40}$/i.test(head)) return head.slice(0, 12);

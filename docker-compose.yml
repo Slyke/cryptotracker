@@ -22,7 +22,7 @@ services:
       context: .
       dockerfile: dockerfiles/cryptotracker.Dockerfile
       args:
-        BUILD_HASH: ${BUILD_HASH:-unknown}
+        BUILD_HASH: ${BUILD_HASH:-}
     restart: unless-stopped
     init: true
     environment:

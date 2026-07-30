@@ -13,7 +13,7 @@ RUN npm ci
 
 FROM dependencies AS build
 
-ARG BUILD_HASH=unknown
+ARG BUILD_HASH=
 ENV BUILD_HASH=$BUILD_HASH
 
 COPY . .
