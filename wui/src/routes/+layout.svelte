@@ -51,11 +51,7 @@
   }: {
     version: string;
     buildHash: string;
-  }) => (
-    ['unknown', 'development', ''].includes(buildHash.trim().toLowerCase())
-      ? `v${version}`
-      : `v${version} · ${buildHash}`
-  );
+  }) => `v${version} · ${buildHash.trim() || 'unknown'}`;
 </script>
 
 <svelte:head>
