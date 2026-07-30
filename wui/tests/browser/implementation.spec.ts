@@ -410,7 +410,11 @@ test('dashboard graph editing restores display state and replacement keeps its i
         yAxisUnit: settings.primaryCurrency,
         tooltipUnits: [settings.primaryCurrency],
         visibleSeriesIds: assetIds,
-        rightYAxisUnit: settings.primaryCurrency
+        leftYAxisSeriesIds: [assetIds[0]],
+        rightYAxisUnit: settings.primaryCurrency,
+        rightYAxisSeriesIds: [assetIds[1]],
+        leftYAxisLineColor: '#112233',
+        rightYAxisLineColor: '#445566'
       }
     };
     const response = await fetch('/api/settings', {
@@ -455,32 +459,63 @@ test('dashboard graph editing restores display state and replacement keeps its i
     await expect(chartPanel).toBeVisible();
     await expect(chartPanel.getByLabel('Mode', { exact: true })).toHaveValue('candlestick');
     await expect(chartPanel).toHaveAttribute('data-visible-series-count', '2');
+    await expect(chartPanel).toHaveAttribute('data-left-y-axis-series-count', '1');
+    await expect(chartPanel).toHaveAttribute('data-right-y-axis-series-count', '1');
     await expect(chartPanel).toHaveAttribute('data-rendered-candlestick-series-count', '2');
     await expect(chartPanel).toHaveAttribute(
       'data-right-y-axis-unit',
       fixture.rightYAxisUnit
     );
 
-    await chartPanel.getByText('Scale bounds, display, events, and exports', {
-      exact: true
-    }).click();
-    const displayedLinesBox = await chartPanel.getByLabel(
-      'Displayed lines',
-      { exact: true }
-    ).boundingBox();
+    const chartOptions = chartPanel.locator('details.chart-options');
+    if (await chartOptions.getAttribute('open') === null) {
+      await chartPanel.getByText('Scale bounds, display, events, and exports', {
+        exact: true
+      }).click();
+    }
     const leftAxisControl = chartPanel.getByLabel('Left Y-Axis', { exact: true });
     const rightAxisControl = chartPanel.getByLabel('Right Y-Axis', { exact: true });
+    const leftLinesControl = chartPanel.getByLabel('Left displayed lines', { exact: true });
+    const rightLinesControl = chartPanel.getByLabel('Right displayed lines', { exact: true });
+    const leftLineColorControl = chartPanel.getByLabel(
+      'Left horizontal line color',
+      { exact: true }
+    );
+    const rightLineColorControl = chartPanel.getByLabel(
+      'Right horizontal line color',
+      { exact: true }
+    );
     const popupUnitsControl = chartPanel.getByLabel('Popup units', { exact: true });
-    const axisBoxes = await Promise.all([
+    const minimumControl = chartPanel.getByLabel('Minimum', { exact: true });
+    const maximumControl = chartPanel.getByLabel('Maximum', { exact: true });
+    const leftAxisBoxes = await Promise.all([
       leftAxisControl.boundingBox(),
-      rightAxisControl.boundingBox(),
-      popupUnitsControl.boundingBox()
+      leftLinesControl.boundingBox(),
+      leftLineColorControl.boundingBox()
     ]);
-    expect(displayedLinesBox).not.toBeNull();
-    expect(axisBoxes.every(Boolean)).toBe(true);
-    expect(axisBoxes.every((box) => box!.y > displayedLinesBox!.y)).toBe(true);
-    expect(Math.max(...axisBoxes.map((box) => box!.y))
-      - Math.min(...axisBoxes.map((box) => box!.y))).toBeLessThan(3);
+    const rightAxisBoxes = await Promise.all([
+      rightAxisControl.boundingBox(),
+      rightLinesControl.boundingBox(),
+      rightLineColorControl.boundingBox()
+    ]);
+    const lowerControlBoxes = await Promise.all([
+      popupUnitsControl.boundingBox(),
+      minimumControl.boundingBox(),
+      maximumControl.boundingBox()
+    ]);
+    expect(leftAxisBoxes.every(Boolean)).toBe(true);
+    expect(rightAxisBoxes.every(Boolean)).toBe(true);
+    expect(lowerControlBoxes.every(Boolean)).toBe(true);
+    expect(Math.max(...leftAxisBoxes.map((box) => box!.y))
+      - Math.min(...leftAxisBoxes.map((box) => box!.y))).toBeLessThan(3);
+    expect(Math.min(...rightAxisBoxes.map((box) => box!.y)))
+      .toBeGreaterThan(Math.max(...leftAxisBoxes.map((box) => box!.y)));
+    expect(Math.max(...rightAxisBoxes.map((box) => box!.y))
+      - Math.min(...rightAxisBoxes.map((box) => box!.y))).toBeLessThan(3);
+    expect(Math.min(...lowerControlBoxes.map((box) => box!.y)))
+      .toBeGreaterThan(Math.max(...rightAxisBoxes.map((box) => box!.y)));
+    await expect(leftLineColorControl).toHaveValue('#112233');
+    await expect(rightLineColorControl).toHaveValue('#445566');
 
     await leftAxisControl.click();
     const leftAxisOptions = await chartPanel.locator(
@@ -508,12 +543,14 @@ test('dashboard graph editing restores display state and replacement keeps its i
     );
     await expect(chartPanel).toHaveAttribute('data-rendered-candlestick-series-count', '2');
 
-    await chartPanel.getByLabel('Displayed lines', { exact: true }).click();
+    await leftLinesControl.click();
     await chartPanel.locator(
-      `#watched-market-prices-displayed-series-option-${fixture.assetIds[1]}`
+      `#watched-market-prices-left-displayed-series-option-${fixture.assetIds[0]}`
     ).click();
-    await chartPanel.getByLabel('Displayed lines', { exact: true }).click();
+    await leftLinesControl.click();
     await expect(chartPanel).toHaveAttribute('data-visible-series-count', '1');
+    await expect(chartPanel).toHaveAttribute('data-left-y-axis-series-count', '0');
+    await expect(chartPanel).toHaveAttribute('data-right-y-axis-series-count', '1');
     await expect(chartPanel).toHaveAttribute(
       'data-right-y-axis-unit',
       fixture.rightYAxisUnit
@@ -540,8 +577,12 @@ test('dashboard graph editing restores display state and replacement keeps its i
     }, fixture.id);
     expect(replaced).not.toBeNull();
     expect(replaced!.config.yAxisUnit).toBe(fixture.assetIds[0]);
-    expect(replaced!.config.visibleSeriesIds).toEqual([fixture.assetIds[0]]);
+    expect(replaced!.config.visibleSeriesIds).toEqual([fixture.assetIds[1]]);
+    expect(replaced!.config.leftYAxisSeriesIds).toEqual([]);
     expect(replaced!.config.rightYAxisUnit).toBe(fixture.rightYAxisUnit);
+    expect(replaced!.config.rightYAxisSeriesIds).toEqual([fixture.assetIds[1]]);
+    expect(replaced!.config.leftYAxisLineColor).toBe('#112233');
+    expect(replaced!.config.rightYAxisLineColor).toBe('#445566');
 
     await page.goto('/dashboard', { waitUntil: 'networkidle' });
     const expandGraphsAgain = page.getByRole('button', { name: 'Expand graphs' });

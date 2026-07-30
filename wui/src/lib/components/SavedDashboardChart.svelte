@@ -452,7 +452,14 @@
       'visibleSeriesIds',
       stringArrayConfig('seriesIds')
     )}
+    initialLeftYAxisSeriesIds={stringArrayConfig(
+      'leftYAxisSeriesIds',
+      stringArrayConfig('visibleSeriesIds', stringArrayConfig('seriesIds'))
+    )}
     initialRightYAxisUnit={chartRightYAxisUnit()}
+    initialRightYAxisSeriesIds={stringArrayConfig('rightYAxisSeriesIds', []) ?? []}
+    initialLeftYAxisLineColor={stringConfig('leftYAxisLineColor', '#364255')}
+    initialRightYAxisLineColor={stringConfig('rightYAxisLineColor', '#ffbc3a')}
   />
 </article>
 

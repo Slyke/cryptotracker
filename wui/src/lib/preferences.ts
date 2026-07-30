@@ -54,7 +54,25 @@ export interface ChartDisplayState {
   yAxisUnit: string;
   tooltipUnits: string[];
   visibleSeriesIds: string[] | null;
+  leftYAxisSeriesIds: string[] | null;
   rightYAxisUnit: string;
+  rightYAxisSeriesIds: string[];
+  leftYAxisLineColor: string;
+  rightYAxisLineColor: string;
+}
+
+export interface PerformanceChartDisplayState {
+  visibleSeriesIds: string[] | null;
+  leftYAxisSeriesIds: string[] | null;
+  rightYAxisSeriesIds: string[];
+  rightYAxisUnit: string;
+  leftYAxisLineColor: string;
+  rightYAxisLineColor: string;
+  tooltipUnits: string[];
+  minimumMode: 'auto' | 'absolute' | 'relative';
+  maximumMode: 'auto' | 'absolute' | 'relative';
+  minimumValue: string;
+  maximumValue: string;
 }
 
 export const defaultChartQueryState = ({
@@ -99,7 +117,25 @@ export const defaultChartDisplayState = (
   yAxisUnit: currency,
   tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] }),
   visibleSeriesIds: null,
-  rightYAxisUnit: ''
+  leftYAxisSeriesIds: null,
+  rightYAxisUnit: '',
+  rightYAxisSeriesIds: [],
+  leftYAxisLineColor: '#364255',
+  rightYAxisLineColor: '#ffbc3a'
+});
+
+export const defaultPerformanceChartDisplayState = (): PerformanceChartDisplayState => ({
+  visibleSeriesIds: null,
+  leftYAxisSeriesIds: null,
+  rightYAxisSeriesIds: [],
+  rightYAxisUnit: '',
+  leftYAxisLineColor: '#364255',
+  rightYAxisLineColor: '#ffbc3a',
+  tooltipUnits: ['%'],
+  minimumMode: 'auto',
+  maximumMode: 'auto',
+  minimumValue: '',
+  maximumValue: ''
 });
 
 export const chartQueryStateFromSetting = ({
@@ -142,6 +178,22 @@ export const chartDisplayStateFromSetting = ({
 }): ChartDisplayState => {
   if (!value || typeof value !== 'object') return fallback;
   const candidate = value as Record<string, unknown>;
+  const seriesIds = (input: unknown) => Array.isArray(input)
+    ? [...new Set(input
+        .filter((id): id is string => typeof id === 'string')
+        .map((id) => id.trim())
+        .filter(Boolean))]
+    : null;
+  const leftYAxisSeriesIds = seriesIds(candidate.leftYAxisSeriesIds)
+    ?? seriesIds(candidate.visibleSeriesIds)
+    ?? fallback.leftYAxisSeriesIds;
+  const rightYAxisSeriesIds = seriesIds(candidate.rightYAxisSeriesIds)
+    ?? fallback.rightYAxisSeriesIds;
+  const axisLineColor = (input: unknown, fallbackColor: string) => (
+    typeof input === 'string' && /^#[0-9a-f]{6}$/i.test(input)
+      ? input.toLowerCase()
+      : fallbackColor
+  );
   return {
     scale: candidate.scale === 'log' ? 'log' : 'linear',
     normalized: candidate.normalized === true,
@@ -154,15 +206,76 @@ export const chartDisplayStateFromSetting = ({
       value: candidate.tooltipUnits,
       fallback: fallback.tooltipUnits
     }),
-    visibleSeriesIds: Array.isArray(candidate.visibleSeriesIds)
-      ? [...new Set(candidate.visibleSeriesIds
-          .filter((id): id is string => typeof id === 'string')
-          .map((id) => id.trim())
-          .filter(Boolean))]
-      : fallback.visibleSeriesIds,
+    visibleSeriesIds: seriesIds(candidate.visibleSeriesIds)
+      ?? (
+        leftYAxisSeriesIds === null
+          ? fallback.visibleSeriesIds
+          : [...new Set([...leftYAxisSeriesIds, ...rightYAxisSeriesIds])]
+      ),
+    leftYAxisSeriesIds,
     rightYAxisUnit: typeof candidate.rightYAxisUnit === 'string'
       ? candidate.rightYAxisUnit
-      : fallback.rightYAxisUnit
+      : fallback.rightYAxisUnit,
+    rightYAxisSeriesIds,
+    leftYAxisLineColor: axisLineColor(
+      candidate.leftYAxisLineColor,
+      fallback.leftYAxisLineColor
+    ),
+    rightYAxisLineColor: axisLineColor(
+      candidate.rightYAxisLineColor,
+      fallback.rightYAxisLineColor
+    )
+  };
+};
+
+export const performanceChartDisplayStateFromSetting = ({
+  value,
+  legacyVisibleSeriesIds = null
+}: {
+  value: unknown;
+  legacyVisibleSeriesIds?: string[] | null;
+}): PerformanceChartDisplayState => {
+  const fallback = defaultPerformanceChartDisplayState();
+  const candidate = value && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : {};
+  const seriesIds = (input: unknown) => Array.isArray(input)
+    ? [...new Set(input
+        .filter((id): id is string => typeof id === 'string')
+        .map((id) => id.trim())
+        .filter(Boolean))]
+    : null;
+  const visibleSeriesIds = seriesIds(candidate.visibleSeriesIds)
+    ?? legacyVisibleSeriesIds;
+  const leftYAxisSeriesIds = seriesIds(candidate.leftYAxisSeriesIds)
+    ?? visibleSeriesIds;
+  const rightYAxisSeriesIds = seriesIds(candidate.rightYAxisSeriesIds) ?? [];
+  const boundMode = (
+    input: unknown,
+    defaultValue: 'auto' | 'absolute' | 'relative'
+  ) => ['auto', 'absolute', 'relative'].includes(String(input))
+    ? String(input) as 'auto' | 'absolute' | 'relative'
+    : defaultValue;
+  const color = (input: unknown, defaultValue: string) => (
+    typeof input === 'string' && /^#[0-9a-f]{6}$/i.test(input)
+      ? input.toLowerCase()
+      : defaultValue
+  );
+  return {
+    visibleSeriesIds,
+    leftYAxisSeriesIds,
+    rightYAxisSeriesIds,
+    rightYAxisUnit: candidate.rightYAxisUnit === '%' ? '%' : '',
+    leftYAxisLineColor: color(candidate.leftYAxisLineColor, fallback.leftYAxisLineColor),
+    rightYAxisLineColor: color(candidate.rightYAxisLineColor, fallback.rightYAxisLineColor),
+    tooltipUnits: normalizeTooltipUnits({
+      value: candidate.tooltipUnits,
+      fallback: ['%']
+    }).filter((unit) => unit === '%'),
+    minimumMode: boundMode(candidate.minimumMode, fallback.minimumMode),
+    maximumMode: boundMode(candidate.maximumMode, fallback.maximumMode),
+    minimumValue: typeof candidate.minimumValue === 'string' ? candidate.minimumValue : '',
+    maximumValue: typeof candidate.maximumValue === 'string' ? candidate.maximumValue : ''
   };
 };
 

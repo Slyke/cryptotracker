@@ -26,6 +26,34 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   const performanceRange = page.locator('#market-performance-range');
   await expect(performanceRange).toBeVisible();
   await expect(page.getByRole('button', { name: /save chart to dashboard/i })).toBeVisible();
+  const marketPerformance = page.locator('#market-performance-chart .performance-panel');
+  for (const label of [
+    'Left Y-Axis',
+    'Left displayed lines',
+    'Left horizontal line color',
+    'Right Y-Axis',
+    'Right displayed lines',
+    'Right horizontal line color',
+    'Popup units',
+    'Minimum',
+    'Maximum'
+  ]) {
+    await expect(marketPerformance.getByLabel(label, { exact: true })).toBeVisible();
+  }
+  const [
+    performanceLeftBounds,
+    performanceRightBounds,
+    performancePopupBounds
+  ] = await Promise.all([
+    marketPerformance.getByLabel('Left Y-Axis', { exact: true }).boundingBox(),
+    marketPerformance.getByLabel('Right Y-Axis', { exact: true }).boundingBox(),
+    marketPerformance.getByLabel('Popup units', { exact: true }).boundingBox()
+  ]);
+  expect(performanceLeftBounds).not.toBeNull();
+  expect(performanceRightBounds).not.toBeNull();
+  expect(performancePopupBounds).not.toBeNull();
+  expect(performanceRightBounds!.y).toBeGreaterThan(performanceLeftBounds!.y);
+  expect(performancePopupBounds!.y).toBeGreaterThan(performanceRightBounds!.y);
   await performanceRange.selectOption('custom');
   await expect(page.locator('#market-performance-ago-value')).toBeVisible();
   await expect(page.locator('#market-performance-ago-unit')).toBeVisible();
@@ -84,6 +112,14 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   }
   await page.keyboard.press('Escape');
   await expect(marketChart.getByLabel(/y scale/i).getByRole('option', { name: /logarithmic/i })).toBeEnabled();
+  for (const label of [
+    'Left displayed lines',
+    'Left horizontal line color',
+    'Right displayed lines',
+    'Right horizontal line color'
+  ]) {
+    await expect(marketChart.getByLabel(label, { exact: true })).toBeVisible();
+  }
 
   const inspector = marketChart.getByRole('button', { name: /keyboard chart inspector/i });
   await expect(inspector).toBeVisible();
@@ -136,6 +172,14 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   if (await krakenChartOptions.getAttribute('open') === null) {
     await krakenChart.getByText(/scale bounds, display, events, and exports/i).click();
   }
+  for (const label of [
+    'Left displayed lines',
+    'Left horizontal line color',
+    'Right displayed lines',
+    'Right horizontal line color'
+  ]) {
+    await expect(krakenChart.getByLabel(label, { exact: true })).toBeVisible();
+  }
   for (const axisLabel of [/left y-axis/i, /right y-axis/i]) {
     await krakenChart.getByLabel(axisLabel).click();
     for (const asset of expectedAxisOptions.assets) {
@@ -166,6 +210,14 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   const addressChartOptions = addressChart.locator('details.chart-options');
   if (await addressChartOptions.getAttribute('open') === null) {
     await addressChart.getByText(/scale bounds, display, events, and exports/i).click();
+  }
+  for (const label of [
+    'Left displayed lines',
+    'Left horizontal line color',
+    'Right displayed lines',
+    'Right horizontal line color'
+  ]) {
+    await expect(addressChart.getByLabel(label, { exact: true })).toBeVisible();
   }
   for (const axisLabel of [/left y-axis/i, /right y-axis/i]) {
     await addressChart.getByLabel(axisLabel).click();

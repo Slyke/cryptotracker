@@ -222,9 +222,12 @@ Full charts provide:
 - line/candlestick mode where applicable;
 - linear/logarithmic scale and searchable Left Y-Axis and optional Right Y-Axis units chosen from
   the same configured currencies and every activated crypto denomination;
+- one axis row at a time, Left first, with separate searchable displayed-lines and horizontal
+  grid-line color controls for Left and Right; assigning a line to one axis removes it from the
+  other;
 - a searchable multi-select for showing zero to five fiat or crypto units in graph popups;
-- a searchable displayed-lines selector;
-- independent automatic, absolute, or percentage-padded minimum and maximum;
+- popup units and independent automatic, absolute, or percentage-padded minimum and maximum
+  controls below both axis rows;
 - normalization to 0%, candlestick wicks, volume, and event toggles where applicable;
 - wheel/gesture pan and zoom after the plot is clicked or focused, drag zoom, and Reset zoom;
 - a stable hover/crosshair popup, click-to-pin details, selectable series, and partial/stale/derived/
@@ -237,8 +240,9 @@ Full charts provide:
 
 Compact Dashboard and calculation charts intentionally omit the full configuration toolbar.
 Markets, Addresses, and Kraken full charts store their range, granularity, custom lookback, scale,
-Left and Right Y-Axis units, popup units, displayed lines, normalization, event,
-and volume choices in the database and restore them on refresh. The keyboard inspector and
+Left and Right Y-Axis units, per-axis displayed lines and horizontal grid-line colors, popup units,
+normalization, event, and volume choices in the database and restore them on refresh. Performance
+graphs use the same per-axis line and grid-color model with percentage units. The keyboard inspector and
 optional inactive-asset popup toggle sit below the graph's source, resolution, and latest-timestamp
 labels. Data-quality details use the yellow indicator at the right side of the graph-options
 accordion header.

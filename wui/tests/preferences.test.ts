@@ -4,12 +4,14 @@ import {
   chartQueryStateFromSetting,
   defaultChartDisplayState,
   defaultChartQueryState,
+  defaultPerformanceChartDisplayState,
   formatDateTime,
   formatDisplayNumber,
   formatPercent,
   historyDepthRetentionWarning,
   moveInOrder,
   normalizeOrder,
+  performanceChartDisplayStateFromSetting,
   replaceSavedGraph,
   relativeRangeWindow,
   savedGraphNameExists,
@@ -72,6 +74,10 @@ describe('database-backed UI preferences', () => {
         showVolume: true,
         yAxisUnit: 'ethereum',
         rightYAxisUnit: 'bitcoin',
+        leftYAxisSeriesIds: ['combined'],
+        rightYAxisSeriesIds: ['bitcoin'],
+        leftYAxisLineColor: '#123456',
+        rightYAxisLineColor: '#abcdef',
         tooltipUnits: ['CAD', 'USD', 'bitcoin', 'ethereum', 'dogecoin', 'solana']
       },
       fallback: defaultChartDisplayState('CAD')
@@ -83,7 +89,38 @@ describe('database-backed UI preferences', () => {
       yAxisUnit: 'ethereum',
       rightYAxisUnit: 'bitcoin',
       tooltipUnits: ['CAD', 'USD', 'bitcoin', 'ethereum', 'dogecoin'],
-      visibleSeriesIds: null
+      visibleSeriesIds: ['combined', 'bitcoin'],
+      leftYAxisSeriesIds: ['combined'],
+      rightYAxisSeriesIds: ['bitcoin'],
+      leftYAxisLineColor: '#123456',
+      rightYAxisLineColor: '#abcdef'
+    });
+    expect(performanceChartDisplayStateFromSetting({
+      value: {
+        leftYAxisSeriesIds: ['portfolio'],
+        rightYAxisSeriesIds: ['benchmark'],
+        rightYAxisUnit: '%',
+        leftYAxisLineColor: '#102030',
+        rightYAxisLineColor: '#a0b0c0',
+        tooltipUnits: [],
+        minimumMode: 'relative',
+        maximumMode: 'absolute',
+        minimumValue: '5',
+        maximumValue: '120'
+      }
+    })).toEqual({
+      ...defaultPerformanceChartDisplayState(),
+      visibleSeriesIds: null,
+      leftYAxisSeriesIds: ['portfolio'],
+      rightYAxisSeriesIds: ['benchmark'],
+      rightYAxisUnit: '%',
+      leftYAxisLineColor: '#102030',
+      rightYAxisLineColor: '#a0b0c0',
+      tooltipUnits: [],
+      minimumMode: 'relative',
+      maximumMode: 'absolute',
+      minimumValue: '5',
+      maximumValue: '120'
     });
     expect(chartQueryStateFromSetting({
       value: { customAgoValue: 0, customAgoUnit: 'centuries' },

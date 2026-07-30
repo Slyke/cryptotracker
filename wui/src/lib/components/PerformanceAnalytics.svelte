@@ -5,6 +5,7 @@
   import type { ChartAxisOption } from '$lib/chart-axis-options';
   import {
     formatPercent,
+    normalizeTooltipUnits,
     relativeRangeWindow,
     type RelativeRangeUnit
   } from '$lib/preferences';
@@ -28,6 +29,16 @@
   export let initialCustomAgoValue = 1;
   export let initialCustomAgoUnit: RelativeRangeUnit = 'years';
   export let initialVisibleSeriesIds: string[] | null = null;
+  export let initialLeftYAxisSeriesIds: string[] | null = null;
+  export let initialRightYAxisSeriesIds: string[] = [];
+  export let initialRightYAxisUnit = '';
+  export let initialLeftYAxisLineColor = '#364255';
+  export let initialRightYAxisLineColor = '#ffbc3a';
+  export let initialTooltipUnits: string[] = ['%'];
+  export let initialMinimumMode: 'auto' | 'absolute' | 'relative' = 'auto';
+  export let initialMaximumMode: 'auto' | 'absolute' | 'relative' = 'auto';
+  export let initialMinimumValue = '';
+  export let initialMaximumValue = '';
   export let initialSaveGraphName = title;
 
   const dispatch = createEventDispatcher<{
@@ -40,6 +51,16 @@
     };
     displayChange: {
       visibleSeriesIds: string[];
+      leftYAxisSeriesIds: string[];
+      rightYAxisSeriesIds: string[];
+      rightYAxisUnit: string;
+      leftYAxisLineColor: string;
+      rightYAxisLineColor: string;
+      tooltipUnits: string[];
+      minimumMode: 'auto' | 'absolute' | 'relative';
+      maximumMode: 'auto' | 'absolute' | 'relative';
+      minimumValue: string;
+      maximumValue: string;
     };
     saveGraph: {
       name: string;
@@ -51,6 +72,16 @@
       customAgoValue: number;
       customAgoUnit: RelativeRangeUnit;
       visibleSeriesIds: string[];
+      leftYAxisSeriesIds: string[];
+      rightYAxisSeriesIds: string[];
+      rightYAxisUnit: string;
+      leftYAxisLineColor: string;
+      rightYAxisLineColor: string;
+      tooltipUnits: string[];
+      minimumMode: 'auto' | 'absolute' | 'relative';
+      maximumMode: 'auto' | 'absolute' | 'relative';
+      minimumValue: string;
+      maximumValue: string;
     };
   }>();
 
@@ -70,17 +101,39 @@
   let performanceRange = initialRange;
   let customAgoValue = initialCustomAgoValue;
   let customAgoUnit: RelativeRangeUnit = initialCustomAgoUnit;
-  let useAllSeriesByDefault = initialVisibleSeriesIds === null;
-  let visibleSeriesIds = initialVisibleSeriesIds === null
-    ? []
-    : [...new Set(initialVisibleSeriesIds)];
+  let useAllLeftSeriesByDefault = (
+    initialLeftYAxisSeriesIds === null
+    && initialVisibleSeriesIds === null
+  );
+  let rightYAxisSeriesIds = [...new Set(initialRightYAxisSeriesIds)];
+  let leftYAxisSeriesIds = [
+    ...new Set(initialLeftYAxisSeriesIds ?? initialVisibleSeriesIds ?? [])
+  ].filter((id) => !rightYAxisSeriesIds.includes(id));
+  let rightYAxisUnit = initialRightYAxisUnit === '%' ? '%' : '';
+  let leftYAxisLineColor = initialLeftYAxisLineColor;
+  let rightYAxisLineColor = initialRightYAxisLineColor;
+  let selectedTooltipUnits = normalizeTooltipUnits({
+    value: initialTooltipUnits,
+    fallback: ['%']
+  }).filter((unit) => unit === '%');
+  let minimumMode = initialMinimumMode;
+  let maximumMode = initialMaximumMode;
+  let minimumValue = initialMinimumValue;
+  let maximumValue = initialMaximumValue;
   let saveGraphName = initialSaveGraphName;
   let saveValidation = '';
   let metrics: Metric[] = [];
   let filteredSeries: ChartSeries[] = [];
   let transformedSeries: ChartSeries[] = [];
-  let displayedSeries: ChartSeries[] = [];
   let displayedSeriesOptions: ChartAxisOption[] = [];
+  let effectiveLeftYAxisSeriesIds: string[] = [];
+  let effectiveRightYAxisSeriesIds: string[] = [];
+  const percentageUnitOptions: ChartAxisOption[] = [{
+    value: '%',
+    label: '% · Percentage',
+    group: 'Display units',
+    searchText: 'percent percentage return rate'
+  }];
   let selectedMetric: Metric | null = null;
   let benchmarkMetric: Metric | null = null;
   let appliedInitialMode = initialMode;
@@ -89,7 +142,20 @@
   let appliedInitialRange = initialRange;
   let appliedInitialCustomAgoValue = initialCustomAgoValue;
   let appliedInitialCustomAgoUnit = initialCustomAgoUnit;
-  let appliedInitialVisibleSeriesKey = initialVisibleSeriesIds?.join('\u0000') ?? '*';
+  let appliedInitialLeftYAxisSeriesKey = (
+    initialLeftYAxisSeriesIds ?? initialVisibleSeriesIds
+  )?.join('\u0000') ?? '*';
+  let appliedInitialRightYAxisSeriesKey = initialRightYAxisSeriesIds.join('\u0000');
+  let appliedInitialRightYAxisUnit = initialRightYAxisUnit;
+  let appliedInitialLeftYAxisLineColor = initialLeftYAxisLineColor;
+  let appliedInitialRightYAxisLineColor = initialRightYAxisLineColor;
+  let appliedInitialTooltipUnitsKey = initialTooltipUnits.join('\u0000');
+  let appliedInitialBoundsKey = [
+    initialMinimumMode,
+    initialMaximumMode,
+    initialMinimumValue,
+    initialMaximumValue
+  ].join('\u0000');
   let appliedInitialSaveGraphName = initialSaveGraphName;
 
   const median = (values: number[]) => {
@@ -201,6 +267,53 @@
       customAgoUnit
     });
   };
+  const resolveLeftYAxisSeriesIds = () => series
+    .filter((item) => (
+      useAllLeftSeriesByDefault
+        ? !rightYAxisSeriesIds.includes(item.id)
+        : leftYAxisSeriesIds.includes(item.id)
+    ))
+    .map((item) => item.id);
+  const resolveRightYAxisSeriesIds = () => series
+    .filter((item) => rightYAxisSeriesIds.includes(item.id))
+    .map((item) => item.id);
+  const displayChanged = () => {
+    const leftIds = resolveLeftYAxisSeriesIds();
+    const rightIds = resolveRightYAxisSeriesIds();
+    dispatch('displayChange', {
+      visibleSeriesIds: [...new Set([...leftIds, ...rightIds])],
+      leftYAxisSeriesIds: leftIds,
+      rightYAxisSeriesIds: rightIds,
+      rightYAxisUnit,
+      leftYAxisLineColor,
+      rightYAxisLineColor,
+      tooltipUnits: selectedTooltipUnits,
+      minimumMode,
+      maximumMode,
+      minimumValue,
+      maximumValue
+    });
+  };
+  const leftDisplayedSeriesChanged = () => {
+    useAllLeftSeriesByDefault = false;
+    rightYAxisSeriesIds = rightYAxisSeriesIds.filter((id) => (
+      !leftYAxisSeriesIds.includes(id)
+    ));
+    displayChanged();
+  };
+  const rightDisplayedSeriesChanged = () => {
+    if (useAllLeftSeriesByDefault) {
+      leftYAxisSeriesIds = series
+        .map((item) => item.id)
+        .filter((id) => !rightYAxisSeriesIds.includes(id));
+    } else {
+      leftYAxisSeriesIds = leftYAxisSeriesIds.filter((id) => (
+        !rightYAxisSeriesIds.includes(id)
+      ));
+    }
+    useAllLeftSeriesByDefault = false;
+    displayChanged();
+  };
   const saveGraph = () => {
     const name = saveGraphName.trim();
     if (!name) {
@@ -208,6 +321,8 @@
       return;
     }
     saveValidation = '';
+    const leftIds = resolveLeftYAxisSeriesIds();
+    const rightIds = resolveRightYAxisSeriesIds();
     dispatch('saveGraph', {
       name,
       performanceMode: mode,
@@ -217,16 +332,17 @@
       customRangeMode: 'ago',
       customAgoValue: Math.max(1, Math.floor(Number(customAgoValue))),
       customAgoUnit,
-      visibleSeriesIds: series.filter((item) => (
-        useAllSeriesByDefault || visibleSeriesIds.includes(item.id)
-      )).map((item) => item.id)
-    });
-  };
-  const displayedSeriesChanged = () => {
-    useAllSeriesByDefault = false;
-    dispatch('displayChange', {
-      visibleSeriesIds: series.filter((item) => visibleSeriesIds.includes(item.id))
-        .map((item) => item.id)
+      visibleSeriesIds: [...new Set([...leftIds, ...rightIds])],
+      leftYAxisSeriesIds: leftIds,
+      rightYAxisSeriesIds: rightIds,
+      rightYAxisUnit,
+      leftYAxisLineColor,
+      rightYAxisLineColor,
+      tooltipUnits: selectedTooltipUnits,
+      minimumMode,
+      maximumMode,
+      minimumValue,
+      maximumValue
     });
   };
 
@@ -264,13 +380,53 @@
     appliedInitialCustomAgoUnit = initialCustomAgoUnit;
   }
   $: {
-    const nextInitialVisibleSeriesKey = initialVisibleSeriesIds?.join('\u0000') ?? '*';
-    if (appliedInitialVisibleSeriesKey !== nextInitialVisibleSeriesKey) {
-      useAllSeriesByDefault = initialVisibleSeriesIds === null;
-      visibleSeriesIds = initialVisibleSeriesIds === null
-        ? series.map((item) => item.id)
-        : [...new Set(initialVisibleSeriesIds)];
-      appliedInitialVisibleSeriesKey = nextInitialVisibleSeriesKey;
+    const nextInitialLeftYAxisSeriesKey = (
+      initialLeftYAxisSeriesIds ?? initialVisibleSeriesIds
+    )?.join('\u0000') ?? '*';
+    const nextInitialRightYAxisSeriesKey = initialRightYAxisSeriesIds.join('\u0000');
+    if (appliedInitialRightYAxisSeriesKey !== nextInitialRightYAxisSeriesKey) {
+      rightYAxisSeriesIds = [...new Set(initialRightYAxisSeriesIds)];
+      appliedInitialRightYAxisSeriesKey = nextInitialRightYAxisSeriesKey;
+    }
+    if (appliedInitialLeftYAxisSeriesKey !== nextInitialLeftYAxisSeriesKey) {
+      const initialLeftIds = initialLeftYAxisSeriesIds ?? initialVisibleSeriesIds;
+      useAllLeftSeriesByDefault = initialLeftIds === null;
+      leftYAxisSeriesIds = [...new Set(initialLeftIds ?? [])]
+        .filter((id) => !rightYAxisSeriesIds.includes(id));
+      appliedInitialLeftYAxisSeriesKey = nextInitialLeftYAxisSeriesKey;
+    }
+    if (appliedInitialRightYAxisUnit !== initialRightYAxisUnit) {
+      rightYAxisUnit = initialRightYAxisUnit === '%' ? '%' : '';
+      appliedInitialRightYAxisUnit = initialRightYAxisUnit;
+    }
+    if (appliedInitialLeftYAxisLineColor !== initialLeftYAxisLineColor) {
+      leftYAxisLineColor = initialLeftYAxisLineColor;
+      appliedInitialLeftYAxisLineColor = initialLeftYAxisLineColor;
+    }
+    if (appliedInitialRightYAxisLineColor !== initialRightYAxisLineColor) {
+      rightYAxisLineColor = initialRightYAxisLineColor;
+      appliedInitialRightYAxisLineColor = initialRightYAxisLineColor;
+    }
+    const nextTooltipUnitsKey = initialTooltipUnits.join('\u0000');
+    if (appliedInitialTooltipUnitsKey !== nextTooltipUnitsKey) {
+      selectedTooltipUnits = normalizeTooltipUnits({
+        value: initialTooltipUnits,
+        fallback: ['%']
+      }).filter((unit) => unit === '%');
+      appliedInitialTooltipUnitsKey = nextTooltipUnitsKey;
+    }
+    const nextBoundsKey = [
+      initialMinimumMode,
+      initialMaximumMode,
+      initialMinimumValue,
+      initialMaximumValue
+    ].join('\u0000');
+    if (appliedInitialBoundsKey !== nextBoundsKey) {
+      minimumMode = initialMinimumMode;
+      maximumMode = initialMaximumMode;
+      minimumValue = initialMinimumValue;
+      maximumValue = initialMaximumValue;
+      appliedInitialBoundsKey = nextBoundsKey;
     }
   }
   $: if (appliedInitialSaveGraphName !== initialSaveGraphName) {
@@ -290,15 +446,21 @@
     series: filteredSeries,
     mode
   });
-  $: if (useAllSeriesByDefault) {
-    const allSeriesIds = series.map((item) => item.id);
-    if (visibleSeriesIds.join('\u0000') !== allSeriesIds.join('\u0000')) {
-      visibleSeriesIds = allSeriesIds;
+  $: if (useAllLeftSeriesByDefault) {
+    const allLeftSeriesIds = series
+      .map((item) => item.id)
+      .filter((id) => !rightYAxisSeriesIds.includes(id));
+    if (leftYAxisSeriesIds.join('\u0000') !== allLeftSeriesIds.join('\u0000')) {
+      leftYAxisSeriesIds = allLeftSeriesIds;
     }
   }
-  $: displayedSeries = transformedSeries.filter((item) => (
-    useAllSeriesByDefault || visibleSeriesIds.includes(item.id)
-  ));
+  $: {
+    useAllLeftSeriesByDefault;
+    leftYAxisSeriesIds;
+    rightYAxisSeriesIds;
+    effectiveLeftYAxisSeriesIds = resolveLeftYAxisSeriesIds();
+    effectiveRightYAxisSeriesIds = resolveRightYAxisSeriesIds();
+  }
   $: displayedSeriesOptions = series.map((item) => ({
     value: item.id,
     label: item.label,
@@ -376,18 +538,120 @@
         {/each}
       </select>
     </div>
+  </div>
+
+  <div class="performance-axis-row">
     <div class="field">
-      <label for={controlId('displayed-series')}>Displayed lines</label>
+      <label for={controlId('left-y-axis-unit')}>Left Y-Axis</label>
+      <select id={controlId('left-y-axis-unit')} disabled>
+        <option value="%">% · Percentage</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for={controlId('left-displayed-series')}>Left displayed lines</label>
       <SearchableMultiSelect
-        id={controlId('displayed-series')}
-        bind:value={visibleSeriesIds}
+        id={controlId('left-displayed-series')}
+        bind:value={leftYAxisSeriesIds}
         options={displayedSeriesOptions}
-        label="performance lines"
+        label="Left Y-Axis performance lines"
         maximum={Math.max(displayedSeriesOptions.length, 1)}
         disabled={displayedSeriesOptions.length === 0}
-        on:change={displayedSeriesChanged}
+        on:change={leftDisplayedSeriesChanged}
       />
     </div>
+    <div class="field">
+      <label for={controlId('left-y-axis-line-color')}>Left horizontal line color</label>
+      <div class="color-input">
+        <input
+          id={controlId('left-y-axis-line-color')}
+          type="color"
+          bind:value={leftYAxisLineColor}
+          on:change={displayChanged}
+        />
+        <code>{leftYAxisLineColor}</code>
+      </div>
+    </div>
+  </div>
+
+  <div class="performance-axis-row">
+    <div class="field">
+      <label for={controlId('right-y-axis-unit')}>Right Y-Axis</label>
+      <select
+        id={controlId('right-y-axis-unit')}
+        bind:value={rightYAxisUnit}
+        on:change={displayChanged}
+      >
+        <option value="">Off</option>
+        <option value="%">% · Percentage</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for={controlId('right-displayed-series')}>Right displayed lines</label>
+      <SearchableMultiSelect
+        id={controlId('right-displayed-series')}
+        bind:value={rightYAxisSeriesIds}
+        options={displayedSeriesOptions}
+        label="Right Y-Axis performance lines"
+        maximum={Math.max(displayedSeriesOptions.length, 1)}
+        disabled={displayedSeriesOptions.length === 0 || !rightYAxisUnit}
+        on:change={rightDisplayedSeriesChanged}
+      />
+    </div>
+    <div class="field">
+      <label for={controlId('right-y-axis-line-color')}>Right horizontal line color</label>
+      <div class="color-input">
+        <input
+          id={controlId('right-y-axis-line-color')}
+          type="color"
+          bind:value={rightYAxisLineColor}
+          disabled={!rightYAxisUnit}
+          on:change={displayChanged}
+        />
+        <code>{rightYAxisLineColor}</code>
+      </div>
+    </div>
+  </div>
+
+  <div class="performance-bounds-row">
+    <div class="field">
+      <label for={controlId('tooltip-units')}>Popup units</label>
+      <SearchableMultiSelect
+        id={controlId('tooltip-units')}
+        bind:value={selectedTooltipUnits}
+        options={percentageUnitOptions}
+        label="performance popup units"
+        maximum={1}
+        on:change={displayChanged}
+      />
+    </div>
+    <div class="field">
+      <label for={controlId('minimum-mode')}>Minimum</label>
+      <select id={controlId('minimum-mode')} bind:value={minimumMode} on:change={displayChanged}>
+        <option value="auto">Auto</option>
+        <option value="absolute">Absolute</option>
+        <option value="relative">Relative %</option>
+      </select>
+    </div>
+    {#if minimumMode !== 'auto'}
+      <div class="field">
+        <label for={controlId('minimum-value')}>Minimum value</label>
+        <input id={controlId('minimum-value')} inputmode="decimal" bind:value={minimumValue} on:input={displayChanged} />
+      </div>
+    {/if}
+    <div class="field">
+      <label for={controlId('maximum-mode')}>Maximum</label>
+      <select id={controlId('maximum-mode')} bind:value={maximumMode} on:change={displayChanged}>
+        <option value="auto">Auto</option>
+        <option value="absolute">Absolute</option>
+        <option value="relative">Relative %</option>
+      </select>
+    </div>
+    {#if maximumMode !== 'auto'}
+      <div class="field">
+        <label for={controlId('maximum-value')}>Maximum value</label>
+        <input id={controlId('maximum-value')} inputmode="decimal" bind:value={maximumValue} on:input={displayChanged} />
+      </div>
+    {/if}
   </div>
 
   {#if selectedMetric}
@@ -445,7 +709,7 @@
 
   <PortfolioChart
     title={`${title} ${mode}`}
-    series={displayedSeries}
+    series={transformedSeries}
     chartMode="line"
     currency="%"
     tooltipCurrencies={['%']}
@@ -459,6 +723,20 @@
     initialCustomRangeMode="ago"
     initialCustomAgoValue={customAgoValue}
     initialCustomAgoUnit={customAgoUnit}
+    initialVisibleSeriesIds={[...new Set([
+      ...effectiveLeftYAxisSeriesIds,
+      ...effectiveRightYAxisSeriesIds
+    ])]}
+    initialLeftYAxisSeriesIds={effectiveLeftYAxisSeriesIds}
+    initialRightYAxisUnit={rightYAxisUnit}
+    initialRightYAxisSeriesIds={effectiveRightYAxisSeriesIds}
+    initialLeftYAxisLineColor={leftYAxisLineColor}
+    initialRightYAxisLineColor={rightYAxisLineColor}
+    initialTooltipUnits={selectedTooltipUnits}
+    initialMinimumMode={minimumMode}
+    initialMaximumMode={maximumMode}
+    initialMinimumValue={minimumValue}
+    initialMaximumValue={maximumValue}
     minimumValuedObservations={2}
     emptyMessage="At least two valued observations are needed for performance analytics."
   />
@@ -486,14 +764,54 @@
     gap: 0.8rem;
   }
 
+  .performance-axis-row,
+  .performance-bounds-row {
+    display: grid;
+    grid-template-columns: minmax(10rem, 0.8fr) minmax(min(100%, 20rem), 1.4fr) minmax(12rem, 0.8fr);
+    align-items: end;
+    gap: 0.8rem;
+  }
+
+  .performance-bounds-row {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  }
+
   .performance-controls .field,
+  .performance-axis-row .field,
+  .performance-bounds-row .field,
   .save-performance .field {
     min-width: 0;
   }
 
   .performance-controls select,
-  .performance-controls input {
+  .performance-controls input,
+  .performance-axis-row select,
+  .performance-bounds-row select,
+  .performance-bounds-row input {
     width: 100%;
+  }
+
+  .color-input {
+    display: flex;
+    align-items: center;
+    min-height: 2.75rem;
+    gap: 0.6rem;
+  }
+
+  .color-input input[type='color'] {
+    width: 4.5rem;
+    min-height: 2.75rem;
+    padding: 0.25rem;
+  }
+
+  .color-input code {
+    color: var(--color-muted);
+  }
+
+  @media (max-width: 760px) {
+    .performance-axis-row {
+      grid-template-columns: 1fr;
+    }
   }
 
   .save-performance .field {

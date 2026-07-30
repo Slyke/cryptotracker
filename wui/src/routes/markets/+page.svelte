@@ -19,8 +19,10 @@
     createSavedGraph,
     defaultChartDisplayState,
     defaultChartQueryState,
+    defaultPerformanceChartDisplayState,
     moveInOrder,
     normalizeOrder,
+    performanceChartDisplayStateFromSetting,
     relativeRangeWindow,
     replaceSavedGraph,
     savePreferences,
@@ -28,6 +30,7 @@
     toggleCollapsed,
     type ChartDisplayState,
     type ChartQueryState,
+    type PerformanceChartDisplayState,
     type RelativeRangeUnit,
     type SavedGraph
   } from '$lib/preferences';
@@ -115,7 +118,7 @@
   let portfolioSaveName = 'Combined portfolio history';
   let performanceEditConfig: Record<string, unknown> = {};
   let performanceSaveName = 'Market performance';
-  let performanceVisibleSeriesIds: string[] | null = null;
+  let performanceDisplayState = defaultPerformanceChartDisplayState();
   let pageLayouts: Record<string, string[]> = {};
   let collapsedBlocks: Record<string, string[]> = {};
   let tableColumns: Record<string, string[]> = {};
@@ -296,9 +299,6 @@
       } else if (editGraph?.config.analytics === 'performance') {
         performanceEditConfig = editGraph.config;
         performanceSaveName = editGraph.name;
-        performanceVisibleSeriesIds = Array.isArray(editGraph.config.visibleSeriesIds)
-          ? editGraph.config.visibleSeriesIds.map(String)
-          : null;
         collapsedBlocks = {
           ...collapsedBlocks,
           markets: (collapsedBlocks.markets ?? []).filter((id) => id !== 'performance')
@@ -332,12 +332,14 @@
           source = String(editGraph.config.source) as typeof source;
         }
       }
-      if (
-        performanceVisibleSeriesIds === null
-        && Array.isArray(graphDefaults.marketsPerformanceVisibleSeries)
-      ) {
-        performanceVisibleSeriesIds = graphDefaults.marketsPerformanceVisibleSeries.map(String);
-      }
+      performanceDisplayState = performanceChartDisplayStateFromSetting({
+        value: Object.keys(performanceEditConfig).length > 0
+          ? performanceEditConfig
+          : graphDefaults.marketsPerformanceDisplayState,
+        legacyVisibleSeriesIds: Array.isArray(graphDefaults.marketsPerformanceVisibleSeries)
+          ? graphDefaults.marketsPerformanceVisibleSeries.map(String)
+          : null
+      });
       watchedChartState = chartQueryStateFromSetting({
         value: Object.keys(watchedEditConfig).length > 0
           ? watchedEditConfig
@@ -1026,12 +1028,13 @@
   };
 
   const performanceDisplayChanged = async (
-    event: CustomEvent<{ visibleSeriesIds: string[] }>
+    event: CustomEvent<PerformanceChartDisplayState>
   ) => {
-    performanceVisibleSeriesIds = event.detail.visibleSeriesIds;
+    performanceDisplayState = { ...event.detail };
     graphDefaults = {
       ...graphDefaults,
-      marketsPerformanceVisibleSeries: performanceVisibleSeriesIds
+      marketsPerformanceVisibleSeries: performanceDisplayState.visibleSeriesIds,
+      marketsPerformanceDisplayState: performanceDisplayState
     };
     await savePreferences({ graphDefaults });
   };
@@ -1285,7 +1288,11 @@
     initialShowEvents={portfolioDisplayState.showEvents}
     initialShowVolume={portfolioDisplayState.showVolume}
     initialVisibleSeriesIds={portfolioDisplayState.visibleSeriesIds}
+    initialLeftYAxisSeriesIds={portfolioDisplayState.leftYAxisSeriesIds}
     initialRightYAxisUnit={portfolioDisplayState.rightYAxisUnit}
+    initialRightYAxisSeriesIds={portfolioDisplayState.rightYAxisSeriesIds}
+    initialLeftYAxisLineColor={portfolioDisplayState.leftYAxisLineColor}
+    initialRightYAxisLineColor={portfolioDisplayState.rightYAxisLineColor}
     initialMinimumMode={boundMode(portfolioEditConfig, 'minimumMode')}
     initialMaximumMode={boundMode(portfolioEditConfig, 'maximumMode')}
     initialMinimumValue={configString(portfolioEditConfig, 'minimumValue')}
@@ -1339,7 +1346,11 @@
     initialShowEvents={watchedDisplayState.showEvents}
     initialShowVolume={watchedDisplayState.showVolume}
     initialVisibleSeriesIds={watchedDisplayState.visibleSeriesIds}
+    initialLeftYAxisSeriesIds={watchedDisplayState.leftYAxisSeriesIds}
     initialRightYAxisUnit={watchedDisplayState.rightYAxisUnit}
+    initialRightYAxisSeriesIds={watchedDisplayState.rightYAxisSeriesIds}
+    initialLeftYAxisLineColor={watchedDisplayState.leftYAxisLineColor}
+    initialRightYAxisLineColor={watchedDisplayState.rightYAxisLineColor}
     initialMinimumMode={boundMode(watchedEditConfig, 'minimumMode')}
     initialMaximumMode={boundMode(watchedEditConfig, 'maximumMode')}
     initialMinimumValue={configString(watchedEditConfig, 'minimumValue')}
@@ -1380,7 +1391,17 @@
     )
       ? configString(performanceEditConfig, 'customAgoUnit') as RelativeRangeUnit
       : 'years'}
-    initialVisibleSeriesIds={performanceVisibleSeriesIds}
+    initialVisibleSeriesIds={performanceDisplayState.visibleSeriesIds}
+    initialLeftYAxisSeriesIds={performanceDisplayState.leftYAxisSeriesIds}
+    initialRightYAxisSeriesIds={performanceDisplayState.rightYAxisSeriesIds}
+    initialRightYAxisUnit={performanceDisplayState.rightYAxisUnit}
+    initialLeftYAxisLineColor={performanceDisplayState.leftYAxisLineColor}
+    initialRightYAxisLineColor={performanceDisplayState.rightYAxisLineColor}
+    initialTooltipUnits={performanceDisplayState.tooltipUnits}
+    initialMinimumMode={performanceDisplayState.minimumMode}
+    initialMaximumMode={performanceDisplayState.maximumMode}
+    initialMinimumValue={performanceDisplayState.minimumValue}
+    initialMaximumValue={performanceDisplayState.maximumValue}
     initialSaveGraphName={performanceSaveName}
     on:rangeChange={performanceRangeChanged}
     on:displayChange={performanceDisplayChanged}

@@ -22,11 +22,13 @@
     createSavedGraph,
     defaultChartDisplayState,
     defaultChartQueryState,
+    defaultPerformanceChartDisplayState,
     formatDateTime,
     formatDisplayNumber,
     formatPercent,
     moveInOrder,
     normalizeOrder,
+    performanceChartDisplayStateFromSetting,
     relativeRangeWindow,
     replaceSavedGraph,
     savePreferences,
@@ -34,6 +36,7 @@
     toggleCollapsed,
     type ChartDisplayState,
     type ChartQueryState,
+    type PerformanceChartDisplayState,
     type SavedGraph
   } from '$lib/preferences';
   import strings from '$lib/i18n/en-CA.json';
@@ -178,7 +181,7 @@
   let chartPreferencesReady = false;
   let addressEditConfig: Record<string, unknown> = {};
   let addressSaveName = 'Address portfolio history';
-  let addressPerformanceVisibleSeriesIds: string[] | null = null;
+  let addressPerformanceDisplayState = defaultPerformanceChartDisplayState();
   let loadRequestId = 0;
   let zoomRequestId = 0;
   let dismissedNotices: string[] = [];
@@ -421,11 +424,12 @@
             listedCurrencies: tooltipCurrencies
           }))
         });
-        addressPerformanceVisibleSeriesIds = Array.isArray(
-          graphDefaults.addressesPerformanceVisibleSeries
-        )
-          ? graphDefaults.addressesPerformanceVisibleSeries.map(String)
-          : null;
+        addressPerformanceDisplayState = performanceChartDisplayStateFromSetting({
+          value: graphDefaults.addressesPerformanceDisplayState,
+          legacyVisibleSeriesIds: Array.isArray(graphDefaults.addressesPerformanceVisibleSeries)
+            ? graphDefaults.addressesPerformanceVisibleSeries.map(String)
+            : null
+        });
         chartRange = addressChartState.range;
         selectedGranularity = addressChartState.granularity;
         const window = chartWindow(addressChartState);
@@ -701,12 +705,13 @@
   };
 
   const performanceDisplayChanged = async (
-    event: CustomEvent<{ visibleSeriesIds: string[] }>
+    event: CustomEvent<PerformanceChartDisplayState>
   ) => {
-    addressPerformanceVisibleSeriesIds = event.detail.visibleSeriesIds;
+    addressPerformanceDisplayState = { ...event.detail };
     graphDefaults = {
       ...graphDefaults,
-      addressesPerformanceVisibleSeries: addressPerformanceVisibleSeriesIds
+      addressesPerformanceVisibleSeries: addressPerformanceDisplayState.visibleSeriesIds,
+      addressesPerformanceDisplayState: addressPerformanceDisplayState
     };
     await savePreferences({ graphDefaults });
   };
@@ -984,7 +989,11 @@
           initialShowEvents={addressDisplayState.showEvents}
           initialShowVolume={addressDisplayState.showVolume}
           initialVisibleSeriesIds={addressDisplayState.visibleSeriesIds}
+          initialLeftYAxisSeriesIds={addressDisplayState.leftYAxisSeriesIds}
           initialRightYAxisUnit={addressDisplayState.rightYAxisUnit}
+          initialRightYAxisSeriesIds={addressDisplayState.rightYAxisSeriesIds}
+          initialLeftYAxisLineColor={addressDisplayState.leftYAxisLineColor}
+          initialRightYAxisLineColor={addressDisplayState.rightYAxisLineColor}
           initialMinimumMode={boundMode('minimumMode')}
           initialMaximumMode={boundMode('maximumMode')}
           initialMinimumValue={configString('minimumValue')}
@@ -1008,7 +1017,17 @@
           {series}
           {timezone}
           returnMethod="value"
-          initialVisibleSeriesIds={addressPerformanceVisibleSeriesIds}
+          initialVisibleSeriesIds={addressPerformanceDisplayState.visibleSeriesIds}
+          initialLeftYAxisSeriesIds={addressPerformanceDisplayState.leftYAxisSeriesIds}
+          initialRightYAxisSeriesIds={addressPerformanceDisplayState.rightYAxisSeriesIds}
+          initialRightYAxisUnit={addressPerformanceDisplayState.rightYAxisUnit}
+          initialLeftYAxisLineColor={addressPerformanceDisplayState.leftYAxisLineColor}
+          initialRightYAxisLineColor={addressPerformanceDisplayState.rightYAxisLineColor}
+          initialTooltipUnits={addressPerformanceDisplayState.tooltipUnits}
+          initialMinimumMode={addressPerformanceDisplayState.minimumMode}
+          initialMaximumMode={addressPerformanceDisplayState.maximumMode}
+          initialMinimumValue={addressPerformanceDisplayState.minimumValue}
+          initialMaximumValue={addressPerformanceDisplayState.maximumValue}
           on:displayChange={performanceDisplayChanged}
         />
 

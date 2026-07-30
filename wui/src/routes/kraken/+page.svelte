@@ -22,17 +22,20 @@
   import strings from '$lib/i18n/en-CA.json';
   import {
     createSavedGraph,
+    defaultPerformanceChartDisplayState,
     formatDateTime,
     formatDisplayNumber,
     formatPercent,
     moveInOrder,
     normalizeOrder,
     normalizeTooltipUnits,
+    performanceChartDisplayStateFromSetting,
     relativeRangeWindow,
     replaceSavedGraph,
     savePreferences,
     savedGraphWithName,
     toggleCollapsed,
+    type PerformanceChartDisplayState,
     type SavedGraph
   } from '$lib/preferences';
 
@@ -300,7 +303,11 @@
     yAxisUnit: string;
     tooltipUnits: string[];
     visibleSeriesIds: string[] | null;
+    leftYAxisSeriesIds: string[] | null;
     rightYAxisUnit: string;
+    rightYAxisSeriesIds: string[];
+    leftYAxisLineColor: string;
+    rightYAxisLineColor: string;
   };
   const defaultChartQueryState = (): ChartQueryState => ({
     range: '1y',
@@ -322,7 +329,11 @@
     yAxisUnit: currency,
     tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] }),
     visibleSeriesIds: null,
-    rightYAxisUnit: ''
+    leftYAxisSeriesIds: null,
+    rightYAxisUnit: '',
+    rightYAxisSeriesIds: [],
+    leftYAxisLineColor: '#364255',
+    rightYAxisLineColor: '#ffbc3a'
   });
   let krakenChartState = defaultChartQueryState();
   let earnChartState = { ...defaultChartQueryState(), granularity: '86400' };
@@ -332,7 +343,7 @@
   let chartPreferencesReady = false;
   let krakenEditConfig: Record<string, unknown> = {};
   let krakenSaveName = 'Kraken portfolio history';
-  let krakenPerformanceVisibleSeriesIds: string[] | null = null;
+  let krakenPerformanceDisplayState = defaultPerformanceChartDisplayState();
   const changeColumns = [
     ['change24h', '24-hour change'],
     ['change7d', '7-day change'],
@@ -430,9 +441,25 @@
       visibleSeriesIds: Array.isArray(candidate.visibleSeriesIds)
         ? [...new Set(candidate.visibleSeriesIds.map(String).filter(Boolean))]
         : fallback.visibleSeriesIds,
+      leftYAxisSeriesIds: Array.isArray(candidate.leftYAxisSeriesIds)
+        ? [...new Set(candidate.leftYAxisSeriesIds.map(String).filter(Boolean))]
+        : Array.isArray(candidate.visibleSeriesIds)
+          ? [...new Set(candidate.visibleSeriesIds.map(String).filter(Boolean))]
+          : fallback.leftYAxisSeriesIds,
       rightYAxisUnit: typeof candidate.rightYAxisUnit === 'string'
         ? candidate.rightYAxisUnit
-        : fallback.rightYAxisUnit
+        : fallback.rightYAxisUnit,
+      rightYAxisSeriesIds: Array.isArray(candidate.rightYAxisSeriesIds)
+        ? [...new Set(candidate.rightYAxisSeriesIds.map(String).filter(Boolean))]
+        : fallback.rightYAxisSeriesIds,
+      leftYAxisLineColor: typeof candidate.leftYAxisLineColor === 'string'
+        && /^#[0-9a-f]{6}$/i.test(candidate.leftYAxisLineColor)
+        ? candidate.leftYAxisLineColor.toLowerCase()
+        : fallback.leftYAxisLineColor,
+      rightYAxisLineColor: typeof candidate.rightYAxisLineColor === 'string'
+        && /^#[0-9a-f]{6}$/i.test(candidate.rightYAxisLineColor)
+        ? candidate.rightYAxisLineColor.toLowerCase()
+        : fallback.rightYAxisLineColor
     };
   };
   const chartWindow = (state: ChartQueryState) => {
@@ -855,11 +882,12 @@
           value: graphDefaults.krakenEarnApyDisplayState,
           fallback: defaultChartDisplayState('%', ['%'])
         });
-        krakenPerformanceVisibleSeriesIds = Array.isArray(
-          graphDefaults.krakenPerformanceVisibleSeries
-        )
-          ? graphDefaults.krakenPerformanceVisibleSeries.map(String)
-          : null;
+        krakenPerformanceDisplayState = performanceChartDisplayStateFromSetting({
+          value: graphDefaults.krakenPerformanceDisplayState,
+          legacyVisibleSeriesIds: Array.isArray(graphDefaults.krakenPerformanceVisibleSeries)
+            ? graphDefaults.krakenPerformanceVisibleSeries.map(String)
+            : null
+        });
         chartPreferencesReady = true;
       }
       const mainWindow = chartWindow(krakenChartState);
@@ -1265,12 +1293,13 @@
   };
 
   const performanceDisplayChanged = async (
-    event: CustomEvent<{ visibleSeriesIds: string[] }>
+    event: CustomEvent<PerformanceChartDisplayState>
   ) => {
-    krakenPerformanceVisibleSeriesIds = event.detail.visibleSeriesIds;
+    krakenPerformanceDisplayState = { ...event.detail };
     graphDefaults = {
       ...graphDefaults,
-      krakenPerformanceVisibleSeries: krakenPerformanceVisibleSeriesIds
+      krakenPerformanceVisibleSeries: krakenPerformanceDisplayState.visibleSeriesIds,
+      krakenPerformanceDisplayState: krakenPerformanceDisplayState
     };
     await savePreferences({ graphDefaults });
   };
@@ -1673,7 +1702,11 @@
         initialShowEvents={earnDisplayState.showEvents}
         initialShowVolume={earnDisplayState.showVolume}
         initialVisibleSeriesIds={earnDisplayState.visibleSeriesIds}
+        initialLeftYAxisSeriesIds={earnDisplayState.leftYAxisSeriesIds}
         initialRightYAxisUnit={earnDisplayState.rightYAxisUnit}
+        initialRightYAxisSeriesIds={earnDisplayState.rightYAxisSeriesIds}
+        initialLeftYAxisLineColor={earnDisplayState.leftYAxisLineColor}
+        initialRightYAxisLineColor={earnDisplayState.rightYAxisLineColor}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
         on:viewChange={(event) => void graphViewChanged({ target: 'earn', event })}
         on:zoomRange={earnGraphZoomed}
@@ -1712,7 +1745,11 @@
         initialShowEvents={earnApyDisplayState.showEvents}
         initialShowVolume={earnApyDisplayState.showVolume}
         initialVisibleSeriesIds={earnApyDisplayState.visibleSeriesIds}
+        initialLeftYAxisSeriesIds={earnApyDisplayState.leftYAxisSeriesIds}
         initialRightYAxisUnit={earnApyDisplayState.rightYAxisUnit}
+        initialRightYAxisSeriesIds={earnApyDisplayState.rightYAxisSeriesIds}
+        initialLeftYAxisLineColor={earnApyDisplayState.leftYAxisLineColor}
+        initialRightYAxisLineColor={earnApyDisplayState.rightYAxisLineColor}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
         on:viewChange={(event) => void graphViewChanged({ target: 'earnApy', event })}
         on:zoomRange={earnGraphZoomed}
@@ -1933,7 +1970,11 @@
     initialShowEvents={krakenDisplayState.showEvents}
     initialShowVolume={krakenDisplayState.showVolume}
     initialVisibleSeriesIds={krakenDisplayState.visibleSeriesIds}
+    initialLeftYAxisSeriesIds={krakenDisplayState.leftYAxisSeriesIds}
     initialRightYAxisUnit={krakenDisplayState.rightYAxisUnit}
+    initialRightYAxisSeriesIds={krakenDisplayState.rightYAxisSeriesIds}
+    initialLeftYAxisLineColor={krakenDisplayState.leftYAxisLineColor}
+    initialRightYAxisLineColor={krakenDisplayState.rightYAxisLineColor}
     initialMinimumMode={editBoundMode('minimumMode')}
     initialMaximumMode={editBoundMode('maximumMode')}
     initialMinimumValue={editConfigString('minimumValue')}
@@ -1954,7 +1995,17 @@
     series={displayedKrakenSeries}
     {timezone}
     returnMethod="value"
-    initialVisibleSeriesIds={krakenPerformanceVisibleSeriesIds}
+    initialVisibleSeriesIds={krakenPerformanceDisplayState.visibleSeriesIds}
+    initialLeftYAxisSeriesIds={krakenPerformanceDisplayState.leftYAxisSeriesIds}
+    initialRightYAxisSeriesIds={krakenPerformanceDisplayState.rightYAxisSeriesIds}
+    initialRightYAxisUnit={krakenPerformanceDisplayState.rightYAxisUnit}
+    initialLeftYAxisLineColor={krakenPerformanceDisplayState.leftYAxisLineColor}
+    initialRightYAxisLineColor={krakenPerformanceDisplayState.rightYAxisLineColor}
+    initialTooltipUnits={krakenPerformanceDisplayState.tooltipUnits}
+    initialMinimumMode={krakenPerformanceDisplayState.minimumMode}
+    initialMaximumMode={krakenPerformanceDisplayState.maximumMode}
+    initialMinimumValue={krakenPerformanceDisplayState.minimumValue}
+    initialMaximumValue={krakenPerformanceDisplayState.maximumValue}
     on:displayChange={performanceDisplayChanged}
   />
 
