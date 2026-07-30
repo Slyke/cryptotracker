@@ -36,9 +36,10 @@ describe('database-backed UI preferences', () => {
     expect(toggleCollapsed({ collapsed: ['sync', 'storage'], id: 'sync' })).toEqual(['storage']);
   });
 
-  it('rounds displayed pricing percentages to two decimals', () => {
-    expect(formatPercent('7.1428571428571428571')).toBe('7.14');
-    expect(formatPercent(100)).toBe('100.00');
+  it('rounds displayed percentages to at most four decimals', () => {
+    expect(formatPercent('7.1428571428571428571')).toBe('7.1429');
+    expect(formatPercent('0.123456789')).toBe('0.1235');
+    expect(formatPercent(100)).toBe('100');
   });
 
   it('rounds values at magnitude ten to two decimals while retaining small-value precision', () => {
@@ -47,6 +48,10 @@ describe('database-backed UI preferences', () => {
       locale: 'en-CA'
     })).toBe('11,103.91');
     expect(formatDisplayNumber({ value: '0.12345678', locale: 'en-CA' })).toBe('0.12345678');
+    expect(formatDisplayNumber({
+      value: '0.12345678901234567',
+      locale: 'en-CA'
+    })).toBe('0.12345678901234566');
     expect(formatDisplayNumber({ value: '-10.005', locale: 'en-CA' })).toBe('-10.01');
   });
 

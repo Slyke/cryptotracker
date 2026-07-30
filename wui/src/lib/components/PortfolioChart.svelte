@@ -7,6 +7,10 @@
     buildChartAxisOptions,
     type ChartDenominationOption
   } from '$lib/chart-axis-options';
+  import {
+    closestCandidateWithinRadius,
+    hasMinimumValuedObservations
+  } from '$lib/chart-data';
   import SearchableSelect from './SearchableSelect.svelte';
   import {
     formatDisplayNumber,
@@ -58,6 +62,11 @@
     details?: Record<string, unknown>;
   }
 
+  type ChartHighlightTarget = {
+    seriesIndex: number;
+    dataIndex: number;
+  } | null;
+
   export let title = 'Portfolio history';
   export let series: ChartSeries[] = [];
   export let chartMode: 'line' | 'candlestick' = 'line';
@@ -82,6 +91,7 @@
   export let showAllTooltipAssetsControl = false;
   export let partialMessage = strings['cryptotracker-data_partial-label'];
   export let emptyMessage = strings['cryptotracker-chart-empty-label'];
+  export let minimumValuedObservations = 1;
   export let initialRange = '30d';
   export let initialScale: 'linear' | 'log' = 'linear';
   export let initialYAxisUnit = currency;
@@ -155,6 +165,7 @@
     'purchase',
     'sale',
     'stake',
+    'unstake',
     'deposit',
     'withdrawal',
     'transfer',
@@ -170,13 +181,43 @@
   let inspectorActive = false;
   let chartInteractionActive = false;
   let tooltipPinned = false;
+  let hoveredTooltipTarget: {
+    seriesIndex: number;
+    dataIndex: number;
+  } | null = null;
+  let hoveredTooltipIsEvent = false;
+  let tooltipPointerPosition: [number, number] | null = null;
+  let chartHighlightTarget: ChartHighlightTarget = null;
+  let pendingChartHighlight: ChartHighlightTarget = null;
+  let chartHighlightScheduled = false;
+  let suppressZrClickRelease = false;
   let tooltipSide: 'left' | 'right' = 'right';
   let showAllTooltipAssets = false;
   let saveGraphName = title;
   let validationMessage = '';
   let eventQuery = '';
   let eventPage = 1;
+  let chartPoints: ChartPoint[] = [];
+  let hasPlottedData = false;
   const eventPageSize = 25;
+  const chartColors = [
+    '#5070dd',
+    '#b6d634',
+    '#505372',
+    '#ff994d',
+    '#0bb4ff',
+    '#ffcc00',
+    '#ea5f94',
+    '#8d48e3',
+    '#be04a0'
+  ];
+  const eventLegendPrefix = 'Event · ';
+  const tooltipProximityRadius = 36;
+  const eventLegendPinIcon = (
+    'path://M12 0C5.4 0 0 5.4 0 12'
+    + 'C0 20.8 12 28 12 28'
+    + 'S24 20.8 24 12C24 5.4 18.6 0 12 0Z'
+  );
   const controlId = (suffix: string) => (
     `${title.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-').replaceAll(/^-|-$/g, '')}-${suffix}`
   );
@@ -224,7 +265,9 @@
   };
   const formatChartValue = (value: unknown) => value === null || value === undefined
     ? 'unavailable'
-    : formatDisplayNumber({ value });
+    : currency.trim() === '%'
+      ? formatPercent(value)
+      : formatDisplayNumber({ value });
   const validNumericValues = () => allPoints()
     .map(plottedPointValue)
     .filter((value): value is string => value !== null && value !== undefined)
@@ -297,6 +340,142 @@
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+  const tooltipHeading = ({
+    label,
+    color
+  }: {
+    label: string;
+    color: string;
+  }) => (
+    `<span style="display:inline-flex;align-items:center;gap:.45rem">`
+    + `<span aria-hidden="true" style="display:inline-block;width:.7rem;height:.7rem;`
+    + `flex:0 0 .7rem;border-radius:999px;background:${escapeHtml(color)};`
+    + `box-shadow:0 0 0 2px rgba(255,255,255,.16)"></span>`
+    + `<strong>${escapeHtml(label)}</strong>`
+    + '</span>'
+  );
+  const tooltipSeriesHeading = ({
+    item,
+    color
+  }: {
+    item: ChartSeries;
+    color: string;
+  }) => tooltipHeading({ label: item.label, color });
+  const tooltipSeriesRowStyle = ({
+    color,
+    highlighted
+  }: {
+    color: string;
+    highlighted: boolean;
+  }) => (
+    `padding:.22rem .35rem;margin-left:-.35rem;margin-right:-.35rem;`
+    + `border:1px solid ${highlighted ? escapeHtml(color) : 'transparent'};`
+    + `border-radius:.45rem;background:${highlighted ? 'rgba(255,188,58,.13)' : 'transparent'};`
+  );
+  const sameChartHighlight = (
+    left: ChartHighlightTarget,
+    right: ChartHighlightTarget
+  ) => (
+    left === right
+    || (
+      left !== null
+      && right !== null
+      && left.seriesIndex === right.seriesIndex
+      && left.dataIndex === right.dataIndex
+    )
+  );
+  const scheduleChartHighlight = (target: ChartHighlightTarget) => {
+    pendingChartHighlight = target;
+    if (chartHighlightScheduled) return;
+    chartHighlightScheduled = true;
+    queueMicrotask(() => {
+      chartHighlightScheduled = false;
+      const next = pendingChartHighlight;
+      pendingChartHighlight = null;
+      if (!chart) {
+        chartHighlightTarget = null;
+        return;
+      }
+      if (sameChartHighlight(chartHighlightTarget, next)) return;
+      if (chartHighlightTarget) {
+        chart.dispatchAction({
+          type: 'downplay',
+          seriesIndex: chartHighlightTarget.seriesIndex,
+          dataIndex: chartHighlightTarget.dataIndex
+        });
+      }
+      if (next) {
+        chart.dispatchAction({
+          type: 'highlight',
+          seriesIndex: next.seriesIndex,
+          dataIndex: next.dataIndex
+        });
+      }
+      chartHighlightTarget = next;
+    });
+  };
+
+  const eventMarkerColor = (event: ChartEvent) => {
+    if (event.reconciliationState === 'likely') return '#ffbc3a';
+    if (event.category === 'reward') return '#39ff79';
+    if (['sale', 'withdrawal', 'unstake'].includes(event.category)) return '#ff6fce';
+    if (['purchase', 'deposit', 'stake'].includes(event.category)) return '#00b6ff';
+    if (event.category === 'disputed') return '#ff1f5a';
+    return '#b86cff';
+  };
+
+  const eventTooltip = ({
+    event,
+    pinnedTimestampMs
+  }: {
+    event: ChartEvent;
+    pinnedTimestampMs: number;
+  }) => {
+    const color = eventMarkerColor(event);
+    const omittedDetailKeys = new Set(['transactionId', 'krakenId', 'assetRaw']);
+    const detailRows = Object.entries(event.details ?? {})
+      .filter(([key]) => !omittedDetailKeys.has(key))
+      .map(([key, value]) => {
+        const displayed = key === 'subtype' && (value === null || value === '')
+          ? 'none'
+          : typeof value === 'string'
+            ? value
+            : JSON.stringify(value);
+        return `<span>${escapeHtml(key)}</span> <strong>${escapeHtml(displayed)}</strong>`;
+      })
+      .join('<br />');
+    const snappedTime = pinnedTimestampMs !== event.timestampMs
+      ? `<div style="margin-top:.35rem;opacity:.72">Marker shown at ${escapeHtml(formatInTimezone({
+          timestampMs: pinnedTimestampMs,
+          timezone
+        }))} to align this event with the chart.</div>`
+      : '';
+    return (
+      `<div style="max-width:26rem;white-space:normal;overflow-wrap:anywhere">`
+      + tooltipHeading({ label: `Event · ${event.category}`, color })
+      + `<div style="margin-top:.45rem"><strong>${escapeHtml(formatInTimezone({
+          timestampMs: event.timestampMs,
+          timezone
+        }))}</strong></div>`
+      + (event.asset
+        ? `<div><span>Asset</span> <strong>${escapeHtml(assetQuantityLabel(event.asset))}</strong></div>`
+        : '')
+      + (event.quantity !== undefined
+        ? `<div><span>Quantity</span> <strong>${escapeHtml(formatDisplayNumber({ value: event.quantity }))}</strong></div>`
+        : '')
+      + (event.source
+        ? `<div><span>Source</span> <strong>${escapeHtml(event.source)}</strong></div>`
+        : '')
+      + (event.reconciliationState
+        ? `<div><span>Reconciliation</span> <strong>${escapeHtml(event.reconciliationState)}</strong></div>`
+        : '')
+      + (detailRows
+        ? `<div style="margin-top:.45rem;padding-top:.45rem;border-top:1px solid rgba(127,127,127,.35)">${detailRows}</div>`
+        : '')
+      + snappedTime
+      + '</div>'
+    );
+  };
 
   const resolveAxisBounds = () => {
     const values = validNumericValues();
@@ -360,19 +539,17 @@
     return filteredEvents().slice(start, start + eventPageSize);
   };
 
-  const markerValue = ({ timestampMs, points }: { timestampMs: number; points: ChartPoint[] }) => {
-    const nearest = points.reduce<ChartPoint | null>((current, point) => (
-      current === null
-        || Math.abs(point.timestampMs - timestampMs) < Math.abs(current.timestampMs - timestampMs)
-        ? point
-        : current
-    ), null);
-    const value = nearest ? plottedPointValue(nearest) : null;
-    return value === null || !Number.isFinite(Number(value)) ? 0 : Number(value);
-  };
-
   const renderChart = () => {
     if (!chart) return;
+    const rootStyles = getComputedStyle(document.documentElement);
+    const themeValue = (name: string, fallback: string) => (
+      rootStyles.getPropertyValue(name).trim() || fallback
+    );
+    const textColor = themeValue('--color-text', '#eef6ff');
+    const mutedColor = themeValue('--color-muted', '#a4b0c2');
+    const panelColor = themeValue('--color-panel-strong', '#10161c');
+    const borderColor = themeValue('--color-border-strong', '#364255');
+    const fontFamily = themeValue('--font-mono', 'monospace');
     const axisBounds = resolveAxisBounds();
     if (scale === 'log' && !logAvailable()) {
       validationMessage = 'Logarithmic mode is selected, but the plotted data has no positive values yet.';
@@ -422,11 +599,24 @@
           name: item.label,
           type: 'line',
           showSymbol: false,
+          symbolSize: 8,
           connectNulls: false,
           sampling: 'lttb',
           lineStyle: {
             type: index % 3 === 1 ? 'dashed' : index % 3 === 2 ? 'dotted' : 'solid',
             width: index === 0 ? 2.5 : 1.8
+          },
+          emphasis: {
+            focus: 'series',
+            scale: 1.8,
+            lineStyle: {
+              width: 4
+            }
+          },
+          blur: {
+            lineStyle: {
+              opacity: 0.22
+            }
           },
           data: timestamps.map((timestampMs) => {
             const point = pointsByTimestamp.get(timestampMs);
@@ -447,6 +637,10 @@
       point.timestampMs,
       point
     ]));
+    const timestampIndexes = new Map(timestamps.map((timestampMs, index) => [
+      timestampMs,
+      index
+    ]));
     if (showVolume && meaningfulVolume()) {
       chartSeries.push({
         id: 'volume',
@@ -465,44 +659,129 @@
         }
       });
     }
-    const markerData = visibleEvents().map((event) => ({
-      name: event.category,
-      coord: [event.timestampMs, markerValue({ timestampMs: event.timestampMs, points: primaryPoints })],
-      value: event.category,
-      itemStyle: {
-        color: event.reconciliationState === 'likely' ? '#ffbc3a' : '#b86cff'
-      }
-    }));
+    const valuedPrimaryPoints = primaryPoints.flatMap((point) => {
+      const value = normalized && chartMode === 'line'
+        ? point.normalizedPercent
+        : plottedPointValue(point);
+      const scaled = scaledValue(value);
+      return scaled === null ? [] : [{ point, value: scaled }];
+    });
+    const markerData = visibleEvents().flatMap((event) => {
+      const nearest = valuedPrimaryPoints.reduce<{
+        point: ChartPoint;
+        value: number;
+      } | null>((current, candidate) => (
+        current === null
+          || Math.abs(candidate.point.timestampMs - event.timestampMs)
+            < Math.abs(current.point.timestampMs - event.timestampMs)
+          ? candidate
+          : current
+      ), null);
+      if (!nearest) return [];
+      const categoryIndex = timestampIndexes.get(nearest.point.timestampMs);
+      if (categoryIndex === undefined) return [];
+      return [{
+        name: event.category,
+        coord: [categoryIndex, nearest.value],
+        value: event.category,
+        event,
+        pinnedTimestampMs: nearest.point.timestampMs,
+        itemStyle: {
+          color: eventMarkerColor(event),
+          borderColor: panelColor,
+          borderWidth: 1.5
+        }
+      }];
+    });
     if (markerData.length > 0 && chartSeries.length > 0) {
       (chartSeries[0] as { markPoint?: unknown }).markPoint = {
         symbol: 'pin',
-        symbolSize: 34,
-        data: markerData
+        symbolSize: 44,
+        z: 20,
+        label: {
+          show: false
+        },
+        data: markerData,
+        tooltip: {
+          trigger: 'item',
+          formatter: (parameters: unknown) => {
+            const data = (
+              parameters as {
+                data?: {
+                  event?: ChartEvent;
+                  pinnedTimestampMs?: number;
+                };
+              }
+            ).data;
+            return data?.event && data.pinnedTimestampMs !== undefined
+              ? eventTooltip({
+                  event: data.event,
+                  pinnedTimestampMs: data.pinnedTimestampMs
+                })
+              : '';
+          }
+        }
       };
+    }
+    const enabledEventTypes = [...new Set(
+      visibleEvents().map((event) => event.category)
+    )];
+    for (const category of enabledEventTypes) {
+      const representative = visibleEvents().find((event) => event.category === category);
+      if (!representative) continue;
+      chartSeries.push({
+        id: `event-legend:${category}`,
+        name: `${eventLegendPrefix}${category}`,
+        type: 'scatter',
+        data: [],
+        symbol: 'pin',
+        symbolSize: 16,
+        silent: true,
+        itemStyle: {
+          color: eventMarkerColor(representative)
+        },
+        tooltip: {
+          show: false
+        }
+      });
     }
     const option: EChartsOption = {
       animation: false,
       backgroundColor: 'transparent',
+      color: chartColors,
       title: {
         text: title,
         subtext: minimalChrome ? undefined : `${source} · ${granularity}s resolved`,
         top: minimalChrome ? 8 : 14,
         left: 18,
         textStyle: {
-          color: getComputedStyle(document.documentElement).getPropertyValue('--color-text'),
-          fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-mono'),
+          color: textColor,
+          fontFamily,
           fontSize: 18
         },
         subtextStyle: {
-          color: getComputedStyle(document.documentElement).getPropertyValue('--color-muted'),
+          color: mutedColor,
           fontSize: 12
         }
       },
       legend: {
+        type: 'scroll',
         top: minimalChrome ? 46 : 72,
         left: 18,
+        right: 18,
+        itemWidth: 22,
+        itemHeight: 18,
+        data: [
+          ...sourceSeries.map((item) => item.label),
+          ...(showVolume && meaningfulVolume() ? ['Volume'] : []),
+          ...enabledEventTypes.map((category) => ({
+            name: `${eventLegendPrefix}${category}`,
+            icon: eventLegendPinIcon,
+            symbolKeepAspect: true
+          }))
+        ],
         textStyle: {
-          color: getComputedStyle(document.documentElement).getPropertyValue('--color-text')
+          color: textColor
         }
       },
       grid: showVolume && meaningfulVolume()
@@ -533,7 +812,7 @@
             data: timestamps,
             boundaryGap: chartMode === 'candlestick',
             axisLabel: {
-              color: getComputedStyle(document.documentElement).getPropertyValue('--color-muted'),
+              color: mutedColor,
               formatter: (value: string) => formatInTimezone({ timestampMs: Number(value), timezone })
             },
             axisPointer: { show: true }
@@ -562,11 +841,14 @@
             max: axisBounds.max,
             scale: true,
             axisLabel: {
-              color: getComputedStyle(document.documentElement).getPropertyValue('--color-muted'),
-              formatter: (value: number) => formatChartValue(value)
+              color: mutedColor,
+              formatter: (value: number) => normalized
+                ? formatPercent(value)
+                : formatChartValue(value)
             }
           },
       axisPointer: {
+        triggerOn: tooltipPinned ? 'none' : 'mousemove|click',
         link: [{ xAxisIndex: 'all' }],
         lineStyle: {
           color: '#ffbc3a',
@@ -575,10 +857,21 @@
       },
       tooltip: {
         trigger: 'axis',
+        triggerOn: tooltipPinned ? 'none' : 'mousemove|click|mousewheel',
+        renderMode: 'html',
         enterable: true,
         alwaysShowContent: tooltipPinned,
         hideDelay: 300,
-        extraCssText: 'user-select:text;pointer-events:auto;',
+        backgroundColor: panelColor,
+        borderColor,
+        borderWidth: 1,
+        padding: 12,
+        textStyle: {
+          color: textColor,
+          fontFamily,
+          fontSize: 13
+        },
+        extraCssText: 'user-select:text;-webkit-user-select:text;pointer-events:auto;cursor:text;box-shadow:0 14px 36px rgba(0,0,0,.45);border-radius:.7rem;',
         axisPointer: {
           type: 'line'
         },
@@ -621,21 +914,92 @@
         },
         formatter: (rawParameters) => {
           const parameters = Array.isArray(rawParameters) ? rawParameters : [rawParameters];
+          const eventParameter = parameters.find((parameter) => (
+            (parameter.data as { event?: ChartEvent } | undefined)?.event
+          ));
+          const eventData = eventParameter?.data as {
+            event?: ChartEvent;
+            pinnedTimestampMs?: number;
+          } | undefined;
+          if (eventData?.event && eventData.pinnedTimestampMs !== undefined) {
+            hoveredTooltipTarget = null;
+            hoveredTooltipIsEvent = true;
+            scheduleChartHighlight(null);
+            return eventTooltip({
+              event: eventData.event,
+              pinnedTimestampMs: eventData.pinnedTimestampMs
+            });
+          }
+          const hoveredSeriesParameter = parameters.find((parameter) => (
+            sourceSeries.some((item) => item.id === String(parameter.seriesId))
+            && typeof parameter.seriesIndex === 'number'
+            && typeof parameter.dataIndex === 'number'
+          ));
+          hoveredTooltipTarget = hoveredSeriesParameter
+            ? {
+                seriesIndex: Number(hoveredSeriesParameter.seriesIndex),
+                dataIndex: Number(hoveredSeriesParameter.dataIndex)
+              }
+            : null;
+          hoveredTooltipIsEvent = false;
           const timestamp = (
             parameters.find((parameter) => (
               (parameter.data as { meta?: ChartPoint | null } | undefined)?.meta
             ))?.data as { meta?: ChartPoint | null } | undefined
           )?.meta?.timestampMs
             ?? timestamps[Number(parameters[0]?.dataIndex ?? 0)];
-          const tooltipPoints = sourceSeries.map((item) => {
+          const tooltipPoints = sourceSeries.flatMap((item, seriesIndex) => {
             const parameter = parameters.find((candidate) => String(candidate.seriesId) === item.id);
             const parameterPoint = (
               parameter?.data as { meta?: ChartPoint | null } | undefined
             )?.meta;
             const point = parameterPoint
               ?? item.points.find((candidate) => candidate.timestampMs === timestamp);
-            return { item, point };
-          }).filter((entry): entry is { item: ChartSeries; point: ChartPoint } => Boolean(entry.point));
+            if (!point) return [];
+            const dataIndex = typeof parameter?.dataIndex === 'number'
+              ? parameter.dataIndex
+              : timestamps.indexOf(point.timestampMs);
+            const displayedValue = normalized && chartMode === 'line'
+              ? point.normalizedPercent
+              : plottedPointValue(point);
+            const plottedValue = scaledValue(displayedValue);
+            const pixel = dataIndex >= 0 && plottedValue !== null
+              ? chart?.convertToPixel(
+                  { seriesIndex },
+                  [dataIndex, plottedValue]
+                )
+              : null;
+            const distance = (
+              tooltipPointerPosition
+              && Array.isArray(pixel)
+              && Number.isFinite(Number(pixel[0]))
+              && Number.isFinite(Number(pixel[1]))
+            )
+              ? Math.hypot(
+                  Number(pixel[0]) - tooltipPointerPosition[0],
+                  Number(pixel[1]) - tooltipPointerPosition[1]
+                )
+              : null;
+            return [{
+              item,
+              point,
+              color: chartColors[seriesIndex % chartColors.length]!,
+              seriesIndex,
+              dataIndex,
+              distance
+            }];
+          });
+          const closestTooltipPoint = closestCandidateWithinRadius({
+            candidates: tooltipPoints,
+            radius: tooltipProximityRadius
+          });
+          const highlightedSeriesId = closestTooltipPoint?.item.id ?? null;
+          scheduleChartHighlight(closestTooltipPoint
+            ? {
+                seriesIndex: closestTooltipPoint.seriesIndex,
+                dataIndex: closestTooltipPoint.dataIndex
+              }
+            : null);
           const isCombinedSeries = (id: string) => (
             id === 'combined'
             || id === 'kraken-total'
@@ -658,14 +1022,15 @@
             || source.toLowerCase().startsWith('kraken')
           );
           const exactAmounts = exactAmountPoints
-            .map(({ item, point }) => {
+            .map(({ item, point, color }) => {
               if (quantitiesBelongInline(item.id)) return '';
               const quantities = visibleTooltipQuantities(point.quantities);
               if (quantities.length === 0) return '';
+              const highlighted = item.id === highlightedSeriesId;
               const quantityRows = quantities.map(([assetId, quantity]) => (
                 `<span>${escapeHtml(assetQuantityLabel(assetId))}</span> <strong>${escapeHtml(formatChartValue(quantity))}</strong>`
               )).join('<br />');
-              return `<div style="margin-top:.35rem"><strong>${escapeHtml(item.label)}</strong><br />${quantityRows}</div>`;
+              return `<div style="margin-top:.35rem;${tooltipSeriesRowStyle({ color, highlighted })}">${tooltipSeriesHeading({ item, color })}<br />${quantityRows}</div>`;
             })
             .filter(Boolean)
             .join('');
@@ -681,7 +1046,8 @@
           const rows = [
             ...combinedTooltipPoints,
             ...individualTooltipPoints
-          ].map(({ item, point }) => {
+          ].map(({ item, point, color }) => {
+            const highlighted = item.id === highlightedSeriesId;
             const orderedTooltipCurrencies = configuredTooltipCurrencies;
             const combinedQuantityRows = quantitiesBelongInline(item.id)
               ? visibleTooltipQuantities(point.quantities)
@@ -697,13 +1063,15 @@
               ? ''
               : `<br /><span>${escapeHtml(yAxisUnitLabel())} value</span> <strong>${escapeHtml(formatChartValue(point.denominations?.[yAxisUnit] ?? null))}</strong>`;
             const status = point.disputed ? 'disputed' : point.status;
-            const statusRow = status && !['native', 'fallback'].includes(status)
+            const statusRow = status
+              && !(source === 'derived analytics' && status === 'derived')
+              && !['native', 'fallback'].includes(status)
               ? `<span>${escapeHtml(status)}</span><br />`
               : '';
             const quantityRows = combinedQuantityRows
               ? `${combinedQuantityRows}<br />`
               : '';
-            return `<div style="margin-top:.55rem"><strong>${escapeHtml(item.label)}</strong><br />${quantityRows}${statusRow}${quoteRows}${denominationRow}</div>`;
+            return `<div style="margin-top:.55rem;${tooltipSeriesRowStyle({ color, highlighted })}">${tooltipSeriesHeading({ item, color })}<br />${quantityRows}${statusRow}${quoteRows}${denominationRow}</div>`;
           }).join('');
           return `<div><strong>${formatInTimezone({ timestampMs: timestamp ?? 0, timezone })}</strong>${exactAmountsSection}${rows}</div>`;
         }
@@ -729,6 +1097,8 @@
       ],
       series: chartSeries
     };
+    chartHighlightTarget = null;
+    pendingChartHighlight = null;
     chart.setOption(option, true);
   };
 
@@ -868,12 +1238,73 @@
   };
 
   const showInspectionPoint = () => {
+    tooltipPointerPosition = null;
+    scheduleChartHighlight(null);
     chart?.dispatchAction({
       type: 'showTip',
       seriesIndex: 0,
       dataIndex: inspectionIndex
     });
     describeInspectionPoint();
+  };
+
+  const releasePinnedTooltip = () => {
+    if (!tooltipPinned) return;
+    tooltipPinned = false;
+    chart?.setOption({
+      tooltip: {
+        alwaysShowContent: false,
+        triggerOn: 'mousemove|click|mousewheel'
+      },
+      axisPointer: {
+        triggerOn: 'mousemove|click'
+      }
+    });
+    chart?.dispatchAction({ type: 'hideTip' });
+    hoveredTooltipTarget = null;
+    hoveredTooltipIsEvent = false;
+    scheduleChartHighlight(null);
+  };
+
+  const freezeHoveredTooltip = () => {
+    if (
+      !chart
+      || tooltipPinned
+      || (!hoveredTooltipTarget && !hoveredTooltipIsEvent)
+    ) return;
+    const target = hoveredTooltipTarget;
+    tooltipPinned = true;
+    chart.setOption({
+      tooltip: {
+        alwaysShowContent: true,
+        triggerOn: 'none'
+      },
+      axisPointer: {
+        triggerOn: 'none'
+      }
+    });
+    if (target) {
+      chart.dispatchAction({
+        type: 'showTip',
+        seriesIndex: target.seriesIndex,
+        dataIndex: target.dataIndex
+      });
+    }
+  };
+
+  const trackTooltipPointer = (event: PointerEvent) => {
+    if (tooltipPinned || !container) return;
+    const bounds = container.getBoundingClientRect();
+    tooltipPointerPosition = [
+      event.clientX - bounds.left,
+      event.clientY - bounds.top
+    ];
+  };
+
+  const clearTooltipPointer = () => {
+    if (tooltipPinned) return;
+    tooltipPointerPosition = null;
+    scheduleChartHighlight(null);
   };
 
   const stopKeyboardInspection = () => {
@@ -897,9 +1328,7 @@
   const inspectByKeyboard = (event: KeyboardEvent) => {
     if (event.key === 'Escape' && tooltipPinned) {
       event.preventDefault();
-      tooltipPinned = false;
-      chart?.setOption({ tooltip: { alwaysShowContent: false } });
-      chart?.dispatchAction({ type: 'hideTip' });
+      releasePinnedTooltip();
       if (!inspectorActive) return;
     }
     if (!inspectorActive) return;
@@ -1043,23 +1472,48 @@
     if (destroyed || !container?.isConnected) return;
     chart = echartsModule.init(container, undefined, { renderer: 'canvas' });
     chart.on('click', (parameters) => {
-      const dataIndex = typeof parameters.dataIndex === 'number'
-        ? parameters.dataIndex
-        : null;
-      if (dataIndex === null) return;
-      tooltipPinned = true;
-      chart?.setOption({ tooltip: { alwaysShowContent: true } });
-      chart?.dispatchAction({
-        type: 'showTip',
-        seriesIndex: typeof parameters.seriesIndex === 'number' ? parameters.seriesIndex : 0,
-        dataIndex
-      });
+      if (parameters.componentType === 'markPoint') {
+        if (tooltipPinned) {
+          releasePinnedTooltip();
+          return;
+        }
+        suppressZrClickRelease = true;
+        queueMicrotask(() => {
+          suppressZrClickRelease = false;
+        });
+        hoveredTooltipTarget = null;
+        hoveredTooltipIsEvent = true;
+        scheduleChartHighlight(null);
+        freezeHoveredTooltip();
+        return;
+      }
+      releasePinnedTooltip();
     });
-    chart.getZr().on('click', (event) => {
-      if (event.target) return;
-      tooltipPinned = false;
-      chart?.setOption({ tooltip: { alwaysShowContent: false } });
-      chart?.dispatchAction({ type: 'hideTip' });
+    chart.on('legendselectchanged', (parameters) => {
+      const legendParameters = parameters as {
+        name?: unknown;
+        selected?: Record<string, boolean>;
+      };
+      const name = String(legendParameters.name ?? '');
+      if (!name.startsWith(eventLegendPrefix)) return;
+      const category = name.slice(eventLegendPrefix.length);
+      const selected = legendParameters.selected?.[name] !== false;
+      const next = new Set(eventCategories);
+      if (selected) next.add(category);
+      else next.delete(category);
+      eventCategories = next;
+      renderChart();
+    });
+    chart.getZr().on('click', () => {
+      if (suppressZrClickRelease) return;
+      releasePinnedTooltip();
+    });
+    chart.getZr().on('dblclick', (event) => {
+      if (!chart?.containPixel(
+        { gridIndex: 0 },
+        [event.offsetX, event.offsetY]
+      )) return;
+      freezeHoveredTooltip();
     });
     resizeObserver = new ResizeObserver(() => chart?.resize());
     resizeObserver.observe(container);
@@ -1070,12 +1524,18 @@
     destroyed = true;
     resizeObserver?.disconnect();
     chart?.dispose();
+    chart = null;
   });
 
   $: {
     minimalChrome;
     if (chart && series) renderChart();
   }
+  $: chartPoints = series.flatMap((item) => item.points);
+  $: hasPlottedData = hasMinimumValuedObservations({
+    series,
+    minimum: minimumValuedObservations
+  });
   $: range = initialRange;
   $: selectedGranularity = selectedGranularitySetting ?? String(granularity);
   $: if (
@@ -1363,7 +1823,9 @@
       bind:this={container}
       role="img"
       tabindex="0"
-      aria-label={`${title}. Click or focus to enable horizontal time navigation. Click a plotted point to pin its details.`}
+      aria-label={`${title}. Click or focus to enable horizontal time navigation. Double-click the graph to freeze its details; click again or press Escape to release. Event pins freeze with one click.`}
+      on:pointermove|capture={trackTooltipPointer}
+      on:pointerleave={clearTooltipPointer}
       on:pointerdown={() => {
         chartInteractionActive = true;
         chart?.setOption({
@@ -1401,27 +1863,27 @@
         });
       }}
     ></div>
-    {#if !busy && allPoints().length === 0}
+    {#if !busy && !hasPlottedData}
       <div class="chart-empty">{emptyMessage}</div>
     {/if}
   </div>
   <p class="sr-only" aria-live="polite">{activePointDescription}</p>
 
-  <div class="chart-meta">
-    {#if !minimalChrome}
+  {#if !minimalChrome}
+    <div class="chart-meta">
       <span class="badge start">{source}</span>
       <span class="badge mid">{granularity}s resolved</span>
-    {/if}
-    {#if allPoints().length > 0}
-      <span class="badge">through {formatInTimezone({ timestampMs: Math.max(...allPoints().map((point) => point.timestampMs)), timezone })}</span>
-    {/if}
-    {#if allPoints().some((point) => point.disputed)}
-      <span class="badge warning">disputed points</span>
-    {/if}
-    {#if allPoints().some((point) => point.status === 'derived')}
-      <span class="badge warning">derived data</span>
-    {/if}
-  </div>
+      {#if chartPoints.length > 0}
+        <span class="badge">through {formatInTimezone({ timestampMs: Math.max(...chartPoints.map((point) => point.timestampMs)), timezone })}</span>
+      {/if}
+      {#if chartPoints.some((point) => point.disputed)}
+        <span class="badge warning">disputed points</span>
+      {/if}
+      {#if chartPoints.some((point) => point.status === 'derived')}
+        <span class="badge warning">derived data</span>
+      {/if}
+    </div>
+  {/if}
 
   {#if tableVisible}
     <div class="table-wrap plotted-table">

@@ -1,5 +1,6 @@
 <script lang="ts">
   import PortfolioChart from './PortfolioChart.svelte';
+  import { formatPercent } from '$lib/preferences';
   import type { ChartSeries } from './chart-types';
 
   export let title = 'Performance analytics';
@@ -26,11 +27,14 @@
   let benchmarkMetric: Metric | null = null;
 
   const numericPoints = (item: ChartSeries) => item.points
-    .map((point) => ({
-      ...point,
-      numericValue: Number(point.value ?? point.close)
-    }))
-    .filter((point) => Number.isFinite(point.numericValue))
+    .flatMap((point) => {
+      const rawValue = point.value ?? point.close;
+      if (rawValue === null || rawValue === undefined) return [];
+      const numericValue = Number(rawValue);
+      return Number.isFinite(numericValue)
+        ? [{ ...point, numericValue }]
+        : [];
+    })
     .sort((left, right) => left.timestampMs - right.timestampMs);
 
   const median = (values: number[]) => {
@@ -99,16 +103,19 @@
     };
   };
 
-  const transform = (item: ChartSeries): ChartSeries => {
+  const transform = (
+    item: ChartSeries,
+    selectedMode: 'return' | 'drawdown'
+  ): ChartSeries => {
     const points = numericPoints(item);
     const first = points.find((point) => point.numericValue !== 0);
     let peak: number | null = null;
     return {
-      id: `${item.id}:${mode}`,
-      label: `${item.label} · ${mode === 'return' ? 'return' : 'drawdown'}`,
+      id: `${item.id}:${selectedMode}`,
+      label: `${item.label} · ${selectedMode === 'return' ? 'return' : 'drawdown'}`,
       points: points.map((point) => {
         peak = peak === null ? point.numericValue : Math.max(peak, point.numericValue);
-        const value = mode === 'return'
+        const value = selectedMode === 'return'
           ? first
             ? ((point.numericValue / first.numericValue) - 1) * 100
             : null
@@ -121,7 +128,7 @@
           status: 'derived',
           provenance: {
             sourceSeriesId: item.id,
-            calculation: mode === 'return'
+            calculation: selectedMode === 'return'
               ? 'cumulative change from first non-zero observation'
               : 'change from preceding peak'
           }
@@ -132,10 +139,7 @@
 
   const percent = (value: number | null) => value === null || !Number.isFinite(value)
     ? 'unavailable'
-    : `${value.toLocaleString(undefined, {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
-      })}%`;
+    : `${formatPercent(value)}%`;
   const controlId = (suffix: string) => (
     `${title.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-').replaceAll(/^-|-$/g, '')}-${suffix}`
   );
@@ -145,7 +149,7 @@
   $: if (benchmarkId && !metrics.some((metric) => metric.id === benchmarkId)) benchmarkId = '';
   $: selectedMetric = metrics.find((metric) => metric.id === analysisId) ?? null;
   $: benchmarkMetric = metrics.find((metric) => metric.id === benchmarkId) ?? null;
-  $: transformedSeries = series.map(transform);
+  $: transformedSeries = series.map((item) => transform(item, mode));
 </script>
 
 <section class="panel performance-panel">
@@ -236,6 +240,7 @@
     compact
     minimalChrome
     initialRange="all"
+    minimumValuedObservations={2}
     emptyMessage="At least two valued observations are needed for performance analytics."
   />
 </section>

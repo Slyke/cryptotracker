@@ -85,11 +85,11 @@ export const savePreferences = async (changes: Record<string, unknown>) => (
   })
 );
 
-export const formatPercent = (value: unknown, digits = 2) => {
+export const formatPercent = (value: unknown, digits = 4) => {
   const numeric = Number(value);
   return Number.isFinite(numeric)
     ? numeric.toLocaleString(undefined, {
-        minimumFractionDigits: digits,
+        minimumFractionDigits: 0,
         maximumFractionDigits: digits
       })
     : String(value ?? '0');
@@ -109,8 +109,8 @@ export const formatDisplayNumber = ({
   const rounded = Math.abs(numeric) >= 10;
   return numeric.toLocaleString(locale, {
     ...(currency ? { style: 'currency' as const, currency } : {}),
-    minimumFractionDigits: currency || rounded ? 2 : 0,
-    maximumFractionDigits: rounded ? 2 : 8
+    minimumFractionDigits: rounded || currency ? 2 : 0,
+    maximumFractionDigits: rounded ? 2 : 20
   });
 };
 

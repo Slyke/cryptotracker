@@ -1320,7 +1320,7 @@
           {locale}
           label="Lifetime Earn rewards"
         />
-        <span class="muted">earned to date · provider-reported reward quantities at current prices</span>
+        <span class="muted">earned to date</span>
       </article>
       <article class="card connection-card">
         <span class="label">Connection</span>
