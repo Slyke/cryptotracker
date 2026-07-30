@@ -2,7 +2,10 @@ import { Decimal } from 'decimal.js';
 import type { LoadedRuntime } from '../config/load.js';
 import type { AppDatabase } from '../db/index.js';
 import { combineCandles, combinePriceObservations, type CandleObservation, type PriceObservation } from '../domain/market.js';
-import { resolveAutoGranularity } from '../domain/graphs.js';
+import {
+  boundedOverviewGranularity,
+  resolveAutoGranularity
+} from '../domain/graphs.js';
 import { AppError } from '../errors.js';
 import { lifecycleAndDisputeEvents } from './event-markers.js';
 import type { JobQueue } from '../jobs/queue.js';
@@ -60,6 +63,28 @@ interface MarketPointRow {
   retrieved_at_ms: number | string;
   provenance_json: string;
 }
+
+const MAX_MARKET_BUCKETS_PER_SERIES = 20_000;
+const MAX_MARKET_BUCKETS_PER_RESPONSE = 250_000;
+
+export const boundedMarketOverviewGranularity = ({
+  requestedGranularity,
+  fromMs,
+  toMs,
+  assetCount
+}: {
+  requestedGranularity: number;
+  fromMs: number;
+  toMs: number;
+  assetCount: number;
+}) => {
+  return boundedOverviewGranularity({
+    requestedGranularity,
+    fromMs,
+    toMs,
+    seriesCount: assetCount
+  });
+};
 
 const asAsset = (row: AssetRow) => ({
   id: row.id,
@@ -657,25 +682,43 @@ export class MarketService {
     const providerQuoteCurrency = provider === 'coinbase'
       ? 'USD'
       : quoteCurrency.toUpperCase();
+    const providerGranularitySeconds = provider === 'coinbase'
+      ? marketProviderInternals.coinbaseGranularity({ requested: granularitySeconds })
+      : provider === 'kraken'
+        ? marketProviderInternals.krakenIntervalMinutes({ requested: granularitySeconds }) * 60
+        : granularitySeconds;
     const cursor = await this.db.one<{
       oldest_at_ms: number | string | null;
+      provider_boundary_reached: number | string;
     }>({
       sql: `
-        SELECT oldest_at_ms
+        SELECT
+          MIN(oldest_at_ms) AS oldest_at_ms,
+          MAX(CASE WHEN completeness = 'complete' THEN 1 ELSE 0 END) AS provider_boundary_reached
         FROM market_sync_cursors
         WHERE provider = ? AND canonical_asset_id = ?
-          AND quote_currency = ? AND granularity_seconds = ?
+          AND quote_currency = ? AND granularity_seconds IN (?, ?)
       `,
       parameters: [
         provider,
         canonicalAssetId,
         providerQuoteCurrency,
+        providerGranularitySeconds,
         granularitySeconds
       ]
     });
     const oldestAtMs = cursor?.oldest_at_ms === null || cursor?.oldest_at_ms === undefined
       ? null
       : Number(cursor.oldest_at_ms);
+    if (fromMs === 0 && Boolean(Number(cursor?.provider_boundary_reached ?? 0))) {
+      return {
+        skipped: true,
+        provider,
+        canonicalAssetId,
+        quoteCurrency: providerQuoteCurrency,
+        reason: 'Provider history boundary already reached.'
+      };
+    }
     const cachedPointCount = provider === 'coingecko' && granularitySeconds === 3_600
       ? await this.db.one<{ count: number | string }>({
           sql: `
@@ -776,6 +819,33 @@ export class MarketService {
             }
           });
         }
+        if (payload.fromMs === 0) {
+          const providerGranularitySeconds = payload.provider === 'coinbase'
+            ? marketProviderInternals.coinbaseGranularity({
+                requested: payload.granularitySeconds
+              })
+            : payload.provider === 'kraken'
+              ? marketProviderInternals.krakenIntervalMinutes({
+                  requested: payload.granularitySeconds
+                }) * 60
+              : payload.granularitySeconds;
+          await this.db.run({
+            sql: `
+              UPDATE market_sync_cursors
+              SET completeness = 'complete', updated_at_ms = ?
+              WHERE provider = ? AND canonical_asset_id = ? AND quote_currency = ?
+                AND granularity_seconds IN (?, ?)
+            `,
+            parameters: [
+              Date.now(),
+              payload.provider,
+              payload.canonicalAssetId,
+              payload.quoteCurrency.toUpperCase(),
+              providerGranularitySeconds,
+              payload.granularitySeconds
+            ]
+          });
+        }
       }
     });
   }
@@ -800,21 +870,35 @@ export class MarketService {
     const resolvedGranularity = granularity === 'auto'
       ? resolveAutoGranularity({ fromMs, toMs })
       : granularity;
-    const bucketMs = resolvedGranularity * 1_000;
+    const overviewGranularity = boundedMarketOverviewGranularity({
+      requestedGranularity: resolvedGranularity,
+      fromMs,
+      toMs,
+      assetCount: assetIds.length
+    });
+    const bucketMs = overviewGranularity * 1_000;
     const rangeStartMs = Math.floor(fromMs / bucketMs) * bucketMs;
     const rangeEndMs = Math.floor(toMs / bucketMs) * bucketMs;
-    const expectedBuckets = Math.ceil((toMs - fromMs) / bucketMs);
-    if (expectedBuckets > 20_000 || assetIds.length > 50) {
+    const expectedBuckets = Math.ceil(Math.max(0, toMs - fromMs) / bucketMs);
+    const expectedTotalBuckets = expectedBuckets * assetIds.length;
+    if (
+      expectedBuckets > MAX_MARKET_BUCKETS_PER_SERIES
+      || expectedTotalBuckets > MAX_MARKET_BUCKETS_PER_RESPONSE
+      || assetIds.length > 50
+    ) {
       throw new AppError({
         errorKey: 'RANGE_TOO_LARGE',
-        reason: 'Requested range is too large for the selected granularity.',
+        reason: 'Requested range and granularity produce too many chart buckets. Zoom in or choose a coarser resolution.',
         status: 400,
-        context: { expectedBuckets, assetCount: assetIds.length }
+        context: { expectedBuckets, expectedTotalBuckets, assetCount: assetIds.length }
       });
     }
     if (assetIds.length === 0) {
       return {
         resolvedGranularity,
+        overviewGranularity,
+        mixedGranularity: false,
+        sourceGranularities: [],
         stale: false,
         partial: false,
         missingIntervals: [],
@@ -828,20 +912,44 @@ export class MarketService {
     const quotePlaceholders = quoteCurrencies.map(() => '?').join(', ');
     const rows = await this.db.query<MarketPointRow>({
       sql: `
-        SELECT *
-        FROM market_points
-        WHERE canonical_asset_id IN (${placeholders})
-          AND quote_currency IN (${quotePlaceholders})
-          AND granularity_seconds <= ?
-          AND bucket_start_ms >= ?
-          AND bucket_start_ms <= ?
-          ${source === 'combined' ? '' : "AND (provider = ? OR provider = 'coingecko')"}
+        WITH candidates AS (
+          SELECT *,
+            MAX(CASE WHEN granularity_seconds <= ? THEN granularity_seconds END)
+              OVER (
+                PARTITION BY provider, canonical_asset_id, quote_currency,
+                  CAST(bucket_start_ms / ? AS INTEGER)
+              ) AS best_fine_granularity,
+            MIN(CASE WHEN granularity_seconds > ? THEN granularity_seconds END)
+              OVER (
+                PARTITION BY provider, canonical_asset_id, quote_currency,
+                  CAST(bucket_start_ms / ? AS INTEGER)
+              ) AS best_coarse_granularity
+          FROM market_points
+          WHERE canonical_asset_id IN (${placeholders})
+            AND quote_currency IN (${quotePlaceholders})
+            AND bucket_start_ms >= ?
+            AND bucket_start_ms <= ?
+            ${source === 'combined' ? '' : "AND (provider = ? OR provider = 'coingecko')"}
+        )
+        SELECT
+          provider, canonical_asset_id, quote_currency, bucket_start_ms,
+          granularity_seconds, data_kind, open_value, high_value, low_value,
+          close_value, volume_value, sample_count, finalized, retrieved_at_ms,
+          provenance_json
+        FROM candidates
+        WHERE granularity_seconds = COALESCE(
+          best_fine_granularity,
+          best_coarse_granularity
+        )
         ORDER BY canonical_asset_id, bucket_start_ms, provider, data_kind
       `,
       parameters: [
+        overviewGranularity,
+        bucketMs,
+        overviewGranularity,
+        bucketMs,
         ...assetIds,
         ...quoteCurrencies,
-        resolvedGranularity,
         rangeStartMs,
         rangeEndMs,
         ...(source === 'combined' ? [] : [source])
@@ -850,11 +958,17 @@ export class MarketService {
     const aggregatedRows = deriveQuoteFallbackRows({
       rows: aggregateCachedMarketRows({
         rows,
-        granularitySeconds: resolvedGranularity
+        granularitySeconds: overviewGranularity
       }),
       quoteCurrency,
       bridgeCurrency
     }).filter((row) => source === 'combined' || row.provider === source);
+    const sourceGranularities = [...new Set(
+      rows.map((row) => Number(row.granularity_seconds))
+    )].sort((left, right) => left - right);
+    const mixedGranularity = sourceGranularities.some(
+      (sourceGranularity) => sourceGranularity > resolvedGranularity
+    ) || overviewGranularity > resolvedGranularity;
     const labels = new Map(
       (await this.listWatchlist()).map((asset) => [asset.canonicalId, `${asset.symbol} · ${asset.name}`])
     );
@@ -935,16 +1049,29 @@ export class MarketService {
     });
     const missingIntervals: Array<{ assetId: string; fromMs: number; toMs: number }> = [];
     for (const item of series) {
-      const present = new Set(item.points.map((point) => point.timestampMs));
-      let missingStart: number | null = null;
-      for (let bucket = rangeStartMs; bucket <= rangeEndMs; bucket += bucketMs) {
-        if (!present.has(bucket) && missingStart === null) missingStart = bucket;
-        if (present.has(bucket) && missingStart !== null) {
-          missingIntervals.push({ assetId: item.id, fromMs: missingStart, toMs: bucket - bucketMs });
-          missingStart = null;
+      const present = [...new Set(item.points.map((point) => point.timestampMs))]
+        .filter((timestampMs) => timestampMs >= rangeStartMs && timestampMs <= rangeEndMs)
+        .sort((left, right) => left - right);
+      let nextExpectedBucket = fromMs === 0 && present.length > 0
+        ? present[0]!
+        : rangeStartMs;
+      for (const bucket of present) {
+        if (bucket > nextExpectedBucket) {
+          missingIntervals.push({
+            assetId: item.id,
+            fromMs: nextExpectedBucket,
+            toMs: bucket - bucketMs
+          });
         }
+        nextExpectedBucket = Math.max(nextExpectedBucket, bucket + bucketMs);
       }
-      if (missingStart !== null) missingIntervals.push({ assetId: item.id, fromMs: missingStart, toMs: rangeEndMs });
+      if (nextExpectedBucket <= rangeEndMs) {
+        missingIntervals.push({
+          assetId: item.id,
+          fromMs: nextExpectedBucket,
+          toMs: rangeEndMs
+        });
+      }
     }
     const [events, cursorRows] = await Promise.all([
       lifecycleAndDisputeEvents({
@@ -964,7 +1091,7 @@ export class MarketService {
         parameters: [
           ...assetIds,
           ...quoteCurrencies,
-          resolvedGranularity,
+          overviewGranularity,
           ...(source === 'combined' ? [] : [source])
         ]
       })
@@ -983,6 +1110,9 @@ export class MarketService {
       },
       requestedGranularity: granularity,
       resolvedGranularity,
+      overviewGranularity,
+      mixedGranularity,
+      sourceGranularities,
       stale,
       partial: missingIntervals.length > 0,
       missingIntervals,

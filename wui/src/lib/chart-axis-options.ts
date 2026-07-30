@@ -9,7 +9,7 @@ export interface ChartDenominationOption {
 export interface ChartAxisOption {
   value: string;
   label: string;
-  group: 'Fiat currencies' | 'Crypto assets';
+  group: 'Fiat currencies' | 'Crypto assets' | 'Display units';
   searchText: string;
 }
 

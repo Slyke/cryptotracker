@@ -2,12 +2,20 @@ import { Decimal } from 'decimal.js';
 import type { LoadedRuntime } from '../config/load.js';
 import type { AppDatabase } from '../db/index.js';
 import { normalizeAddress, reconstructBalance, validateAddress, valueHoldings, type AddressNetwork } from '../domain/addresses.js';
+import {
+  boundedOverviewGranularity,
+  resolveAutoGranularity
+} from '../domain/graphs.js';
 import { combinePriceObservations } from '../domain/market.js';
 import { AppError } from '../errors.js';
 import type { JobQueue } from '../jobs/queue.js';
 import type { ChainAdapter, SelectedChainAsset } from '../providers/chains.js';
 import { createId } from '../utils/ids.js';
-import { enabledChartDenominations, historicalPriceLookup } from './chart-values.js';
+import {
+  chartDenominationsAt,
+  enabledChartDenominations,
+  historicalPriceLookup
+} from './chart-values.js';
 import { addressEvents } from './event-markers.js';
 
 interface AddressRow {
@@ -50,6 +58,7 @@ interface AddressValuePoint {
   unpricedAssets: string[];
   quantities: Record<string, string>;
   denominations: Record<string, string | null>;
+  denominationFallbacks: Record<string, string>;
   quotes: Record<string, string | null>;
 }
 
@@ -998,6 +1007,7 @@ export class AddressService {
     const assetIds = [...new Set(rows.map((row) => row.canonical_asset_id))];
     const resolvedQuoteCurrencies = [...new Set([
       quoteCurrency.toUpperCase(),
+      'USD',
       ...configuredCurrencies.map((currency) => currency.toUpperCase())
         .filter((currency) => /^[A-Z]{3}$/.test(currency))
     ])];
@@ -1082,7 +1092,7 @@ export class AddressService {
     quoteCurrencies?: string[];
     fromMs: number;
     toMs: number;
-    granularitySeconds: number;
+    granularitySeconds: number | 'auto';
   }) {
     const addresses = (await this.list()).filter((address) => address.enabled);
     const oldest = fromMs === 0
@@ -1110,7 +1120,16 @@ export class AddressService {
         ? toMs
         : Number(oldest.oldest)
       : fromMs;
-    const bucketMs = granularitySeconds * 1_000;
+    const requestedGranularitySeconds = granularitySeconds === 'auto'
+      ? resolveAutoGranularity({ fromMs: effectiveFromMs, toMs })
+      : granularitySeconds;
+    const resolvedGranularitySeconds = boundedOverviewGranularity({
+      requestedGranularity: requestedGranularitySeconds,
+      fromMs: effectiveFromMs,
+      toMs,
+      seriesCount: addresses.length + 1
+    });
+    const bucketMs = resolvedGranularitySeconds * 1_000;
     const buckets: number[] = [];
     for (let bucket = Math.floor(effectiveFromMs / bucketMs) * bucketMs; bucket <= toMs; bucket += bucketMs) {
       buckets.push(bucket);
@@ -1120,6 +1139,7 @@ export class AddressService {
     const configuredCurrencies = quoteCurrencies ?? await this.configuredTooltipCurrencies();
     const resolvedQuoteCurrencies = [...new Set([
       quoteCurrency.toUpperCase(),
+      'USD',
       ...configuredCurrencies.map((currency) => currency.toUpperCase())
         .filter((currency) => /^[A-Z]{3}$/.test(currency))
     ])];
@@ -1140,25 +1160,29 @@ export class AddressService {
         quoteCurrency: currency,
         fromMs: effectiveFromMs,
         toMs,
+        queryGranularitySeconds: resolvedGranularitySeconds,
         disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
       })
     ] as const)));
-    const priceAt = quoteLookups.get(quoteCurrency.toUpperCase())!;
     const denominationsAt = ({
-      value,
+      quoteValues,
       timestampMs
     }: {
-      value: string | null;
+      quoteValues: Record<string, string | null | undefined>;
       timestampMs: number;
-    }) => Object.fromEntries(denominationOptions.map((option) => {
-      const unitPrice = priceAt({ assetId: option.id, timestampMs });
-      return [
-        option.id,
-        value === null || unitPrice === null || new Decimal(unitPrice).isZero()
-          ? null
-          : new Decimal(value).dividedBy(unitPrice).toString()
-      ];
-    }));
+    }) => chartDenominationsAt({
+      denominationOptions,
+      quoteValues,
+      primaryCurrency: quoteCurrency,
+      timestampMs,
+      priceAt: ({ assetId, quoteCurrency: priceCurrency, timestampMs: priceTimestampMs }) => (
+        quoteLookups.get(priceCurrency)?.({
+          assetId,
+          timestampMs: priceTimestampMs
+        }) ?? null
+      )
+    });
+    const priceAt = quoteLookups.get(quoteCurrency.toUpperCase())!;
     const output: AddressValueSeries[] = [];
     for (const address of addresses) {
       const [rows, observations] = await Promise.all([
@@ -1218,6 +1242,7 @@ export class AddressService {
         observations,
         (observation) => observation.canonical_asset_id
       );
+      const observationCursorByAsset = new Map<string, number>();
       const points: AddressValuePoint[] = [];
       for (const timestampMs of buckets) {
         const quantities: Record<string, string> = {};
@@ -1225,8 +1250,18 @@ export class AddressService {
           if (address.history.status === 'complete') {
             quantities[assetId] = balanceByTimestampAsset.get(`${timestampMs}:${assetId}`) ?? '0';
           }
-          const observation = (observationsByAsset.get(assetId) ?? [])
-            .findLast((candidate) => Number(candidate.bucket_start_ms) <= timestampMs);
+          const assetObservations = observationsByAsset.get(assetId) ?? [];
+          let observationCursor = observationCursorByAsset.get(assetId) ?? -1;
+          while (
+            observationCursor + 1 < assetObservations.length
+            && Number(assetObservations[observationCursor + 1]!.bucket_start_ms) <= timestampMs
+          ) {
+            observationCursor += 1;
+          }
+          observationCursorByAsset.set(assetId, observationCursor);
+          const observation = observationCursor >= 0
+            ? assetObservations[observationCursor]
+            : undefined;
           if (observation) quantities[assetId] = observation.quantity;
         }
         const balanceKnown = Object.keys(quantities).length > 0;
@@ -1254,6 +1289,10 @@ export class AddressService {
             quoted.pricedAssets > 0 ? quoted.total : null
           ];
         }));
+        const denominationValues = denominationsAt({
+          quoteValues: quotes,
+          timestampMs
+        });
         points.push({
           timestampMs,
           value: balanceKnown ? valuation.total : null,
@@ -1263,10 +1302,7 @@ export class AddressService {
           )),
           quantities,
           quotes,
-          denominations: denominationsAt({
-            value: balanceKnown ? valuation.total : null,
-            timestampMs
-          })
+          ...denominationValues
         });
       }
       output.push({
@@ -1275,9 +1311,12 @@ export class AddressService {
         points
       });
     }
+    const addressPointsByTimestamp = output.map((item) => (
+      new Map(item.points.map((point) => [point.timestampMs, point]))
+    ));
     const combinedPoints = buckets.map((timestampMs) => {
-      const addressPoints = output
-        .map((series) => series.points.find((point) => point.timestampMs === timestampMs))
+      const addressPoints = addressPointsByTimestamp
+        .map((points) => points.get(timestampMs))
         .filter((point): point is AddressValuePoint => point !== undefined);
       const quantityAssetIds = [...new Set(addressPoints.flatMap((point) => Object.keys(point.quantities)))];
       const knownValues = addressPoints
@@ -1286,6 +1325,15 @@ export class AddressService {
       const value = knownValues.length > 0
         ? Decimal.sum(0, ...knownValues).toString()
         : null;
+      const quotes = Object.fromEntries(resolvedQuoteCurrencies.map((currency) => {
+        const values = addressPoints
+          .map((point) => point.quotes[currency])
+          .filter((quote): quote is string => quote !== null);
+        return [
+          currency,
+          values.length > 0 ? Decimal.sum(0, ...values).toString() : null
+        ];
+      }));
       return {
         timestampMs,
         value,
@@ -1296,16 +1344,8 @@ export class AddressService {
             ...addressPoints.map((point) => point.quantities[assetId] ?? '0')
           ).toString()
         ])),
-        quotes: Object.fromEntries(resolvedQuoteCurrencies.map((currency) => {
-          const values = addressPoints
-            .map((point) => point.quotes[currency])
-            .filter((quote): quote is string => quote !== null);
-          return [
-            currency,
-            values.length > 0 ? Decimal.sum(0, ...values).toString() : null
-          ];
-        })),
-        denominations: denominationsAt({ value, timestampMs })
+        quotes,
+        ...denominationsAt({ quoteValues: quotes, timestampMs })
       };
     });
     const events = await addressEvents({
@@ -1320,7 +1360,10 @@ export class AddressService {
         from: new Date(effectiveFromMs).toISOString(),
         to: new Date(toMs).toISOString()
       },
-      granularitySeconds,
+      requestedGranularitySeconds,
+      granularitySeconds: resolvedGranularitySeconds,
+      overviewGranularity: resolvedGranularitySeconds,
+      mixedGranularity: resolvedGranularitySeconds > requestedGranularitySeconds,
       stale: addresses.some((address) => address.history.status === 'stale'),
       partial: addresses.some((address) => ['partial', 'syncing', 'error', 'unavailable'].includes(address.history.status)),
       events,

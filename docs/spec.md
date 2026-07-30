@@ -766,9 +766,18 @@ Rules:
 
 Automatic polling is configured independently in Settings for CoinGecko market data, Coinbase market data, Kraken public market data, the asset catalog, tracked addresses, and the private Kraken account. The hard minimum is five minutes. Conservative defaults are five minutes for the private Kraken account and Earn state, 15 minutes for Coinbase and Kraken public markets, 30 minutes for CoinGecko and addresses, and one day for the asset catalog. A single market poll may retrieve all upstream 5-minute candles created since the prior poll; current-only account and Earn surfaces are polled every five minutes because missed observations cannot be recovered from upstream history.
 
-For every enabled market asset, initial synchronization targets progressively deeper cached history: 90 days at one-hour granularity, two years at daily granularity, and five years at weekly granularity. Each adapter caps those targets to the upstream plan and endpoint limits; Combined history uses deeper providers without repeatedly requesting a range another provider cannot supply. Historical work is admitted in bounded batches on later scheduler cycles so current data and free-provider quotas are not overwhelmed. A provider response containing one observation in a requested bucket is retained as an honest one-sample derived OHLC bucket rather than discarded.
+For every enabled market asset, initial synchronization targets progressively deeper cached history: up to 90 days at one-hour granularity, up to two years at daily granularity, and older configured history at weekly granularity. Automatic market-history depth is independently configurable and defaults to five years; `Maximum available` requests the oldest boundary exposed by each provider. A finite historical-retention window is also an upper bound on automatic backfill depth, preventing points from being downloaded only to be immediately pruned. Each adapter caps those targets to the upstream plan and endpoint limits; Combined history uses deeper providers without repeatedly requesting a range another provider cannot supply. Historical work is admitted in bounded batches on later scheduler cycles so current data and free-provider quotas are not overwhelmed. A provider response containing one observation in a requested bucket is retained as an honest one-sample derived OHLC bucket rather than discarded.
 
 The selected chart rendering mode does not change synchronization. Line and Candlestick are views over the same cached points; Queue backfill requests missing provider history for the selected asset, currency, range, and granularity.
+
+Every chart granularity remains selectable. The selection is a detail preference and must not be
+silently replaced by the zoomed-out overview resolution. Long ranges may render a mixed-resolution
+series: coarse retained observations preserve the overview, while finer cached observations are
+used when the user zooms into a covered period. The data-quality notice discloses this distinction
+and missing intervals; no finer historical value is fabricated from a coarse provider observation.
+The same bounded overview contract applies to market, combined portfolio, address, Kraken account,
+and Kraken Earn charts. Generated timelines and snapshot/price queries are coarsened before large
+arrays or result sets are materialized.
 
 ### 8.4 Retention
 
@@ -788,7 +797,7 @@ Disabling a series or removing an asset from the watchlist does not delete share
 
 Temporary HTTP response bodies, expired sessions, and generated export archives may use bounded retention because they are not canonical portfolio history.
 
-A separate database-backed failed-job retention setting may be `Forever` or a finite number of hours.
+A separate database-backed failed-job retention setting defaults to one month and may be `Forever` or a finite number of hours.
 Finite failed-job retention deletes only terminal `failed` job records after explicit confirmation; it
 does not delete active, queued, retrying, or completed synchronization history.
 
@@ -938,7 +947,7 @@ Rules:
 
 - Finer cached data may be aggregated into a coarser bucket.
 - Coarse data must never be expanded into fabricated fine data.
-- The UI disables unavailable granularities or marks them partial.
+- Every granularity remains selectable; mixed/coarse coverage is marked partial and explained.
 - Auto chooses a resolution that keeps the rendered point count reasonable.
 - Exports use the explicitly selected or Auto-resolved granularity.
 - The resolved granularity is always visible and included in export metadata.
@@ -951,7 +960,9 @@ Recommended Auto targets:
 - up to 2 years: 1 day
 - longer ranges: 1 week
 
-The API may downsample for display while preserving the ability to export the requested cached granularity.
+The API applies per-series and per-response point budgets. An over-dense selection returns a bounded
+overview, and a settled smaller zoom window may be fetched again at the requested cached
+granularity. Export endpoints may enforce their own explicit size boundary.
 
 ### 9.6 Quote Currencies
 
@@ -960,6 +971,10 @@ The API may downsample for display while preserving the ability to export the re
 - The user may select up to five tooltip quote currencies.
 - The primary currency counts toward the maximum of five when it is selected for the tooltip.
 - Quote currency preferences persist in the database.
+- Each full graph independently exposes a searchable multi-select for zero to five popup units.
+  Its choices may mix configured fiat currencies and activated crypto denominations.
+- A graph with no selected popup units may still identify the timestamp and series, but does not
+  force a currency or percentage value row into the popup.
 
 At the active crosshair timestamp, the tooltip must show a grouped matrix:
 
@@ -1026,9 +1041,19 @@ Supported Y-axis scales:
 
 For valuation and price charts, the Y-axis unit selector contains the primary
 currency, every configured display currency (up to five), and every activated
-crypto asset exposed by the chart. Opening the selector provides a search field
+crypto asset, even when that asset is not a plotted series on the current graph. Opening the selector provides a search field
 that filters by fiat code or crypto symbol, name, and canonical ID. The selected
 unit remains part of the graph's database-backed display state.
+
+The popup-unit selector uses the same searchable fiat-and-crypto catalog, supports ticking and
+unticking multiple choices without closing, permits zero selections, and enforces a maximum of
+five. Popup-unit state is independent from the Y-axis unit.
+
+USD is the internal reserve quote for crypto-unit conversion. If a direct
+primary-currency/crypto pair is unavailable for a portfolio timestamp, the graph
+divides the portfolio's USD value by that crypto asset's USD price. USD does not
+appear as a user-selectable fiat unit unless the user configured it. Derived
+reserve conversions are identified in the chart's yellow data-quality notice.
 
 Logarithmic scale requires every visible plotted value to be greater than zero.
 
@@ -1083,7 +1108,7 @@ Every graph supports:
 - missing-data gaps
 - loading, partial, stale, and error states
 
-Wheel and horizontal-pan time navigation is inactive until the plotting surface has been clicked or keyboard-focused, and becomes inactive again on blur. The graph tooltip occupies a stable left or right inset position rather than following the pointer. It preserves the Y-axis scale gutter, uses proximity-based side switching to avoid jitter, and may be pinned by clicking a plotted point. Escape or clicking the empty plotting area closes a pinned tooltip.
+Wheel and horizontal-pan time navigation is inactive until the plotting surface has been clicked or keyboard-focused, and becomes inactive again on blur. A loading chart is inert and clears transient popups; if loading was triggered while its plot had interaction focus, that focus and wheel-navigation state are restored after the new data is rendered unless the user focused another control. The graph tooltip occupies a stable left or right inset position rather than following the pointer. It preserves the Y-axis scale gutter, uses proximity-based side switching to avoid jitter, and may be pinned by clicking a plotted point. Escape or clicking the empty plotting area closes a pinned tooltip.
 
 The keyboard inspector is an actual interactive control: activating it reveals instructions, Left/Right moves one data point, Home/End jumps to the first/last point, and the active point is announced. Its label must not imply functionality that is unavailable.
 
@@ -1133,7 +1158,13 @@ Users can toggle all markers or individual categories. Selecting a marker opens 
 
 ### 10.7 Saved Dashboard Graphs
 
-A graph configured on Markets, Addresses, or Kraken can be named and saved to the Dashboard. Saved graph configuration is database-backed and includes its source type, selected assets where applicable, source/currency/timezone, range, granularity, chart mode, scale, normalized state, event state, and volume state.
+A graph configured on Markets, Addresses, or Kraken can be named and saved to the Dashboard.
+Market-performance graphs are also saveable. Saved graph configuration is database-backed and
+includes its source type, selected assets where applicable, source/currency/timezone, range,
+granularity, chart mode, scale, normalized state, event state, volume state, and performance mode
+where applicable. It also retains its selected popup units, scale bounds, candlestick-wick choice,
+and exact plotted asset or series IDs. A later watchlist disable stops new synchronization but does
+not filter a disabled asset out of an existing saved graph's cached series.
 
 The Dashboard supports one, two, three, or four graphs per row and unlimited rows subject to normal page performance. Dashboard graphs use a compact presentation without duplicating the full configuration toolbar.
 
@@ -1152,9 +1183,11 @@ WUI. For a selected series the analytics show:
 - total-return difference from an optional selected benchmark
 
 The analytics graph switches between cumulative return from the first non-zero observation and
-drawdown from the preceding peak. Market analytics use cached prices. Address and Kraken analytics
-use observed portfolio value; deposits and withdrawals are not removed, so those values must be
-labelled as not cash-flow-adjusted and not time-weighted.
+drawdown from the preceding peak. Market analytics have an independent range, including a custom
+rolling hours/days/weeks/months/years lookback. Each selected market asset is calculated from only
+its own cached price series; portfolio totals and other token series must never be folded into that
+asset's return. Address and Kraken analytics use observed portfolio value; deposits and withdrawals
+are not removed, so those values must be labelled as not cash-flow-adjusted and not time-weighted.
 
 ## 11. Graph And Data Exports
 
@@ -1571,7 +1604,11 @@ Kraken raw balance identifiers, including staked suffixes such as `.S`, are norm
 
 The Earn asset table shows the currently observed estimated rate range and one current-value column for each configured quote currency. Summary values use the same focusable multi-currency popup as Dashboard values, including current known value, current Earn value, and lifetime Earn rewards. Kraken's read-only Earn Strategies endpoint exposes only the current APR estimate and compounding metadata, not historical rates. Each account refresh therefore stores an observation locally and the APY-history graph explicitly reports that its coverage begins with the first local capture; it does not claim provider backfill. Projected APY is calculated from the observed APR only when the strategy reports automatic compounding and a supported payout frequency.
 
-The Kraken total graph popup lists quantities only for enabled watchlist assets by default. A checkbox beside the keyboard inspector allows disabled or inactive quantities to be included for inspection without changing the plotted total.
+The Kraken total graph popup lists quantities only for enabled watchlist assets by default. A
+checkbox beside the keyboard inspector allows disabled or inactive quantities to be included for
+inspection without changing the plotted total. Both controls appear below the graph's source,
+resolved-granularity, and latest-timestamp labels. On full graphs, the yellow data-quality indicator
+appears at the right edge of the shared graph-options accordion header.
 
 The balance table has a searchable, database-backed column configurator. Search updates the visible choices as the user types, checkboxes align with their labels, and selected columns can be moved left or right. Available columns include asset, raw balance, average buy price in each of up to five configured currencies, current price in each currency, wallet value in each currency, 24-hour, 7-day, 28-day, month-over-month, month-to-date, 3-month, 6-month, 1-year, 2-year, and 4-year change, and unrealised return. Additional provider or calculation columns may be added without changing the core contract.
 
@@ -1914,7 +1951,7 @@ Settings:
 - graph defaults
 - cost-basis method
 - historical point/snapshot retention, defaulting to Forever
-- terminal failed-job retention, independently defaulting to Forever
+- terminal failed-job retention, independently defaulting to one month
 - independent automatic-polling intervals for each integration, with a five-minute minimum
 - restoration of previously dismissed informational notices
 - live synchronization progress and cursor coverage, with recent failed jobs first
@@ -2479,7 +2516,7 @@ The initial implementation is acceptable when:
 38. Health endpoints and startup logs include version and build hash.
 39. Cached data remains viewable during an upstream outage.
 40. The default locale, timezone, and primary currency are `en-CA`, `America/Vancouver`, and CAD.
-41. Historical points and snapshots default to Forever retention, may be limited by the user after confirmation, and never prune protected transaction/activity/cost-basis records or destructively downsample.
+41. Historical points and snapshots default to Forever retention, while automatic market-history synchronization defaults to five years and may target the maximum provider-available depth. Finite retention may be selected after confirmation and never prunes protected transaction/activity/cost-basis records or destructively downsamples.
 42. Large provider disagreements are marked and inspectable while the Combined median remains plotted.
 43. Exact owned transfers between Kraken and tracked addresses do not create false gains, losses, rewards, or duplicated holdings.
 44. Wrapped assets, forks, migrations, redenominations, delistings, and stablecoins follow explicit lifecycle and valuation rules.
@@ -2510,7 +2547,7 @@ The initial implementation is acceptable when:
 69. Markets, Addresses, and Kraken expose cumulative return, annualized return/volatility, maximum drawdown, observation count, and optional benchmark comparison; portfolio-value analytics disclose that cash flows are not removed.
 70. Calculations projects APY/APR compound growth, end-of-period contributions, earnings, and target contribution, and persists uniquely named scenarios without calling any upstream mutation.
 71. Settings can inspect a portable ZIP and atomically replace explicitly selected Preferences, Markets, Addresses, Kraken, Portfolio, or Calculations groups only after confirmation.
-72. Failed-job retention defaults to Forever and, when finite, removes only expired terminal failure records.
+72. Failed-job retention defaults to one month and, whether changed to another finite duration or Forever, affects only terminal failure records.
 
 ## 24. Implementation Order
 

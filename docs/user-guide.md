@@ -77,8 +77,9 @@ optional wicks. Volume is available only where a single provider supplies meanin
 Combined volume is intentionally unavailable because exchange volumes cannot be safely summed.
 
 The catalog table can be filtered by symbol, name, rank, or canonical ID. Its searchable column
-configurator saves the selected columns and their order. The configured table and either market
-chart can be saved to the Dashboard under a unique name.
+configurator saves the selected columns and their order. The configured table, market-price chart,
+combined-portfolio chart, and market-performance chart can be saved to the Dashboard under a
+unique name.
 
 ## Addresses
 
@@ -201,9 +202,11 @@ that page:
 - total-return difference from an optional selected benchmark;
 - valued observation count.
 
-The graph switches between cumulative return and drawdown. Market analytics describe price return.
-Address and Kraken analytics use observed portfolio value, so deposits and withdrawals are not
-removed; they are not cash-flow-adjusted or time-weighted returns.
+The graph switches between cumulative return and drawdown. Market performance has its own time
+range, including a custom rolling lookback in hours, days, weeks, months, or years, and can be saved
+to the Dashboard. Each market series uses only that asset's cached price; other tokens and portfolio
+balances are not included. Address and Kraken analytics use observed portfolio value, so deposits
+and withdrawals are not removed; they are not cash-flow-adjusted or time-weighted returns.
 
 ## Shared chart controls
 
@@ -213,10 +216,11 @@ Full charts provide:
 - custom start/end values in the configured timezone or a rolling lookback in hours, days, weeks,
   months, or years;
 - automatic or explicit 5-minute, 15-minute, 30-minute, 1-hour, 4-hour, daily, or weekly
-  granularity, with overly dense combinations disabled;
+  granularity, with every choice remaining selectable;
 - line/candlestick mode where applicable;
 - linear/logarithmic scale and a searchable Y-axis unit chosen from configured currencies and
-  available crypto denominations;
+  every activated crypto denomination;
+- a searchable multi-select for showing zero to five fiat or crypto units in graph popups;
 - independent automatic, absolute, or percentage-padded minimum and maximum;
 - normalization to 0%, candlestick wicks, volume, and event toggles where applicable;
 - wheel/gesture pan and zoom after the plot is clicked or focused, drag zoom, and Reset zoom;
@@ -229,13 +233,18 @@ Full charts provide:
 - unique-name Dashboard saving on supported source charts.
 
 Compact Dashboard and calculation charts intentionally omit the full configuration toolbar.
+Markets, Addresses, and Kraken full charts store their range, granularity, custom lookback, scale,
+Y-axis unit, popup units, normalization, event, and volume choices in the database and restore them
+on refresh. The keyboard inspector and optional inactive-asset popup toggle sit below the graph's
+source, resolution, and latest-timestamp labels. Data-quality details use the yellow indicator at
+the right side of the graph-options accordion header.
 
 ## Settings and diagnostics
 
 Preferences include locale, IANA timezone, dark/light theme, font, content width, primary currency,
 up to five display currencies, default market source, provider-disagreement threshold, default
 Kraken cost-basis method, dismissed-message restoration, independent automatic polling intervals,
-historical retention, and failed-job retention.
+automatic market-history depth, historical retention, and failed-job retention.
 
 Provider polling can be set from five minutes to one week for CoinGecko, Coinbase, Kraken public
 market data, tracked addresses, the Kraken account/Earn state, and the catalog. Changes take effect
@@ -249,6 +258,27 @@ Synchronization refreshes every three seconds and shows:
 - searchable market coverage filtered by provider or completeness;
 - Kraken endpoint import coverage.
 
+Chart granularity is a requested detail level rather than a promise that every historical interval
+exists at that cadence. All detail choices remain available. A long-range chart uses a bounded
+weekly or daily overview rather than loading every intraday row. After zoom settles, the visible
+window is fetched again at the requested detail when the point budget permits. The yellow
+data-quality notice explains mixed resolution or missing intervals; the app does not invent precise
+intraday prices where a provider supplied only coarse history.
+
+While a chart is loading it is dimmed, inert, and has no hover or pinned popup. If loading began
+while the plot itself was active, the plot regains focus and wheel navigation when rendering
+finishes, unless you selected another control in the meantime.
+
+All non-percentage full charts offer every activated crypto as a Y-axis unit. When a direct pair
+to the primary currency is missing, CryptoTracker uses USD internally as the reserve quote
+(portfolio value in USD divided by the selected crypto's USD price). USD stays hidden unless it
+is also a configured display currency, and the yellow data-quality notice marks reserve-derived
+values as approximate.
+
+Saved Dashboard market charts retain the exact plotted asset IDs and popup-unit choices from the
+time they were saved. Disabling an asset later stops future synchronization for it but does not
+remove its already-cached series from an existing saved chart.
+
 Storage diagnostics show database kind, estimated bytes, total rows, category/table counts, retained
 ranges, and the active point-retention policy. Provider diagnostics expose enablement, contribution,
 cooldown, and Kraken-safety state.
@@ -258,7 +288,12 @@ on the Dashboard.
 
 ## Retention, backup, and restore
 
-Historical retention defaults to Forever. A finite whole-day window requires confirmation and
+Automatic market-history synchronization defaults to five years and can be changed through presets
+up to Maximum available. Maximum available means the oldest history exposed by each configured
+provider, not a fabricated pre-listing history. Historical retention defaults to Forever. When a
+finite retention window is shorter than the requested synchronization depth, Settings warns and
+the scheduler uses the retention window as its effective backfill depth so data is not downloaded
+and immediately deleted. A finite whole-day retention window requires confirmation and
 removes only old market points, derived address balance points, and Kraken/combined portfolio
 snapshots. A separate optional policy removes terminal failed-job records. Transactions, address
 events, Kraken trades/ledgers, transfer matches, and cost-basis records remain retained.

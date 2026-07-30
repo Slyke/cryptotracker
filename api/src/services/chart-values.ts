@@ -1,3 +1,4 @@
+import { Decimal } from 'decimal.js';
 import type { AppDatabase } from '../db/index.js';
 import { combinePriceObservations } from '../domain/market.js';
 
@@ -6,6 +7,54 @@ export interface ChartDenominationOption {
   symbol: string;
   label: string;
 }
+
+export const chartDenominationsAt = ({
+  denominationOptions,
+  quoteValues,
+  primaryCurrency,
+  timestampMs,
+  priceAt
+}: {
+  denominationOptions: ChartDenominationOption[];
+  quoteValues: Record<string, string | null | undefined>;
+  primaryCurrency: string;
+  timestampMs: number;
+  priceAt: (input: {
+    assetId: string;
+    quoteCurrency: string;
+    timestampMs: number;
+  }) => string | null;
+}) => {
+  const primary = primaryCurrency.toUpperCase();
+  const currencies = [
+    primary,
+    'USD'
+  ].filter((currency, index, values) => values.indexOf(currency) === index);
+  const denominations: Record<string, string | null> = {};
+  const denominationFallbacks: Record<string, string> = {};
+  for (const option of denominationOptions) {
+    denominations[option.id] = null;
+    for (const quoteCurrency of currencies) {
+      const quoteValue = quoteValues[quoteCurrency];
+      if (quoteValue === null || quoteValue === undefined) continue;
+      const unitPrice = priceAt({
+        assetId: option.id,
+        quoteCurrency,
+        timestampMs
+      });
+      if (unitPrice === null || new Decimal(unitPrice).isZero()) continue;
+      denominations[option.id] = new Decimal(quoteValue).dividedBy(unitPrice).toString();
+      if (quoteCurrency !== primary) {
+        denominationFallbacks[option.id] = quoteCurrency;
+      }
+      break;
+    }
+  }
+  return {
+    denominations,
+    denominationFallbacks
+  };
+};
 
 interface HistoricalPriceRow {
   provider: string;
@@ -46,6 +95,7 @@ export const historicalPriceLookup = async ({
   quoteCurrency,
   fromMs,
   toMs,
+  queryGranularitySeconds,
   disagreementThresholdPercent
 }: {
   db: AppDatabase;
@@ -53,6 +103,7 @@ export const historicalPriceLookup = async ({
   quoteCurrency: string;
   fromMs: number;
   toMs: number;
+  queryGranularitySeconds?: number;
   disagreementThresholdPercent: number;
 }) => {
   const normalizedAssetIds = [...new Set(assetIds.filter(Boolean))];
@@ -61,17 +112,31 @@ export const historicalPriceLookup = async ({
     ? []
     : await db.query<HistoricalPriceRow>({
         sql: `
+          WITH ranked_points AS (
+            SELECT provider, canonical_asset_id, bucket_start_ms,
+                   granularity_seconds, close_value, data_kind,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY provider, canonical_asset_id,
+                                  CAST(bucket_start_ms / ? AS INTEGER)
+                     ORDER BY bucket_start_ms DESC,
+                              granularity_seconds ASC,
+                              CASE WHEN data_kind = 'native' THEN 0 ELSE 1 END
+                   ) AS bucket_rank
+            FROM market_points
+            WHERE canonical_asset_id IN (${normalizedAssetIds.map(() => '?').join(', ')})
+              AND quote_currency = ?
+              AND bucket_start_ms >= ?
+              AND bucket_start_ms <= ?
+          )
           SELECT provider, canonical_asset_id, bucket_start_ms,
                  granularity_seconds, close_value, data_kind
-          FROM market_points
-          WHERE canonical_asset_id IN (${normalizedAssetIds.map(() => '?').join(', ')})
-            AND quote_currency = ?
-            AND bucket_start_ms >= ?
-            AND bucket_start_ms <= ?
+          FROM ranked_points
+          WHERE bucket_rank = 1
           ORDER BY canonical_asset_id, bucket_start_ms,
                    granularity_seconds, provider, data_kind DESC
         `,
         parameters: [
+          Math.max(1, Math.floor(queryGranularitySeconds ?? 300)) * 1_000,
           ...normalizedAssetIds,
           currency,
           Math.max(0, fromMs - 7 * 24 * 60 * 60_000),

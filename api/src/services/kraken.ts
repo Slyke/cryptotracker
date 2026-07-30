@@ -4,6 +4,10 @@ import type { LoadedRuntime } from '../config/load.js';
 import type { AppDatabase, DatabaseExecutor } from '../db/index.js';
 import { calculateCostBasis, type BasisEvent, type CostBasisMethod } from '../domain/cost-basis.js';
 import {
+  boundedOverviewGranularity,
+  resolveAutoGranularity
+} from '../domain/graphs.js';
+import {
   canonicalKrakenAsset,
   krakenAssetCategory
 } from '../domain/kraken-assets.js';
@@ -12,7 +16,10 @@ import { AppError } from '../errors.js';
 import type { JobQueue } from '../jobs/queue.js';
 import type { KrakenReadOnlyClient } from '../providers/kraken.js';
 import { createId } from '../utils/ids.js';
-import { enabledChartDenominations } from './chart-values.js';
+import {
+  chartDenominationsAt,
+  enabledChartDenominations
+} from './chart-values.js';
 import { krakenEvents } from './event-markers.js';
 
 export interface KrakenPermissionInspection {
@@ -1447,12 +1454,14 @@ export class KrakenService {
     assetIds,
     quoteCurrencies,
     fromMs,
-    toMs
+    toMs,
+    queryGranularitySeconds
   }: {
     assetIds: string[];
     quoteCurrencies: string[];
     fromMs: number;
     toMs: number;
+    queryGranularitySeconds?: number;
   }) {
     type HistoricalQuoteRow = {
       provider: string;
@@ -1472,17 +1481,32 @@ export class KrakenService {
       ? []
       : await this.db.query<HistoricalQuoteRow>({
           sql: `
+            WITH ranked_points AS (
+              SELECT provider, canonical_asset_id, quote_currency,
+                     bucket_start_ms, granularity_seconds, close_value,
+                     data_kind,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY provider, canonical_asset_id, quote_currency,
+                                    CAST(bucket_start_ms / ? AS INTEGER)
+                       ORDER BY bucket_start_ms DESC,
+                                granularity_seconds ASC,
+                                CASE WHEN data_kind = 'native' THEN 0 ELSE 1 END
+                     ) AS bucket_rank
+              FROM market_points
+              WHERE canonical_asset_id IN (${normalizedAssetIds.map(() => '?').join(', ')})
+                AND quote_currency IN (${normalizedCurrencies.map(() => '?').join(', ')})
+                AND bucket_start_ms >= ?
+                AND bucket_start_ms <= ?
+            )
             SELECT provider, canonical_asset_id, quote_currency, bucket_start_ms,
                    granularity_seconds, close_value, data_kind
-            FROM market_points
-            WHERE canonical_asset_id IN (${normalizedAssetIds.map(() => '?').join(', ')})
-              AND quote_currency IN (${normalizedCurrencies.map(() => '?').join(', ')})
-              AND bucket_start_ms >= ?
-              AND bucket_start_ms <= ?
+            FROM ranked_points
+            WHERE bucket_rank = 1
             ORDER BY canonical_asset_id, quote_currency, bucket_start_ms,
                      granularity_seconds, provider, data_kind DESC
           `,
           parameters: [
+            Math.max(1, Math.floor(queryGranularitySeconds ?? 300)) * 1_000,
             ...normalizedAssetIds,
             ...normalizedCurrencies,
             Math.max(0, fromMs - 7 * 24 * 60 * 60_000),
@@ -2013,6 +2037,7 @@ export class KrakenService {
     ]);
     const resolvedQuoteCurrencies = [...new Set([
       currency,
+      'USD',
       ...configuredCurrencies.map((configured) => configured.toUpperCase())
         .filter((configured) => /^[A-Z]{3}$/.test(configured))
     ])];
@@ -2180,13 +2205,18 @@ export class KrakenService {
     ].sort((left, right) => left - right)[0];
     const effectiveFromMs = fromMs === 0 ? oldestCandidate ?? toMs : fromMs;
     const requestedGranularitySeconds = Math.max(60, Math.floor(granularitySeconds));
-    const minimumBoundedGranularitySeconds = Math.ceil(
-      Math.max(0, toMs - effectiveFromMs) / 18_000 / 60_000
-    ) * 60;
-    const resolvedGranularitySeconds = Math.max(
-      requestedGranularitySeconds,
-      minimumBoundedGranularitySeconds
-    );
+    const earnAssetCount = new Set([
+      ...earnLedgerRows.map((row) => canonicalKrakenAsset({ raw: row.asset_raw })),
+      ...[...ledgerDeltas.values()].flatMap((values) => [...values.keys()]),
+      ...snapshotAssetIds,
+      ...allocations.map((allocation) => allocation.assetId)
+    ]).size;
+    const resolvedGranularitySeconds = boundedOverviewGranularity({
+      requestedGranularity: requestedGranularitySeconds,
+      fromMs: effectiveFromMs,
+      toMs,
+      seriesCount: Math.max(1, earnAssetCount * 2 + 1)
+    });
     const timeline = new Set<number>([effectiveFromMs, toMs]);
     for (
       let timestampMs = effectiveFromMs;
@@ -2208,7 +2238,8 @@ export class KrakenService {
       assetIds: priceAssetIds,
       quoteCurrencies: resolvedQuoteCurrencies,
       fromMs: effectiveFromMs,
-      toMs
+      toMs,
+      queryGranularitySeconds: resolvedGranularitySeconds
     });
     type BalanceAction = {
       timestampMs: number;
@@ -2334,24 +2365,18 @@ export class KrakenService {
       ];
     }));
     const denominationsAt = ({
-      value,
+      quoteValues,
       timestampMs
     }: {
-      value: string | null;
+      quoteValues: Record<string, string | null | undefined>;
       timestampMs: number;
-    }) => Object.fromEntries(denominationOptions.map((option) => {
-      const unitPrice = quoteAt({
-        assetId: option.id,
-        quoteCurrency: currency,
-        timestampMs
-      });
-      return [
-        option.id,
-        value === null || unitPrice === null || new Decimal(unitPrice).isZero()
-          ? null
-          : new Decimal(value).dividedBy(unitPrice).toString()
-      ];
-    }));
+    }) => chartDenominationsAt({
+      denominationOptions,
+      quoteValues,
+      primaryCurrency: currency,
+      timestampMs,
+      priceAt: quoteAt
+    });
     const valuesByTimestamp = new Map<number, {
       value: Decimal;
       pricedAssets: number;
@@ -2622,7 +2647,10 @@ export class KrakenService {
         from: new Date(effectiveFromMs).toISOString(),
         to: new Date(toMs).toISOString()
       },
+      requestedGranularitySeconds,
       granularitySeconds: resolvedGranularitySeconds,
+      overviewGranularity: resolvedGranularitySeconds,
+      mixedGranularity: resolvedGranularitySeconds > requestedGranularitySeconds,
       coverage: {
         ledgerComplete,
         oldestLedgerAt: ledgerState.oldestAtMs === null
@@ -2649,30 +2677,30 @@ export class KrakenService {
           label: 'Earn total',
           points: [...valuesByTimestamp.entries()]
             .sort(([left], [right]) => left - right)
-            .map(([timestampMs, value]) => ({
-              timestampMs,
-              value: value.pricedAssets > 0 ? value.value.toString() : null,
-              coveragePercent: assetIds.length === 0
-                ? '100'
-                : new Decimal(value.pricedAssets)
-                  .dividedBy(assetIds.length)
-                  .times(100)
-                  .toString(),
-              quotes: Object.fromEntries(resolvedQuoteCurrencies.map((quoteCurrency) => [
+            .map(([timestampMs, value]) => {
+              const quotes = Object.fromEntries(resolvedQuoteCurrencies.map((quoteCurrency) => [
                 quoteCurrency,
                 value.quotes.get(quoteCurrency)?.toString() ?? null
-              ])),
-              quantities: Object.fromEntries(
-                [...value.quantities.entries()].map(([assetId, quantity]) => [
-                  assetId,
-                  quantity.toString()
-                ])
-              ),
-              denominations: denominationsAt({
+              ]));
+              return {
+                timestampMs,
                 value: value.pricedAssets > 0 ? value.value.toString() : null,
-                timestampMs
-              })
-            }))
+                coveragePercent: assetIds.length === 0
+                  ? '100'
+                  : new Decimal(value.pricedAssets)
+                    .dividedBy(assetIds.length)
+                    .times(100)
+                    .toString(),
+                quotes,
+                quantities: Object.fromEntries(
+                  [...value.quantities.entries()].map(([assetId, quantity]) => [
+                    assetId,
+                    quantity.toString()
+                  ])
+                ),
+                ...denominationsAt({ quoteValues: quotes, timestampMs })
+              };
+            })
         },
         ...[...valuesByAsset.entries()]
           .map(([assetId, values]) => ({
@@ -2680,19 +2708,19 @@ export class KrakenService {
             label: labels.get(assetId) ?? assetId,
             points: [...values.entries()]
               .sort(([left], [right]) => left - right)
-              .map(([timestampMs, value]) => ({
-                timestampMs,
-                value: value.priced ? value.value.toString() : null,
-                coveragePercent: value.unpriced ? '0' : '100',
-                quotes: assetQuotes({ assetId, timestampMs, value }),
-                quantities: {
-                  [assetId]: value.quantity.toString()
-                },
-                denominations: denominationsAt({
+              .map(([timestampMs, value]) => {
+                const quotes = assetQuotes({ assetId, timestampMs, value });
+                return {
+                  timestampMs,
                   value: value.priced ? value.value.toString() : null,
-                  timestampMs
-                })
-              }))
+                  coveragePercent: value.unpriced ? '0' : '100',
+                  quotes,
+                  quantities: {
+                    [assetId]: value.quantity.toString()
+                  },
+                  ...denominationsAt({ quoteValues: quotes, timestampMs })
+                };
+              })
           }))
           .sort((left, right) => left.label.localeCompare(right.label))
       ],
@@ -3101,12 +3129,41 @@ export class KrakenService {
   async series({
     fromMs,
     toMs,
-    quoteCurrencies
+    quoteCurrencies,
+    granularitySeconds = 'auto'
   }: {
     fromMs: number;
     toMs: number;
     quoteCurrencies?: string[];
+    granularitySeconds?: number | 'auto';
   }) {
+    const oldest = fromMs === 0
+      ? await this.db.one<{ oldest: number | string | null }>({
+          sql: 'SELECT MIN(captured_at_ms) AS oldest FROM kraken_snapshots'
+        })
+      : null;
+    const effectiveFromMs = fromMs === 0
+      ? Number(oldest?.oldest ?? toMs)
+      : fromMs;
+    const requestedGranularitySeconds = granularitySeconds === 'auto'
+      ? resolveAutoGranularity({ fromMs: effectiveFromMs, toMs })
+      : granularitySeconds;
+    const seriesCountRow = await this.db.one<{ asset_count: number | string }>({
+      sql: `
+        SELECT COUNT(DISTINCT COALESCE(balance.canonical_asset_id, balance.asset_raw)) AS asset_count
+        FROM kraken_snapshot_balances AS balance
+        JOIN kraken_snapshots AS snapshot ON snapshot.id = balance.snapshot_id
+        WHERE snapshot.captured_at_ms >= ? AND snapshot.captured_at_ms <= ?
+      `,
+      parameters: [effectiveFromMs, toMs]
+    });
+    const resolvedGranularitySeconds = boundedOverviewGranularity({
+      requestedGranularity: Math.max(300, requestedGranularitySeconds),
+      fromMs: effectiveFromMs,
+      toMs,
+      seriesCount: Math.max(1, Number(seriesCountRow?.asset_count ?? 0) + 1)
+    });
+    const bucketMs = resolvedGranularitySeconds * 1_000;
     const snapshots = await this.db.query<{
       captured_at_ms: number | string;
       total_value_currency: string | null;
@@ -3114,12 +3171,22 @@ export class KrakenService {
       price_coverage: string;
     }>({
       sql: `
+        WITH ranked_snapshots AS (
+          SELECT captured_at_ms, total_value_currency, total_value,
+                 price_coverage,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY CAST(captured_at_ms / ? AS INTEGER)
+                   ORDER BY captured_at_ms DESC
+                 ) AS bucket_rank
+          FROM kraken_snapshots
+          WHERE captured_at_ms >= ? AND captured_at_ms <= ?
+        )
         SELECT captured_at_ms, total_value_currency, total_value, price_coverage
-        FROM kraken_snapshots
-        WHERE captured_at_ms >= ? AND captured_at_ms <= ?
+        FROM ranked_snapshots
+        WHERE bucket_rank = 1
         ORDER BY captured_at_ms
       `,
-      parameters: [fromMs, toMs]
+      parameters: [bucketMs, effectiveFromMs, toMs]
     });
     const balances = await this.db.query<{
       captured_at_ms: number | string;
@@ -3130,15 +3197,24 @@ export class KrakenService {
       priced: number | string;
     }>({
       sql: `
+        WITH ranked_snapshots AS (
+          SELECT id, captured_at_ms,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY CAST(captured_at_ms / ? AS INTEGER)
+                   ORDER BY captured_at_ms DESC
+                 ) AS bucket_rank
+          FROM kraken_snapshots
+          WHERE captured_at_ms >= ? AND captured_at_ms <= ?
+        )
         SELECT snapshot.captured_at_ms, balance.asset_raw,
                balance.canonical_asset_id, balance.quantity,
                balance.value_amount, balance.priced
-        FROM kraken_snapshots AS snapshot
+        FROM ranked_snapshots AS snapshot
         JOIN kraken_snapshot_balances AS balance ON balance.snapshot_id = snapshot.id
-        WHERE snapshot.captured_at_ms >= ? AND snapshot.captured_at_ms <= ?
+        WHERE snapshot.bucket_rank = 1
         ORDER BY snapshot.captured_at_ms, balance.canonical_asset_id, balance.asset_raw
       `,
-      parameters: [fromMs, toMs]
+      parameters: [bucketMs, effectiveFromMs, toMs]
     });
     const assetIds = [...new Set(
       balances.map((balance) => canonicalKrakenAsset({ raw: balance.asset_raw })).filter(Boolean)
@@ -3167,6 +3243,7 @@ export class KrakenService {
     const currency = defaultCurrency;
     const resolvedQuoteCurrencies = [...new Set([
       currency,
+      'USD',
       ...configuredCurrencies.map((configured) => configured.toUpperCase())
         .filter((configured) => /^[A-Z]{3}$/.test(configured))
     ])];
@@ -3176,8 +3253,9 @@ export class KrakenService {
         ...denominationOptions.map((option) => option.id)
       ])],
       quoteCurrencies: resolvedQuoteCurrencies,
-      fromMs,
-      toMs
+      fromMs: effectiveFromMs,
+      toMs,
+      queryGranularitySeconds: resolvedGranularitySeconds
     });
     const rawLabels = new Map<string, string>();
     const valuesByAsset = new Map<string, Map<number, {
@@ -3233,24 +3311,18 @@ export class KrakenService {
       ];
     }));
     const denominationsAt = ({
-      value,
+      quoteValues,
       timestampMs
     }: {
-      value: string | null;
+      quoteValues: Record<string, string | null | undefined>;
       timestampMs: number;
-    }) => Object.fromEntries(denominationOptions.map((option) => {
-      const unitPrice = quoteAt({
-        assetId: option.id,
-        quoteCurrency: currency,
-        timestampMs
-      });
-      return [
-        option.id,
-        value === null || unitPrice === null || new Decimal(unitPrice).isZero()
-          ? null
-          : new Decimal(value).dividedBy(unitPrice).toString()
-      ];
-    }));
+    }) => chartDenominationsAt({
+      denominationOptions,
+      quoteValues,
+      primaryCurrency: currency,
+      timestampMs,
+      priceAt: quoteAt
+    });
     const totalQuotesByTimestamp = new Map<number, Map<string, Decimal>>();
     const totalQuantitiesByTimestamp = new Map<number, Map<string, Decimal>>();
     for (const [assetId, values] of valuesByAsset) {
@@ -3276,10 +3348,18 @@ export class KrakenService {
         totalQuantitiesByTimestamp.set(timestampMs, quantities);
       }
     }
-    const events = await krakenEvents({ db: this.db, fromMs, toMs });
+    const events = await krakenEvents({
+      db: this.db,
+      fromMs: effectiveFromMs,
+      toMs
+    });
     return {
       events,
       denominationOptions,
+      requestedGranularitySeconds,
+      granularitySeconds: resolvedGranularitySeconds,
+      overviewGranularity: resolvedGranularitySeconds,
+      mixedGranularity: resolvedGranularitySeconds > requestedGranularitySeconds,
       series: [
         {
           id: 'kraken-total',
@@ -3301,10 +3381,7 @@ export class KrakenService {
                 [...(totalQuantitiesByTimestamp.get(timestampMs) ?? new Map()).entries()]
                   .map(([assetId, quantity]) => [assetId, quantity.toString()])
               ),
-              denominations: denominationsAt({
-                value: primaryValue,
-                timestampMs
-              })
+              ...denominationsAt({ quoteValues: quotes, timestampMs })
             };
           })
         },
@@ -3325,10 +3402,7 @@ export class KrakenService {
                   quantities: {
                     [assetId]: value.quantity.toString()
                   },
-                  denominations: denominationsAt({
-                    value: primaryValue,
-                    timestampMs
-                  })
+                  ...denominationsAt({ quoteValues: quotes, timestampMs })
                 };
               })
           }))

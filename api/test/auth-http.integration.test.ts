@@ -513,6 +513,54 @@ describe('HTTP ingress', () => {
         })
       });
       expect(duplicateNames.status).toBe(400);
+      const legacyGraphs = [
+        {
+          id: 'legacy-visible',
+          name: 'BTC Price',
+          type: 'market' as const,
+          hidden: false,
+          config: {}
+        },
+        {
+          id: 'legacy-hidden',
+          name: ' BTC PRICE ',
+          type: 'market' as const,
+          hidden: true,
+          config: {}
+        }
+      ];
+      await settings.patch({ changes: { savedGraphs: legacyGraphs } });
+      const appendWithLegacyDuplicate = await fetch(`${baseUrl}/api/settings`, {
+        method: 'PATCH',
+        headers: {
+          cookie,
+          origin: 'http://localhost:8192',
+          'x-csrf-token': loginPayload.csrfToken,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          savedGraphs: [
+            ...legacyGraphs,
+            {
+              id: 'new-market-chart',
+              name: 'ETH Price',
+              type: 'market',
+              hidden: false,
+              config: {}
+            }
+          ]
+        })
+      });
+      expect(appendWithLegacyDuplicate.status).toBe(200);
+      expect(await appendWithLegacyDuplicate.json()).toMatchObject({
+        settings: {
+          savedGraphs: [
+            { id: 'legacy-visible', name: 'BTC Price' },
+            { id: 'legacy-hidden', name: 'BTC PRICE' },
+            { id: 'new-market-chart', name: 'ETH Price' }
+          ]
+        }
+      });
       const proxied = await fetch(`${baseUrl}/some-wui-route`);
       expect(await proxied.text()).toBe('proxied-wui');
     } finally {

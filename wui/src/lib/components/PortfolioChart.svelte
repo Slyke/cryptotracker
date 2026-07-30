@@ -5,16 +5,20 @@
   import { persistAccordionState } from '$lib/accordion-state';
   import {
     buildChartAxisOptions,
+    type ChartAxisOption,
     type ChartDenominationOption
   } from '$lib/chart-axis-options';
+  import { activeChartAxisCatalog } from '$lib/chart-axis-catalog';
   import {
     closestCandidateWithinRadius,
     hasMinimumValuedObservations
   } from '$lib/chart-data';
   import SearchableSelect from './SearchableSelect.svelte';
+  import SearchableMultiSelect from './SearchableMultiSelect.svelte';
   import {
     formatDisplayNumber,
     formatPercent,
+    normalizeTooltipUnits,
     relativeRangeWindow,
     type RelativeRangeUnit
   } from '$lib/preferences';
@@ -41,6 +45,7 @@
     quotes?: Record<string, string | null>;
     quantities?: Record<string, string>;
     denominations?: Record<string, string | null>;
+    denominationFallbacks?: Record<string, string>;
     contributingValues?: Record<string, string>;
     [key: string]: unknown;
   }
@@ -93,9 +98,20 @@
   export let emptyMessage = strings['cryptotracker-chart-empty-label'];
   export let minimumValuedObservations = 1;
   export let initialRange = '30d';
+  export let initialCustomFromMs: number | null = null;
+  export let initialCustomToMs: number | null = null;
+  export let initialCustomRangeMode: 'dates' | 'ago' = 'dates';
+  export let initialCustomAgoValue = 30;
+  export let initialCustomAgoUnit: RelativeRangeUnit = 'days';
   export let initialScale: 'linear' | 'log' = 'linear';
   export let initialYAxisUnit = currency;
+  export let initialTooltipUnits: string[] | null = null;
+  export let initialMinimumMode: 'auto' | 'absolute' | 'relative' = 'auto';
+  export let initialMaximumMode: 'auto' | 'absolute' | 'relative' = 'auto';
+  export let initialMinimumValue = '';
+  export let initialMaximumValue = '';
   export let initialNormalized = false;
+  export let initialShowWicks = true;
   export let initialShowEvents = true;
   export let initialShowVolume = false;
   export let preferenceKey = '';
@@ -117,6 +133,11 @@
       showEvents: boolean;
       showVolume: boolean;
       yAxisUnit: string;
+      tooltipUnits: string[];
+    };
+    zoomRange: {
+      fromMs: number;
+      toMs: number;
     };
     saveGraph: {
       name: string;
@@ -128,6 +149,12 @@
       showEvents: boolean;
       showVolume: boolean;
       yAxisUnit: string;
+      tooltipUnits: string[];
+      minimumMode: 'auto' | 'absolute' | 'relative';
+      maximumMode: 'auto' | 'absolute' | 'relative';
+      minimumValue: string;
+      maximumValue: string;
+      showWicks: boolean;
       customFromMs: number | null;
       customToMs: number | null;
       customRangeMode: 'dates' | 'ago';
@@ -142,22 +169,29 @@
   let destroyed = false;
   let range = initialRange;
   let customFrom = formatZonedDateTimeInput({
-    timestampMs: Date.now() - 30 * 24 * 60 * 60_000,
+    timestampMs: initialCustomFromMs ?? Date.now() - 30 * 24 * 60 * 60_000,
     timezone
   });
-  let customTo = formatZonedDateTimeInput({ timestampMs: Date.now(), timezone });
-  let customRangeMode: 'dates' | 'ago' = 'dates';
-  let customAgoValue = 30;
-  let customAgoUnit: RelativeRangeUnit = 'days';
+  let customTo = formatZonedDateTimeInput({
+    timestampMs: initialCustomToMs ?? Date.now(),
+    timezone
+  });
+  let customRangeMode: 'dates' | 'ago' = initialCustomRangeMode;
+  let customAgoValue = initialCustomAgoValue;
+  let customAgoUnit: RelativeRangeUnit = initialCustomAgoUnit;
   let selectedGranularity = String(granularity);
   let scale: 'linear' | 'log' = initialScale;
   let yAxisUnit = initialYAxisUnit;
-  let minimumMode: 'auto' | 'absolute' | 'relative' = 'auto';
-  let maximumMode: 'auto' | 'absolute' | 'relative' = 'auto';
-  let minimumValue = '';
-  let maximumValue = '';
+  let selectedTooltipUnits = normalizeTooltipUnits({
+    value: initialTooltipUnits,
+    fallback: [currency, ...tooltipCurrencies]
+  });
+  let minimumMode: 'auto' | 'absolute' | 'relative' = initialMinimumMode;
+  let maximumMode: 'auto' | 'absolute' | 'relative' = initialMaximumMode;
+  let minimumValue = initialMinimumValue;
+  let maximumValue = initialMaximumValue;
   let normalized = initialNormalized;
-  let showWicks = true;
+  let showWicks = initialShowWicks;
   let showVolume = initialShowVolume;
   let showEvents = initialShowEvents;
   let eventCategories = new Set([
@@ -180,6 +214,10 @@
   let activePointDescription = '';
   let inspectorActive = false;
   let chartInteractionActive = false;
+  let previousBusy = busy;
+  let restoreInteractionAfterBusy = false;
+  let activeAxisCurrencies: string[] = [];
+  let activeAxisDenominationOptions: ChartDenominationOption[] = [];
   let tooltipPinned = false;
   let hoveredTooltipTarget: {
     seriesIndex: number;
@@ -199,6 +237,10 @@
   let eventPage = 1;
   let chartPoints: ChartPoint[] = [];
   let hasPlottedData = false;
+  let renderedTimestamps: number[] = [];
+  let zoomWindow: { fromMs: number; toMs: number } | null = null;
+  let lastDispatchedZoomKey = '';
+  let zoomDispatchTimer: ReturnType<typeof setTimeout> | null = null;
   const eventPageSize = 25;
   const chartColors = [
     '#5070dd',
@@ -221,21 +263,79 @@
   const controlId = (suffix: string) => (
     `${title.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-').replaceAll(/^-|-$/g, '')}-${suffix}`
   );
+  const granularityLabel = (seconds: number) => new Map([
+    [300, '5 minutes'],
+    [900, '15 minutes'],
+    [1_800, '30 minutes'],
+    [3_600, '1 hour'],
+    [14_400, '4 hours'],
+    [86_400, '1 day'],
+    [604_800, '1 week']
+  ]).get(seconds) ?? `${seconds.toLocaleString()} seconds`;
+  const requestedGranularitySeconds = () => {
+    const numeric = Number(selectedGranularity);
+    return selectedGranularity === 'auto' || !Number.isFinite(numeric)
+      ? null
+      : numeric;
+  };
+  const resolutionLimited = () => (
+    requestedGranularitySeconds() !== null
+    && granularity > requestedGranularitySeconds()!
+  );
+  const denominationFallbackCurrencies = () => [...new Set(
+    allPoints()
+      .map((point) => point.denominationFallbacks?.[yAxisUnit])
+      .filter((fallback): fallback is string => Boolean(fallback))
+  )];
+  const approximateDenomination = () => denominationFallbackCurrencies().length > 0;
+  const qualityMessage = () => {
+    const resolutionMessage = resolutionLimited()
+      && !partialMessage.includes('zoomed-out overview resolves')
+      ? `${granularityLabel(requestedGranularitySeconds()!)} detail is selected, while the zoomed-out chart currently resolves to ${granularityLabel(granularity)}. Zoomed periods use finer observations where the local history contains them.`
+      : '';
+    const denominationMessage = approximateDenomination()
+      ? `${yAxisUnitLabel()} Y-axis values are approximate where a direct ${currency.toUpperCase()} pair was unavailable; those points were normalized through ${denominationFallbackCurrencies().join(' or ')} reserve prices.`
+      : '';
+    return [
+      resolutionMessage,
+      denominationMessage,
+      partial ? partialMessage : ''
+    ].filter(Boolean).join(' ');
+  };
 
   const allPoints = () => series.flatMap((item) => item.points);
   const rawPointValue = (point: ChartPoint) => point.value ?? point.close ?? null;
-  const configuredFiatCurrencies = () => [...new Set([
+  let effectiveDenominationOptionList: ChartDenominationOption[] = [];
+  let configuredFiatCurrencyList: string[] = [];
+  let yAxisOptionList: ChartAxisOption[] = [];
+  let tooltipUnitOptionList: ChartAxisOption[] = [];
+  $: effectiveDenominationOptionList = [
+    ...new Map<string, ChartDenominationOption>([
+      ...denominationOptions,
+      ...activeAxisDenominationOptions
+    ].map((option) => [option.id, option])).values()
+  ];
+  $: configuredFiatCurrencyList = [...new Set([
     currency.toUpperCase(),
+    ...activeAxisCurrencies,
     ...tooltipCurrencies
       .map((quote) => quote.toUpperCase())
       .filter((quote) => /^[A-Z]{3}$/.test(quote))
   ])];
-  const yAxisOptions = () => buildChartAxisOptions({
+  $: yAxisOptionList = buildChartAxisOptions({
     primaryCurrency: currency,
-    listedCurrencies: tooltipCurrencies,
-    denominationOptions
+    listedCurrencies: [...tooltipCurrencies, ...activeAxisCurrencies],
+    denominationOptions: effectiveDenominationOptionList
   });
-  const isFiatUnit = (unit: string) => configuredFiatCurrencies().includes(unit.toUpperCase());
+  $: tooltipUnitOptionList = currency.trim() === '%'
+    ? [{
+        value: '%',
+        label: '% · Percentage',
+        group: 'Display units' as const,
+        searchText: 'percent percentage return rate'
+      }]
+    : yAxisOptionList;
+  const isFiatUnit = (unit: string) => configuredFiatCurrencyList.includes(unit.toUpperCase());
   const plottedPointValue = (point: ChartPoint) => (
     chartMode === 'line' && yAxisUnit !== currency
       ? isFiatUnit(yAxisUnit)
@@ -245,9 +345,22 @@
   );
   const yAxisUnitLabel = () => isFiatUnit(yAxisUnit)
     ? yAxisUnit.toUpperCase()
-    : denominationOptions.find((option) => option.id === yAxisUnit)?.symbol ?? yAxisUnit;
+    : effectiveDenominationOptionList.find((option) => option.id === yAxisUnit)?.symbol ?? yAxisUnit;
+  const tooltipUnitLabel = (unit: string) => {
+    if (unit === '%') return '%';
+    if (isFiatUnit(unit)) return unit.toUpperCase();
+    return effectiveDenominationOptionList.find((option) => option.id === unit)?.symbol ?? unit;
+  };
+  const tooltipUnitValue = (point: ChartPoint, unit: string) => {
+    if (unit === '%') return rawPointValue(point);
+    if (isFiatUnit(unit)) {
+      return point.quotes?.[unit.toUpperCase()]
+        ?? (unit.toUpperCase() === currency.toUpperCase() ? rawPointValue(point) : null);
+    }
+    return point.denominations?.[unit] ?? null;
+  };
   const assetQuantityLabel = (assetId: string) => (
-    denominationOptions.find((option) => option.id === assetId)?.symbol
+    effectiveDenominationOptionList.find((option) => option.id === assetId)?.symbol
     ?? assetId.toUpperCase()
   );
   const visibleTooltipQuantities = (quantities: Record<string, string> | undefined) => {
@@ -288,33 +401,6 @@
     return scale === 'log' && numeric <= 0 ? null : numeric;
   };
   const meaningfulVolume = () => source !== 'combined' && allPoints().some((point) => point.volume !== null && point.volume !== undefined);
-  const rangeDurationsMs: Record<string, number | null> = {
-    '24h': 24 * 60 * 60_000,
-    '7d': 7 * 24 * 60 * 60_000,
-    '30d': 30 * 24 * 60 * 60_000,
-    '90d': 90 * 24 * 60 * 60_000,
-    '1y': 365 * 24 * 60 * 60_000,
-    '4y': 4 * 365 * 24 * 60 * 60_000,
-    all: null
-  };
-  const selectedRangeDurationMs = () => {
-    if (range === 'custom') {
-      const customWindow = customRangeWindow();
-      return customWindow.from === null || customWindow.to === null
-        ? null
-        : Math.max(0, customWindow.to - customWindow.from);
-    }
-    if (range === 'all') {
-      const timestamps = allPoints().map((point) => point.timestampMs);
-      return timestamps.length < 2 ? null : Math.max(...timestamps) - Math.min(...timestamps);
-    }
-    return rangeDurationsMs[range] ?? null;
-  };
-  const granularityAvailable = (seconds: number) => {
-    const durationMs = selectedRangeDurationMs();
-    return durationMs === null || durationMs / (seconds * 1_000) <= 5_000;
-  };
-
   const normalizedSeries = (item: ChartSeries) => {
     const base = item.points.find((point) => {
       const value = plottedPointValue(point);
@@ -561,6 +647,15 @@
     const timestamps = [...new Set(sourceSeries.flatMap((item) => (
       item.points.map((point) => point.timestampMs)
     )))].sort((left, right) => left - right);
+    renderedTimestamps = timestamps;
+    const retainedZoom = zoomWindow && timestamps.length > 1
+      ? {
+          startValue: timestamps.find((timestampMs) => timestampMs >= zoomWindow!.fromMs)
+            ?? timestamps[0],
+          endValue: timestamps.findLast((timestampMs) => timestampMs <= zoomWindow!.toMs)
+            ?? timestamps.at(-1)
+        }
+      : {};
     for (const [index, item] of sourceSeries.entries()) {
       if (chartMode === 'candlestick' && index === 0) {
         const pointsByTimestamp = new Map(item.points.map((point) => [point.timestampMs, point]));
@@ -848,7 +943,7 @@
             }
           },
       axisPointer: {
-        triggerOn: tooltipPinned ? 'none' : 'mousemove|click',
+        triggerOn: busy || tooltipPinned ? 'none' : 'mousemove|click',
         link: [{ xAxisIndex: 'all' }],
         lineStyle: {
           color: '#ffbc3a',
@@ -856,11 +951,12 @@
         }
       },
       tooltip: {
+        show: !busy,
         trigger: 'axis',
-        triggerOn: tooltipPinned ? 'none' : 'mousemove|click|mousewheel',
+        triggerOn: busy || tooltipPinned ? 'none' : 'mousemove|click|mousewheel',
         renderMode: 'html',
         enterable: true,
-        alwaysShowContent: tooltipPinned,
+        alwaysShowContent: !busy && tooltipPinned,
         hideDelay: 300,
         backgroundColor: panelColor,
         borderColor,
@@ -1037,31 +1133,20 @@
           const exactAmountsSection = exactAmounts
             ? `<div style="margin-top:.55rem;padding-bottom:.55rem;border-bottom:1px solid rgba(127,127,127,.35)"><strong>Exact asset amounts</strong>${exactAmounts}</div>`
             : '';
-          const configuredTooltipCurrencies = [...new Set([
-            currency.toUpperCase(),
-            ...tooltipCurrencies
-              .map((quote) => quote.toUpperCase())
-              .filter((quote) => /^[A-Z]{3}$/.test(quote))
-          ])];
           const rows = [
             ...combinedTooltipPoints,
             ...individualTooltipPoints
           ].map(({ item, point, color }) => {
             const highlighted = item.id === highlightedSeriesId;
-            const orderedTooltipCurrencies = configuredTooltipCurrencies;
             const combinedQuantityRows = quantitiesBelongInline(item.id)
               ? visibleTooltipQuantities(point.quantities)
                 .map(([assetId, quantity]) => (
                   `<span>${escapeHtml(assetQuantityLabel(assetId))}</span> <strong>${escapeHtml(formatChartValue(quantity))}</strong>`
                 )).join('<br />')
               : '';
-            const quoteRows = orderedTooltipCurrencies.map((quote) => {
-              const value = point.quotes?.[quote] ?? (quote === currency ? rawPointValue(point) : null);
-              return `<span>${escapeHtml(quote)}</span> <strong>${escapeHtml(formatChartValue(value))}</strong>`;
-            }).join('<br />');
-            const denominationRow = isFiatUnit(yAxisUnit)
-              ? ''
-              : `<br /><span>${escapeHtml(yAxisUnitLabel())} value</span> <strong>${escapeHtml(formatChartValue(point.denominations?.[yAxisUnit] ?? null))}</strong>`;
+            const valueRows = selectedTooltipUnits.map((unit) => (
+              `<span>${escapeHtml(tooltipUnitLabel(unit))}</span> <strong>${escapeHtml(formatChartValue(tooltipUnitValue(point, unit)))}</strong>`
+            )).join('<br />');
             const status = point.disputed ? 'disputed' : point.status;
             const statusRow = status
               && !(source === 'derived analytics' && status === 'derived')
@@ -1071,7 +1156,7 @@
             const quantityRows = combinedQuantityRows
               ? `${combinedQuantityRows}<br />`
               : '';
-            return `<div style="margin-top:.55rem;${tooltipSeriesRowStyle({ color, highlighted })}">${tooltipSeriesHeading({ item, color })}<br />${quantityRows}${statusRow}${quoteRows}${denominationRow}</div>`;
+            return `<div style="margin-top:.55rem;${tooltipSeriesRowStyle({ color, highlighted })}">${tooltipSeriesHeading({ item, color })}<br />${quantityRows}${statusRow}${valueRows}</div>`;
           }).join('');
           return `<div><strong>${formatInTimezone({ timestampMs: timestamp ?? 0, timezone })}</strong>${exactAmountsSection}${rows}</div>`;
         }
@@ -1081,18 +1166,21 @@
           id: 'inside-time-zoom',
           type: 'inside',
           xAxisIndex: showVolume && meaningfulVolume() ? [0, 1] : [0],
-          disabled: !chartInteractionActive,
-          zoomOnMouseWheel: chartInteractionActive,
-          moveOnMouseMove: chartInteractionActive,
-          moveOnMouseWheel: chartInteractionActive
+          disabled: busy || !chartInteractionActive,
+          zoomOnMouseWheel: !busy && chartInteractionActive,
+          moveOnMouseMove: !busy && chartInteractionActive,
+          moveOnMouseWheel: !busy && chartInteractionActive,
+          ...retainedZoom
         },
         ...minimalChrome ? [] : [{
           id: 'horizontal-time-selector',
           type: 'slider',
           xAxisIndex: showVolume && meaningfulVolume() ? [0, 1] : [0],
+          disabled: busy,
           bottom: 18,
           borderColor: '#202835',
-          fillerColor: 'rgba(0, 182, 255, 0.18)'
+          fillerColor: 'rgba(0, 182, 255, 0.18)',
+          ...retainedZoom
         }]
       ],
       series: chartSeries
@@ -1103,7 +1191,47 @@
   };
 
   const resetZoom = () => {
+    zoomWindow = null;
+    lastDispatchedZoomKey = '';
+    if (zoomDispatchTimer) clearTimeout(zoomDispatchTimer);
+    zoomDispatchTimer = null;
     chart?.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+  };
+
+  const scheduleZoomRange = () => {
+    if (busy || !chart || renderedTimestamps.length < 2) return;
+    const options = chart.getOption() as {
+      dataZoom?: Array<{
+        id?: string;
+        start?: number;
+        end?: number;
+      }>;
+    };
+    const dataZoom = options.dataZoom?.find((item) => item.id === 'horizontal-time-selector')
+      ?? options.dataZoom?.[0];
+    const start = Math.max(0, Math.min(100, Number(dataZoom?.start ?? 0)));
+    const end = Math.max(start, Math.min(100, Number(dataZoom?.end ?? 100)));
+    if (end - start >= 99.5) {
+      zoomWindow = null;
+      lastDispatchedZoomKey = '';
+      if (zoomDispatchTimer) clearTimeout(zoomDispatchTimer);
+      zoomDispatchTimer = null;
+      return;
+    }
+    const lastIndex = renderedTimestamps.length - 1;
+    const fromIndex = Math.max(0, Math.min(lastIndex, Math.floor((start / 100) * lastIndex)));
+    const toIndex = Math.max(fromIndex, Math.min(lastIndex, Math.ceil((end / 100) * lastIndex)));
+    const fromMs = renderedTimestamps[fromIndex]!;
+    const toMs = renderedTimestamps[toIndex]!;
+    zoomWindow = { fromMs, toMs };
+    if (zoomDispatchTimer) clearTimeout(zoomDispatchTimer);
+    zoomDispatchTimer = setTimeout(() => {
+      zoomDispatchTimer = null;
+      const zoomKey = `${fromMs}:${toMs}`;
+      if (busy || zoomKey === lastDispatchedZoomKey) return;
+      lastDispatchedZoomKey = zoomKey;
+      dispatch('zoomRange', { fromMs, toMs });
+    }, 600);
   };
 
   const resetBounds = () => {
@@ -1185,7 +1313,7 @@
       title,
       source,
       currency,
-      tooltipCurrencies,
+      tooltipUnits: selectedTooltipUnits,
       timezone,
       chartMode,
       resolvedGranularitySeconds: granularity,
@@ -1238,6 +1366,7 @@
   };
 
   const showInspectionPoint = () => {
+    if (busy) return;
     tooltipPointerPosition = null;
     scheduleChartHighlight(null);
     chart?.dispatchAction({
@@ -1246,6 +1375,49 @@
       dataIndex: inspectionIndex
     });
     describeInspectionPoint();
+  };
+
+  const clearChartPopups = () => {
+    tooltipPinned = false;
+    hoveredTooltipTarget = null;
+    hoveredTooltipIsEvent = false;
+    tooltipPointerPosition = null;
+    chartInteractionActive = false;
+    inspectorActive = false;
+    activePointDescription = '';
+    scheduleChartHighlight(null);
+    chart?.dispatchAction({ type: 'hideTip' });
+  };
+
+  const enableChartInteraction = () => {
+    if (busy) return;
+    chartInteractionActive = true;
+    chart?.setOption({
+      dataZoom: [{
+        id: 'inside-time-zoom',
+        disabled: false,
+        zoomOnMouseWheel: true,
+        moveOnMouseMove: true,
+        moveOnMouseWheel: true
+      }]
+    });
+  };
+
+  const restoreChartInteraction = async () => {
+    await tick();
+    requestAnimationFrame(() => {
+      if (
+        destroyed
+        || busy
+        || !container?.isConnected
+        || !restoreInteractionAfterBusy
+      ) return;
+      const focused = document.activeElement;
+      restoreInteractionAfterBusy = false;
+      if (focused && focused !== document.body && focused !== container) return;
+      container.focus({ preventScroll: true });
+      enableChartInteraction();
+    });
   };
 
   const releasePinnedTooltip = () => {
@@ -1269,6 +1441,7 @@
   const freezeHoveredTooltip = () => {
     if (
       !chart
+      || busy
       || tooltipPinned
       || (!hoveredTooltipTarget && !hoveredTooltipIsEvent)
     ) return;
@@ -1293,7 +1466,7 @@
   };
 
   const trackTooltipPointer = (event: PointerEvent) => {
-    if (tooltipPinned || !container) return;
+    if (busy || tooltipPinned || !container) return;
     const bounds = container.getBoundingClientRect();
     tooltipPointerPosition = [
       event.clientX - bounds.left,
@@ -1314,6 +1487,7 @@
   };
 
   const toggleKeyboardInspection = () => {
+    if (busy) return;
     if (inspectorActive) {
       stopKeyboardInspection();
       return;
@@ -1326,6 +1500,7 @@
   };
 
   const inspectByKeyboard = (event: KeyboardEvent) => {
+    if (busy) return;
     if (event.key === 'Escape' && tooltipPinned) {
       event.preventDefault();
       releasePinnedTooltip();
@@ -1363,6 +1538,7 @@
   };
 
   const toggleEventCategory = ({ category }: { category: string }) => {
+    if (busy) return;
     const next = new Set(eventCategories);
     if (next.has(category)) next.delete(category);
     else next.add(category);
@@ -1385,6 +1561,10 @@
   };
 
   const stateChanged = () => {
+    zoomWindow = null;
+    lastDispatchedZoomKey = '';
+    if (zoomDispatchTimer) clearTimeout(zoomDispatchTimer);
+    zoomDispatchTimer = null;
     const customWindow = range === 'custom' ? customRangeWindow() : { from: null, to: null };
     const customFromMs = customWindow.from;
     const customToMs = customWindow.to;
@@ -1397,12 +1577,6 @@
         ? 'Custom range must contain valid local times with the start before the end.'
         : 'Time ago must be a whole number greater than zero.';
       return;
-    }
-    if (
-      selectedGranularity !== 'auto'
-      && !granularityAvailable(Number(selectedGranularity))
-    ) {
-      selectedGranularity = 'auto';
     }
     validationMessage = '';
     dispatch('stateChange', {
@@ -1418,17 +1592,20 @@
   };
 
   const viewChanged = () => {
+    if (busy) return;
     renderChart();
     dispatch('viewChange', {
       scale,
       normalized,
       showEvents,
       showVolume,
-      yAxisUnit
+      yAxisUnit,
+      tooltipUnits: selectedTooltipUnits
     });
   };
 
   const saveGraph = () => {
+    if (busy) return;
     const name = saveGraphName.trim();
     if (!name) {
       validationMessage = 'Enter a name before saving this graph.';
@@ -1457,6 +1634,12 @@
       showEvents,
       showVolume,
       yAxisUnit,
+      tooltipUnits: selectedTooltipUnits,
+      minimumMode,
+      maximumMode,
+      minimumValue,
+      maximumValue,
+      showWicks,
       customFromMs,
       customToMs,
       customRangeMode,
@@ -1467,11 +1650,22 @@
 
   onMount(async () => {
     destroyed = false;
-    echartsModule = await import('echarts');
+    const [loadedEcharts, axisCatalog] = await Promise.all([
+      import('echarts'),
+      currency.trim() === '%' || minimalChrome
+        ? Promise.resolve(null)
+        : activeChartAxisCatalog().catch(() => null)
+    ]);
+    echartsModule = loadedEcharts;
+    if (axisCatalog) {
+      activeAxisCurrencies = axisCatalog.currencies;
+      activeAxisDenominationOptions = axisCatalog.denominationOptions;
+    }
     await tick();
     if (destroyed || !container?.isConnected) return;
     chart = echartsModule.init(container, undefined, { renderer: 'canvas' });
     chart.on('click', (parameters) => {
+      if (busy) return;
       if (parameters.componentType === 'markPoint') {
         if (tooltipPinned) {
           releasePinnedTooltip();
@@ -1490,6 +1684,7 @@
       releasePinnedTooltip();
     });
     chart.on('legendselectchanged', (parameters) => {
+      if (busy) return;
       const legendParameters = parameters as {
         name?: unknown;
         selected?: Record<string, boolean>;
@@ -1504,11 +1699,14 @@
       eventCategories = next;
       renderChart();
     });
+    chart.on('datazoom', scheduleZoomRange);
     chart.getZr().on('click', () => {
+      if (busy) return;
       if (suppressZrClickRelease) return;
       releasePinnedTooltip();
     });
     chart.getZr().on('dblclick', (event) => {
+      if (busy) return;
       if (!chart?.containPixel(
         { gridIndex: 0 },
         [event.offsetX, event.offsetY]
@@ -1522,6 +1720,8 @@
 
   onDestroy(() => {
     destroyed = true;
+    if (zoomDispatchTimer) clearTimeout(zoomDispatchTimer);
+    zoomDispatchTimer = null;
     resizeObserver?.disconnect();
     chart?.dispose();
     chart = null;
@@ -1529,7 +1729,22 @@
 
   $: {
     minimalChrome;
-    if (chart && series) renderChart();
+    busy;
+    if (busy !== previousBusy) {
+      if (busy) {
+        restoreInteractionAfterBusy = (
+          chartInteractionActive
+          || document.activeElement === container
+        );
+      } else if (restoreInteractionAfterBusy) {
+        void restoreChartInteraction();
+      }
+      previousBusy = busy;
+    }
+    if (chart && series) {
+      if (busy) clearChartPopups();
+      renderChart();
+    }
   }
   $: chartPoints = series.flatMap((item) => item.points);
   $: hasPlottedData = hasMinimumValuedObservations({
@@ -1537,18 +1752,30 @@
     minimum: minimumValuedObservations
   });
   $: range = initialRange;
-  $: selectedGranularity = selectedGranularitySetting ?? String(granularity);
   $: if (
+    selectedGranularitySetting !== null
+    && selectedGranularity !== selectedGranularitySetting
+  ) selectedGranularity = selectedGranularitySetting;
+  $: if (
+    !busy
+    &&
     yAxisUnit !== currency
     && !isFiatUnit(yAxisUnit)
-    && !denominationOptions.some((option) => option.id === yAxisUnit)
+    && !effectiveDenominationOptionList.some((option) => option.id === yAxisUnit)
   ) yAxisUnit = currency;
   $: if (chartMode === 'candlestick' && yAxisUnit !== currency) yAxisUnit = currency;
 </script>
 
 <svelte:window on:keydown={inspectByKeyboard} />
 
-<section class:minimal-chrome={minimalChrome} class="chart-panel" aria-label={title}>
+<section
+  class:minimal-chrome={minimalChrome}
+  class="chart-panel"
+  aria-label={title}
+  data-denomination-option-count={denominationOptions.length}
+  data-active-axis-option-count={activeAxisDenominationOptions.length}
+  data-effective-axis-option-count={effectiveDenominationOptionList.length}
+>
   {#if !compact}
   <div class="toolbar chart-toolbar">
     <div class="field">
@@ -1626,13 +1853,13 @@
       <label for={controlId('granularity')}>Granularity</label>
       <select id={controlId('granularity')} bind:value={selectedGranularity} on:change={stateChanged}>
         <option value="auto">Auto</option>
-        <option value="300" disabled={!granularityAvailable(300)}>5 minutes</option>
-        <option value="900" disabled={!granularityAvailable(900)}>15 minutes</option>
-        <option value="1800" disabled={!granularityAvailable(1800)}>30 minutes</option>
-        <option value="3600" disabled={!granularityAvailable(3600)}>1 hour</option>
-        <option value="14400" disabled={!granularityAvailable(14400)}>4 hours</option>
-        <option value="86400" disabled={!granularityAvailable(86400)}>1 day</option>
-        <option value="604800" disabled={!granularityAvailable(604800)}>1 week</option>
+        <option value="300">5 minutes</option>
+        <option value="900">15 minutes</option>
+        <option value="1800">30 minutes</option>
+        <option value="3600">1 hour</option>
+        <option value="14400">4 hours</option>
+        <option value="86400">1 day</option>
+        <option value="604800">1 week</option>
       </select>
     </div>
     {#if allowCandlesticks}
@@ -1653,6 +1880,21 @@
     </div>
     <button class="ghost" type="button" on:click={resetZoom}>Reset zoom</button>
     <button class="ghost" type="button" on:click={() => (tableVisible = !tableVisible)} aria-pressed={tableVisible}>Table</button>
+    {#if (partial || resolutionLimited() || approximateDenomination()) && !busy}
+      <button
+        type="button"
+        class="partial-data-tip chart-toolbar-warning"
+        aria-label="Partial data notice"
+        aria-describedby={controlId('partial-data-tooltip')}
+      >
+        <span class="partial-data-icon" aria-hidden="true">!</span>
+        <span
+          class="partial-data-popup"
+          id={controlId('partial-data-tooltip')}
+          role="tooltip"
+        >{qualityMessage()}</span>
+      </button>
+    {/if}
   </div>
   {/if}
 
@@ -1671,9 +1913,20 @@
           <SearchableSelect
             id={controlId('y-axis-unit')}
             bind:value={yAxisUnit}
-            options={yAxisOptions()}
+            options={yAxisOptionList}
             label="Y-axis currencies or crypto assets"
             disabled={chartMode === 'candlestick'}
+            on:change={viewChanged}
+          />
+        </div>
+        <div class="field grow">
+          <label for={controlId('tooltip-units')}>Popup units</label>
+          <SearchableMultiSelect
+            id={controlId('tooltip-units')}
+            bind:value={selectedTooltipUnits}
+            options={tooltipUnitOptionList}
+            label="popup currencies or crypto assets"
+            maximum={5}
             on:change={viewChanged}
           />
         </div>
@@ -1761,57 +2014,8 @@
     <div class="alert start" role="status">Combined volume is intentionally unavailable because exchange volumes cannot be summed without duplication.</div>
   {/if}
 
-  {#if !compact || partial}
-    <div class="chart-inspection-actions">
-      {#if partial}
-        <span class="sr-only" role="status">{partialMessage}</span>
-      {/if}
-      {#if !compact}
-        <button
-          type="button"
-          class="btn secondary compact keyboard-inspector-button"
-          aria-label={`${title} ${inspectorActive ? 'stop keyboard chart inspector' : 'keyboard chart inspector'}`}
-          aria-expanded={inspectorActive}
-          aria-keyshortcuts="ArrowLeft ArrowRight Home End Escape"
-          on:click={toggleKeyboardInspection}
-        >{inspectorActive ? 'Stop keyboard inspection' : 'Inspect chart with keyboard'}</button>
-        {#if showAllTooltipAssetsControl}
-          <label class="check popup-assets-toggle">
-            <input
-              type="checkbox"
-              bind:checked={showAllTooltipAssets}
-              on:change={renderChart}
-            />
-            Show all, including disabled/inactive, in popup
-          </label>
-        {/if}
-      {/if}
-      {#if partial}
-        <!-- Focus is the keyboard equivalent of hovering to reveal the selectable warning text. -->
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <span
-          class="partial-data-tip"
-          role="group"
-          tabindex="0"
-          aria-label="Partial data notice"
-          aria-describedby={controlId('partial-data-tooltip')}
-        >
-          <span class="partial-data-icon" aria-hidden="true">!</span>
-          <span
-            class="partial-data-popup"
-            id={controlId('partial-data-tooltip')}
-            role="tooltip"
-          >{partialMessage}</span>
-        </span>
-      {/if}
-    </div>
-    {#if !compact && inspectorActive}
-      <div class="inspector-status" role="status">
-        <strong>Keyboard inspection active.</strong>
-        Use ←/→ to move one point, Home/End to jump, Escape to close, or press the button again.
-        <span>{activePointDescription}</span>
-      </div>
-    {/if}
+  {#if partial || resolutionLimited() || approximateDenomination()}
+    <span class="sr-only" role="status">{qualityMessage()}</span>
   {/if}
   <div class="chart-frame">
     <!-- Focus activates chart-only navigation without presenting the plotting surface as a button. -->
@@ -1822,33 +2026,17 @@
       class="chart"
       bind:this={container}
       role="img"
-      tabindex="0"
+      tabindex={busy ? -1 : 0}
+      inert={busy}
+      aria-busy={busy}
       aria-label={`${title}. Click or focus to enable horizontal time navigation. Double-click the graph to freeze its details; click again or press Escape to release. Event pins freeze with one click.`}
       on:pointermove|capture={trackTooltipPointer}
       on:pointerleave={clearTooltipPointer}
       on:pointerdown={() => {
-        chartInteractionActive = true;
-        chart?.setOption({
-          dataZoom: [{
-            id: 'inside-time-zoom',
-            disabled: false,
-            zoomOnMouseWheel: true,
-            moveOnMouseMove: true,
-            moveOnMouseWheel: true
-          }]
-        });
+        enableChartInteraction();
       }}
       on:focus={() => {
-        chartInteractionActive = true;
-        chart?.setOption({
-          dataZoom: [{
-            id: 'inside-time-zoom',
-            disabled: false,
-            zoomOnMouseWheel: true,
-            moveOnMouseMove: true,
-            moveOnMouseWheel: true
-          }]
-        });
+        enableChartInteraction();
       }}
       on:blur={() => {
         chartInteractionActive = false;
@@ -1882,6 +2070,54 @@
       {#if chartPoints.some((point) => point.status === 'derived')}
         <span class="badge warning">derived data</span>
       {/if}
+    </div>
+  {/if}
+
+  {#if !compact}
+    <div class="chart-inspection-actions">
+      <button
+        type="button"
+        class="btn secondary compact keyboard-inspector-button"
+        aria-label={`${title} ${inspectorActive ? 'stop keyboard chart inspector' : 'keyboard chart inspector'}`}
+        aria-expanded={inspectorActive}
+        aria-keyshortcuts="ArrowLeft ArrowRight Home End Escape"
+        on:click={toggleKeyboardInspection}
+      >{inspectorActive ? 'Stop keyboard inspection' : 'Inspect chart with keyboard'}</button>
+      {#if showAllTooltipAssetsControl}
+        <label class="check popup-assets-toggle">
+          <input
+            type="checkbox"
+            bind:checked={showAllTooltipAssets}
+            on:change={renderChart}
+          />
+          Show all, including disabled/inactive, in popup
+        </label>
+      {/if}
+    </div>
+    {#if inspectorActive && !busy}
+      <div class="inspector-status" role="status">
+        <strong>Keyboard inspection active.</strong>
+        Use ←/→ to move one point, Home/End to jump, Escape to close, or press the button again.
+        <span>{activePointDescription}</span>
+      </div>
+    {/if}
+  {:else if (partial || resolutionLimited() || approximateDenomination()) && !busy}
+    <div class="chart-inspection-actions">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <span
+        class="partial-data-tip"
+        role="group"
+        tabindex="0"
+        aria-label="Partial data notice"
+        aria-describedby={controlId('compact-partial-data-tooltip')}
+      >
+        <span class="partial-data-icon" aria-hidden="true">!</span>
+        <span
+          class="partial-data-popup"
+          id={controlId('compact-partial-data-tooltip')}
+          role="tooltip"
+        >{qualityMessage()}</span>
+      </span>
     </div>
   {/if}
 
@@ -2030,6 +2266,8 @@
 
   .chart.busy {
     opacity: 0.55;
+    pointer-events: none;
+    user-select: none;
   }
 
   .chart:focus-visible {
@@ -2118,6 +2356,23 @@
     user-select: text;
   }
 
+  button.partial-data-tip {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  button.partial-data-tip::before,
+  button.partial-data-tip::after {
+    display: none;
+  }
+
+  .chart-toolbar-warning {
+    align-self: flex-end;
+    margin-left: auto;
+  }
+
   .partial-data-icon {
     display: grid;
     width: 1.65rem;
@@ -2131,10 +2386,6 @@
     font-weight: 800;
     line-height: 1;
     cursor: help;
-  }
-
-  .popup-assets-toggle + .partial-data-tip {
-    margin-left: 0;
   }
 
   .partial-data-tip:hover .partial-data-icon,

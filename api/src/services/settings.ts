@@ -54,6 +54,7 @@ export interface UserSettings {
   dashboardGraphColumns: 1 | 2 | 3 | 4;
   dismissedNotices: string[];
   retentionDays: number | null;
+  marketHistoryBackfillDays: number | null;
   failedJobRetentionHours: number | null;
   pollingIntervalsMinutes: {
     marketCoinGecko: number;
@@ -106,7 +107,8 @@ export class SettingsService {
       dashboardGraphColumns: 2,
       dismissedNotices: [],
       retentionDays: null,
-      failedJobRetentionHours: null,
+      marketHistoryBackfillDays: 5 * 365,
+      failedJobRetentionHours: 720,
       pollingIntervalsMinutes: {
         marketCoinGecko: 30,
         marketCoinbase: 15,

@@ -14,12 +14,19 @@
   import { configuredCurrencies } from '$lib/currencies';
   import strings from '$lib/i18n/en-CA.json';
   import {
+    chartDisplayStateFromSetting,
+    chartQueryStateFromSetting,
     createSavedGraph,
+    defaultChartDisplayState,
+    defaultChartQueryState,
     moveInOrder,
     normalizeOrder,
+    relativeRangeWindow,
     savePreferences,
     savedGraphNameExists,
     toggleCollapsed,
+    type ChartDisplayState,
+    type ChartQueryState,
     type SavedGraph
   } from '$lib/preferences';
 
@@ -37,6 +44,21 @@
     marketCapRank?: number | null;
     source?: string;
   };
+  type MarketSeriesData = {
+    partial: boolean;
+    stale: boolean;
+    resolvedGranularity: number;
+    overviewGranularity: number;
+    mixedGranularity: boolean;
+    sourceGranularities: number[];
+    missingIntervals?: Array<{ assetId: string; fromMs: number; toMs: number }>;
+    events: ChartEvent[];
+    series: ChartSeries[];
+  };
+  type CurrencyMarketSeries = {
+    currency: string;
+    data: MarketSeriesData;
+  };
 
   let watchlist: WatchAsset[] = [];
   let catalog: CatalogAsset[] = [];
@@ -49,16 +71,30 @@
   let customFromMs = Date.now() - 30 * 24 * 60 * 60_000;
   let customToMs = Date.now();
   let series: ChartSeries[] = [];
+  let overviewSeries: ChartSeries[] = [];
   let events: ChartEvent[] = [];
+  let performanceSeries: ChartSeries[] = [];
+  let performanceLoading = true;
+  let performanceFromMs = Date.now() - 30 * 24 * 60 * 60_000;
+  let performanceToMs = Date.now();
   let portfolioSeries: ChartSeries[] = [];
+  let portfolioOverviewSeries: ChartSeries[] = [];
   let portfolioEvents: ChartEvent[] = [];
   let portfolioDenominationOptions: ChartDenominationOption[] = [];
   let portfolioPartial = false;
   let portfolioStale = false;
   let portfolioLoading = true;
   let portfolioRange = '30d';
+  let portfolioGranularity = 'auto';
+  let portfolioResolvedGranularity = 1_800;
   let portfolioFromMs = Date.now() - 30 * 24 * 60 * 60_000;
   let portfolioToMs = Date.now();
+  let watchedChartState = defaultChartQueryState();
+  let portfolioChartState = defaultChartQueryState();
+  let watchedDisplayState = defaultChartDisplayState(primaryCurrency);
+  let portfolioDisplayState = defaultChartDisplayState(primaryCurrency);
+  let graphDefaults: Record<string, unknown> = {};
+  let chartPreferencesReady = false;
   let partial = false;
   let stale = false;
   let resolvedGranularity = 3_600;
@@ -87,6 +123,11 @@
   const defaultWatchlistColumns = ['asset', 'rank', 'identity', 'state', 'action'];
   let watchlistColumns = [...defaultWatchlistColumns];
   let partialMessage = '';
+  let seriesRequestId = 0;
+  let performanceRequestId = 0;
+  let zoomRequestId = 0;
+  let portfolioRequestId = 0;
+  let portfolioZoomRequestId = 0;
 
   const rangeMilliseconds = {
     '24h': 24 * 60 * 60_000,
@@ -98,9 +139,42 @@
     all: 5 * 365 * 24 * 60_000,
     custom: 30 * 24 * 60 * 60_000
   } as const;
+  const granularityLabel = (seconds: number) => new Map([
+    [300, '5 minutes'],
+    [900, '15 minutes'],
+    [1_800, '30 minutes'],
+    [3_600, '1 hour'],
+    [14_400, '4 hours'],
+    [86_400, '1 day'],
+    [604_800, '1 week']
+  ]).get(seconds) ?? `${seconds.toLocaleString()} seconds`;
+  const chartWindow = (state: ChartQueryState) => {
+    const now = Date.now();
+    if (state.range === 'custom' && state.customRangeMode === 'ago') {
+      return relativeRangeWindow({
+        value: state.customAgoValue,
+        unit: state.customAgoUnit,
+        toMs: now
+      }) ?? { from: now - rangeMilliseconds['30d'], to: now };
+    }
+    if (
+      state.range === 'custom'
+      && state.customFromMs !== null
+      && state.customToMs !== null
+    ) {
+      return { from: state.customFromMs, to: state.customToMs };
+    }
+    const duration = rangeMilliseconds[state.range as keyof typeof rangeMilliseconds]
+      ?? rangeMilliseconds['30d'];
+    return {
+      from: state.range === 'all' ? 0 : now - duration,
+      to: now
+    };
+  };
 
   let enabledAssets: WatchAsset[] = [];
   let denominationOptions: ChartDenominationOption[] = [];
+  let portfolioAxisDenominationOptions: ChartDenominationOption[] = [];
   let onlyBitcoinEnabled = false;
   let filteredCatalogAssets: CatalogAsset[] = [];
   let watchedAssetsByCanonicalId = new Map<string, WatchAsset>();
@@ -114,6 +188,12 @@
     symbol: asset.symbol,
     label: `${asset.symbol} · ${asset.name}`
   }));
+  $: portfolioAxisDenominationOptions = [
+    ...new Map([
+      ...denominationOptions,
+      ...portfolioDenominationOptions
+    ].map((option) => [option.id, option])).values()
+  ];
   $: onlyBitcoinEnabled = enabledAssets.length === 1
     && enabledAssets[0]?.canonicalId === 'bitcoin';
   $: watchedAssetsByCanonicalId = new Map(
@@ -148,6 +228,7 @@
           pageLayouts: Record<string, string[]>;
           collapsedBlocks: Record<string, string[]>;
           tableColumns: Record<string, string[]>;
+          graphDefaults: Record<string, unknown>;
           savedGraphs: SavedGraph[];
         };
       }>({ url: '/api/settings' })
@@ -174,7 +255,45 @@
     pageLayouts = settingsPayload.settings.pageLayouts ?? {};
     collapsedBlocks = settingsPayload.settings.collapsedBlocks ?? {};
     tableColumns = settingsPayload.settings.tableColumns ?? {};
+    graphDefaults = settingsPayload.settings.graphDefaults ?? {};
     savedGraphs = settingsPayload.settings.savedGraphs ?? [];
+    if (!chartPreferencesReady) {
+      watchedChartState = chartQueryStateFromSetting({
+        value: graphDefaults.marketsWatchedChartState,
+        fallback: defaultChartQueryState()
+      });
+      portfolioChartState = chartQueryStateFromSetting({
+        value: graphDefaults.marketsPortfolioChartState,
+        fallback: defaultChartQueryState()
+      });
+      watchedDisplayState = chartDisplayStateFromSetting({
+        value: graphDefaults.marketsWatchedDisplayState,
+        fallback: defaultChartDisplayState(primaryCurrency, configuredCurrencies({
+          primaryCurrency,
+          listedCurrencies: tooltipCurrencies
+        }))
+      });
+      portfolioDisplayState = chartDisplayStateFromSetting({
+        value: graphDefaults.marketsPortfolioDisplayState,
+        fallback: defaultChartDisplayState(primaryCurrency, configuredCurrencies({
+          primaryCurrency,
+          listedCurrencies: tooltipCurrencies
+        }))
+      });
+      chartMode = graphDefaults.marketsWatchedChartMode === 'candlestick'
+        ? 'candlestick'
+        : 'line';
+      range = watchedChartState.range;
+      granularity = watchedChartState.granularity;
+      customFromMs = chartWindow(watchedChartState).from;
+      customToMs = chartWindow(watchedChartState).to;
+      portfolioRange = portfolioChartState.range;
+      portfolioGranularity = portfolioChartState.granularity;
+      const portfolioWindow = chartWindow(portfolioChartState);
+      portfolioFromMs = portfolioWindow.from;
+      portfolioToMs = portfolioWindow.to;
+      chartPreferencesReady = true;
+    }
     pageOrder = normalizeOrder({ saved: pageLayouts.markets, defaults: defaultPageOrder });
     watchlistColumns = tableColumns.marketWatchlist?.filter((id) =>
       watchlistColumnOptions.some((column) => column.id === id)) ?? [...defaultWatchlistColumns];
@@ -182,32 +301,132 @@
 
   const buildQuery = ({
     currency,
-    assetIds = [...selected]
+    assetIds = [...selected],
+    fromMs,
+    toMs,
+    granularityOverride,
+    chartModeOverride
   }: {
     currency: string;
     assetIds?: string[];
+    fromMs?: number;
+    toMs?: number;
+    granularityOverride?: string;
+    chartModeOverride?: 'line' | 'candlestick';
   }) => {
-    const to = range === 'custom' ? customToMs : Date.now();
-    const from = range === 'all'
+    const to = toMs ?? (range === 'custom' ? customToMs : Date.now());
+    const from = fromMs ?? (range === 'all'
       ? 0
       : range === 'custom'
         ? customFromMs
-        : to - rangeMilliseconds[range as keyof typeof rangeMilliseconds];
+        : to - rangeMilliseconds[range as keyof typeof rangeMilliseconds]);
     const params = new URLSearchParams({
       assetIds: assetIds.join(','),
       quoteCurrency: currency,
       source,
       from: String(from),
       to: String(to),
-      granularity,
-      chartMode
+      granularity: granularityOverride ?? granularity,
+      chartMode: chartModeOverride ?? chartMode
     });
     return params;
   };
 
+  const fetchMarketSeries = async ({
+    fromMs,
+    toMs,
+    granularityOverride,
+    chartModeOverride
+  }: {
+    fromMs?: number;
+    toMs?: number;
+    granularityOverride?: string;
+    chartModeOverride?: 'line' | 'candlestick';
+  } = {}) => {
+    const currencies = configuredCurrencies({
+      primaryCurrency,
+      listedCurrencies: [...tooltipCurrencies, 'USD']
+    });
+    const requestedAssetIds = [...new Set([
+      ...selected,
+      ...enabledAssets.map((asset) => asset.canonicalId)
+    ])].slice(0, 50);
+    return Promise.all(currencies.map(async (currency): Promise<CurrencyMarketSeries> => {
+      const params = buildQuery({
+        currency,
+        assetIds: requestedAssetIds,
+        fromMs,
+        toMs,
+        granularityOverride,
+        chartModeOverride
+      });
+      const payload = await apiRequest<{ data: MarketSeriesData }>({
+        url: `/api/market/series?${params}`
+      });
+      return { currency, data: payload.data };
+    }));
+  };
+
+  const decorateMarketSeries = (payloads: CurrencyMarketSeries[]) => {
+    const primary = payloads.find((payload) => payload.currency === primaryCurrency) ?? payloads[0]!;
+    const pointsByCurrency = new Map(payloads.map((payload) => [
+      payload.currency,
+      new Map(payload.data.series.map((item) => [
+        item.id,
+        new Map(item.points.map((point) => [point.timestampMs, point]))
+      ]))
+    ]));
+    const denominationCurrencies = [
+      primary.currency,
+      'USD'
+    ].filter((currency, index, values) => values.indexOf(currency) === index);
+    return primary.data.series.filter((item) => selected.has(item.id)).map((item) => ({
+        ...item,
+        points: item.points.map((point) => {
+          const quotes = Object.fromEntries(payloads.map((payload) => {
+            const matching = pointsByCurrency.get(payload.currency)
+              ?.get(item.id)
+              ?.get(point.timestampMs);
+            return [payload.currency, matching?.value ?? matching?.close ?? null];
+          }));
+          const denominations: Record<string, string | null> = {};
+          const denominationFallbacks: Record<string, string> = {};
+          for (const option of denominationOptions) {
+            denominations[option.id] = null;
+            for (const quoteCurrency of denominationCurrencies) {
+              const numeratorPoint = pointsByCurrency.get(quoteCurrency)
+                ?.get(item.id)
+                ?.get(point.timestampMs);
+              const denominatorPoint = pointsByCurrency.get(quoteCurrency)
+                ?.get(option.id)
+                ?.get(point.timestampMs);
+              const numerator = Number(numeratorPoint?.value ?? numeratorPoint?.close);
+              const denominator = Number(denominatorPoint?.value ?? denominatorPoint?.close);
+              if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+                continue;
+              }
+              denominations[option.id] = String(numerator / denominator);
+              if (quoteCurrency !== primary.currency) {
+                denominationFallbacks[option.id] = quoteCurrency;
+              }
+              break;
+            }
+          }
+          return {
+            ...point,
+            quotes,
+            denominations,
+            denominationFallbacks
+          };
+        })
+      }));
+  };
+
   const loadSeries = async () => {
+    const requestId = ++seriesRequestId;
     if (selected.size === 0) {
       series = [];
+      overviewSeries = [];
       events = [];
       loading = false;
       return;
@@ -215,67 +434,26 @@
     loading = true;
     error = '';
     try {
-      const currencies = configuredCurrencies({
-        primaryCurrency,
-        listedCurrencies: tooltipCurrencies
-      });
-      const requestedAssetIds = [...new Set([
-        ...selected,
-        ...enabledAssets.map((asset) => asset.canonicalId)
-      ])].slice(0, 50);
-      const payloads = await Promise.all(currencies.map(async (currency) => {
-        const params = buildQuery({ currency, assetIds: requestedAssetIds });
-        const payload = await apiRequest<{
-          data: {
-            partial: boolean;
-            stale: boolean;
-            resolvedGranularity: number;
-            events: ChartEvent[];
-            series: ChartSeries[];
-          };
-        }>({ url: `/api/market/series?${params}` });
-        return { currency, data: payload.data };
-      }));
+      const payloads = await fetchMarketSeries();
+      if (requestId !== seriesRequestId) return;
       const primary = payloads.find((payload) => payload.currency === primaryCurrency) ?? payloads[0]!;
-      const primaryByAsset = new Map(primary.data.series.map((item) => [item.id, item]));
-      series = primary.data.series.filter((item) => selected.has(item.id)).map((item) => ({
-        ...item,
-        points: item.points.map((point) => ({
-          ...point,
-          quotes: Object.fromEntries(payloads.map((payload) => {
-            const matching = payload.data.series
-              .find((candidate) => candidate.id === item.id)
-              ?.points.find((candidate) => candidate.timestampMs === point.timestampMs);
-            return [
-              payload.currency,
-              matching?.value ?? matching?.close ?? null
-            ];
-          })),
-          denominations: Object.fromEntries(denominationOptions.map((option) => {
-            const denominatorPoint = primaryByAsset.get(option.id)
-              ?.points.find((candidate) => candidate.timestampMs === point.timestampMs);
-            const numerator = Number(point.value ?? point.close);
-            const denominator = Number(denominatorPoint?.value ?? denominatorPoint?.close);
-            return [
-              option.id,
-              Number.isFinite(numerator) && Number.isFinite(denominator) && denominator > 0
-                ? String(numerator / denominator)
-                : null
-            ];
-          }))
-        }))
-      }));
-      partial = primary.data.partial;
-      const missingIntervals = (primary.data as typeof primary.data & {
-        missingIntervals?: Array<{ assetId: string; fromMs: number; toMs: number }>;
-      }).missingIntervals ?? [];
+      overviewSeries = decorateMarketSeries(payloads);
+      series = overviewSeries;
+      partial = primary.data.partial || primary.data.mixedGranularity;
+      const missingIntervals = primary.data.missingIntervals ?? [];
       const affectedAssets = new Set(missingIntervals.map((interval) => interval.assetId)).size;
-      partialMessage = missingIntervals.length > 0
-        ? `The plotted range contains ${missingIntervals.length} missing price interval${missingIntervals.length === 1 ? '' : 's'} across ${affectedAssets} asset${affectedAssets === 1 ? '' : 's'}. These are data gaps, not proof that synchronization is still running; Settings → Synchronization shows active progress.`
+      const requestedDetail = granularity === 'auto'
+        ? 'automatic detail'
+        : `${granularityLabel(Number(granularity))} detail`;
+      const mixedResolutionMessage = primary.data.mixedGranularity
+        ? ` ${requestedDetail} is selected, while the zoomed-out overview resolves to ${granularityLabel(primary.data.overviewGranularity)}. Older portions use their finest locally cached daily or weekly observations; zoomed periods use finer cached points where available.`
         : '';
+      partialMessage = missingIntervals.length > 0
+        ? `The plotted range contains ${missingIntervals.length} missing price interval${missingIntervals.length === 1 ? '' : 's'} across ${affectedAssets} asset${affectedAssets === 1 ? '' : 's'}.${mixedResolutionMessage} These are data gaps, not proof that synchronization is still running; Settings → Synchronization shows active progress.`
+        : mixedResolutionMessage.trim();
       stale = primary.data.stale;
       events = primary.data.events;
-      resolvedGranularity = primary.data.resolvedGranularity;
+      resolvedGranularity = primary.data.overviewGranularity;
       exportQuery = buildQuery({ currency: primaryCurrency }).toString();
       const urlState = new URLSearchParams({
         assets: [...selected].join(','),
@@ -286,43 +464,176 @@
       });
       history.replaceState(null, '', `/markets?${urlState}`);
     } catch (caught) {
+      if (requestId !== seriesRequestId) return;
       error = caught instanceof Error ? caught.message : 'Market series failed.';
       series = [];
+      overviewSeries = [];
       events = [];
     } finally {
-      loading = false;
+      if (requestId === seriesRequestId) loading = false;
     }
   };
 
+  const loadPerformanceSeries = async () => {
+    const requestId = ++performanceRequestId;
+    if (selected.size === 0) {
+      performanceSeries = [];
+      performanceLoading = false;
+      return;
+    }
+    performanceLoading = true;
+    try {
+      const payloads = await fetchMarketSeries({
+        fromMs: performanceFromMs,
+        toMs: performanceToMs,
+        granularityOverride: 'auto',
+        chartModeOverride: 'line'
+      });
+      if (requestId !== performanceRequestId) return;
+      performanceSeries = decorateMarketSeries(payloads);
+    } catch (caught) {
+      if (requestId !== performanceRequestId) return;
+      error = caught instanceof Error ? caught.message : 'Market performance failed.';
+      performanceSeries = [];
+    } finally {
+      if (requestId === performanceRequestId) performanceLoading = false;
+    }
+  };
+
+  const mergeDetailedWindow = ({
+    overview,
+    detail,
+    fromMs,
+    toMs
+  }: {
+    overview: ChartSeries[];
+    detail: ChartSeries[];
+    fromMs: number;
+    toMs: number;
+  }) => {
+    const detailById = new Map(detail.map((item) => [item.id, item]));
+    return overview.map((item) => {
+      const merged = new Map(item.points
+        .filter((point) => point.timestampMs < fromMs || point.timestampMs > toMs)
+        .map((point) => [point.timestampMs, point]));
+      for (const point of detailById.get(item.id)?.points ?? []) {
+        merged.set(point.timestampMs, point);
+      }
+      return {
+        ...item,
+        points: [...merged.values()].sort((left, right) => left.timestampMs - right.timestampMs)
+      };
+    });
+  };
+
+  const graphZoomed = async (event: CustomEvent<{ fromMs: number; toMs: number }>) => {
+    const requestedGranularity = Number(granularity);
+    if (
+      granularity === 'auto'
+      || !Number.isFinite(requestedGranularity)
+      || resolvedGranularity <= requestedGranularity
+    ) return;
+    const requestId = ++zoomRequestId;
+    loading = true;
+    try {
+      const payloads = await fetchMarketSeries({
+        fromMs: event.detail.fromMs,
+        toMs: event.detail.toMs
+      });
+      if (requestId !== zoomRequestId) return;
+      series = mergeDetailedWindow({
+        overview: overviewSeries,
+        detail: decorateMarketSeries(payloads),
+        fromMs: event.detail.fromMs,
+        toMs: event.detail.toMs
+      });
+    } catch (caught) {
+      if (requestId !== zoomRequestId) return;
+      error = caught instanceof Error ? caught.message : 'Zoom detail failed.';
+    } finally {
+      if (requestId === zoomRequestId) loading = false;
+    }
+  };
+
+  const fetchPortfolioSeries = async ({
+    fromMs = portfolioFromMs,
+    toMs = portfolioToMs
+  }: {
+    fromMs?: number;
+    toMs?: number;
+  } = {}) => {
+    const currencies = configuredCurrencies({
+      primaryCurrency,
+      listedCurrencies: tooltipCurrencies
+    });
+    return apiRequest<{
+      data: {
+        series: ChartSeries[];
+        events: ChartEvent[];
+        denominationOptions: ChartDenominationOption[];
+        partial: boolean;
+        stale: boolean;
+        granularitySeconds: number;
+        requestedGranularitySeconds: number;
+        mixedGranularity: boolean;
+      };
+    }>({
+      url: `/api/portfolio/series?from=${fromMs}&to=${toMs}&granularitySeconds=${portfolioGranularity}&quoteCurrencies=${encodeURIComponent(currencies.join(','))}`
+    });
+  };
+
   const loadPortfolioSeries = async () => {
+    const requestId = ++portfolioRequestId;
     portfolioLoading = true;
     try {
-      const currencies = configuredCurrencies({
-        primaryCurrency,
-        listedCurrencies: tooltipCurrencies
-      });
-      const payload = await apiRequest<{
-        data: {
-          series: ChartSeries[];
-          events: ChartEvent[];
-          denominationOptions: ChartDenominationOption[];
-          partial: boolean;
-          stale: boolean;
-        };
-      }>({
-        url: `/api/portfolio/series?from=${portfolioFromMs}&to=${portfolioToMs}&quoteCurrencies=${encodeURIComponent(currencies.join(','))}`
-      });
-      portfolioSeries = payload.data.series;
+      const payload = await fetchPortfolioSeries();
+      if (requestId !== portfolioRequestId) return;
+      portfolioResolvedGranularity = payload.data.granularitySeconds;
+      portfolioOverviewSeries = payload.data.series;
+      portfolioSeries = portfolioOverviewSeries;
       portfolioEvents = payload.data.events;
       portfolioDenominationOptions = payload.data.denominationOptions;
-      portfolioPartial = payload.data.partial;
+      portfolioPartial = payload.data.partial || payload.data.mixedGranularity;
       portfolioStale = payload.data.stale;
     } catch (caught) {
+      if (requestId !== portfolioRequestId) return;
       error = caught instanceof Error ? caught.message : 'Combined portfolio series failed.';
       portfolioSeries = [];
+      portfolioOverviewSeries = [];
       portfolioEvents = [];
     } finally {
-      portfolioLoading = false;
+      if (requestId === portfolioRequestId) portfolioLoading = false;
+    }
+  };
+
+  const portfolioGraphZoomed = async (
+    event: CustomEvent<{ fromMs: number; toMs: number }>
+  ) => {
+    const requestedGranularity = Number(portfolioGranularity);
+    if (
+      portfolioGranularity === 'auto'
+      || !Number.isFinite(requestedGranularity)
+      || portfolioResolvedGranularity <= requestedGranularity
+    ) return;
+    const requestId = ++portfolioZoomRequestId;
+    portfolioLoading = true;
+    try {
+      const payload = await fetchPortfolioSeries({
+        fromMs: event.detail.fromMs,
+        toMs: event.detail.toMs
+      });
+      if (requestId !== portfolioZoomRequestId) return;
+      portfolioSeries = mergeDetailedWindow({
+        overview: portfolioOverviewSeries,
+        detail: payload.data.series,
+        fromMs: event.detail.fromMs,
+        toMs: event.detail.toMs
+      });
+    } catch (caught) {
+      if (requestId !== portfolioZoomRequestId) return;
+      error = caught instanceof Error ? caught.message : 'Combined portfolio zoom detail failed.';
+    } finally {
+      if (requestId === portfolioZoomRequestId) portfolioLoading = false;
     }
   };
 
@@ -335,7 +646,7 @@
     if (chartMode === 'candlestick' && selected.size > 1) {
       selected = new Set([canonicalId]);
     }
-    void loadSeries();
+    void Promise.all([loadSeries(), loadPerformanceSeries()]);
   };
 
   const setAssetEnabled = async ({
@@ -374,7 +685,7 @@
         chartMode = 'line';
       }
       if (enabled) await queueInitialAssetHistory(canonicalId);
-      await loadSeries();
+      await Promise.all([loadSeries(), loadPerformanceSeries()]);
       const asset = catalog.find((candidate) => candidate.canonicalId === canonicalId);
       message = `${asset?.symbol ?? canonicalId} is ${enabled ? 'enabled' : 'disabled'}.`
         + (enabled ? ' It is selected on the chart and its initial history is queued.' : ' Pending market synchronization for it was cancelled.');
@@ -454,6 +765,27 @@
     await savePreferences({ tableColumns });
   };
 
+  const persistDashboardItem = async ({
+    item,
+    successMessage
+  }: {
+    item: SavedGraph;
+    successMessage: string;
+  }) => {
+    const nextSavedGraphs = [...savedGraphs, item];
+    try {
+      await savePreferences({ savedGraphs: nextSavedGraphs });
+      savedGraphs = nextSavedGraphs;
+      error = '';
+      message = successMessage;
+    } catch (caught) {
+      error = caught instanceof Error
+        ? `Dashboard save failed: ${caught.message}`
+        : 'Dashboard save failed.';
+      message = '';
+    }
+  };
+
   const saveTable = async () => {
     const name = tableDashboardName.trim() || 'Markets catalog';
     if (savedGraphNameExists({ savedGraphs, name })) {
@@ -474,9 +806,10 @@
         timezone
       }
     });
-    savedGraphs = [...savedGraphs, table];
-    await savePreferences({ savedGraphs });
-    message = `Saved table “${table.name}” to the dashboard.`;
+    await persistDashboardItem({
+      item: table,
+      successMessage: `Saved table “${table.name}” to the dashboard.`
+    });
   };
 
   const saveGraph = async (event: CustomEvent<{
@@ -513,27 +846,46 @@
         ...event.detail
       }
     });
-    savedGraphs = [...savedGraphs, graph];
-    await savePreferences({ savedGraphs });
-    message = `Saved “${graph.name}” to the dashboard.`;
+    await persistDashboardItem({
+      item: graph,
+      successMessage: `Saved “${graph.name}” to the dashboard.`
+    });
   };
 
-  const portfolioGraphStateChanged = (event: CustomEvent<{
-    range: string;
-    granularity: string;
-    customFromMs: number | null;
-    customToMs: number | null;
-  }>) => {
-    portfolioRange = event.detail.range;
-    portfolioToMs = event.detail.range === 'custom' && event.detail.customToMs !== null
-      ? event.detail.customToMs
-      : Date.now();
-    portfolioFromMs = event.detail.range === 'all'
-      ? 0
-      : event.detail.range === 'custom' && event.detail.customFromMs !== null
-        ? event.detail.customFromMs
-        : portfolioToMs - (rangeMilliseconds[event.detail.range as keyof typeof rangeMilliseconds] ?? rangeMilliseconds['30d']);
+  const portfolioGraphStateChanged = async (
+    event: CustomEvent<ChartQueryState & { chartMode: 'line' | 'candlestick' }>
+  ) => {
+    portfolioChartState = {
+      range: event.detail.range,
+      granularity: event.detail.granularity,
+      customFromMs: event.detail.customFromMs,
+      customToMs: event.detail.customToMs,
+      customRangeMode: event.detail.customRangeMode,
+      customAgoValue: event.detail.customAgoValue,
+      customAgoUnit: event.detail.customAgoUnit
+    };
+    portfolioRange = portfolioChartState.range;
+    portfolioGranularity = portfolioChartState.granularity;
+    const window = chartWindow(portfolioChartState);
+    portfolioFromMs = window.from;
+    portfolioToMs = window.to;
+    graphDefaults = {
+      ...graphDefaults,
+      marketsPortfolioChartState: portfolioChartState
+    };
+    await savePreferences({ graphDefaults });
     void loadPortfolioSeries();
+  };
+
+  const portfolioGraphViewChanged = async (
+    event: CustomEvent<ChartDisplayState>
+  ) => {
+    portfolioDisplayState = { ...event.detail };
+    graphDefaults = {
+      ...graphDefaults,
+      marketsPortfolioDisplayState: portfolioDisplayState
+    };
+    await savePreferences({ graphDefaults });
   };
 
   const savePortfolioGraph = async (event: CustomEvent<{
@@ -567,14 +919,68 @@
         ...event.detail
       }
     });
-    savedGraphs = [...savedGraphs, graph];
-    await savePreferences({ savedGraphs });
-    message = `Saved “${graph.name}” to the dashboard.`;
+    await persistDashboardItem({
+      item: graph,
+      successMessage: `Saved “${graph.name}” to the dashboard.`
+    });
+  };
+
+  const performanceRangeChanged = (event: CustomEvent<{
+    range: string;
+    fromMs: number;
+    toMs: number;
+    customAgoValue: number;
+    customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
+  }>) => {
+    performanceFromMs = event.detail.fromMs;
+    performanceToMs = event.detail.toMs;
+    void loadPerformanceSeries();
+  };
+
+  const savePerformanceGraph = async (event: CustomEvent<{
+    name: string;
+    performanceMode: 'return' | 'drawdown';
+    performanceAnalysisId: string;
+    performanceBenchmarkId: string;
+    range: string;
+    customRangeMode: 'ago';
+    customAgoValue: number;
+    customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
+  }>) => {
+    if (savedGraphNameExists({ savedGraphs, name: event.detail.name })) {
+      error = `A dashboard item named “${event.detail.name.trim()}” already exists. Choose a unique name.`;
+      message = '';
+      return;
+    }
+    error = '';
+    const graph = createSavedGraph({
+      name: event.detail.name,
+      type: 'market',
+      config: {
+        analytics: 'performance',
+        assetIds: [...selected],
+        source,
+        primaryCurrency,
+        tooltipCurrencies,
+        timezone,
+        granularity: 'auto',
+        chartMode: 'line',
+        ...event.detail
+      }
+    });
+    await persistDashboardItem({
+      item: graph,
+      successMessage: `Saved performance chart “${graph.name}” to the dashboard.`
+    });
   };
 
   const queueBackfill = async () => {
     const toMs = Date.now();
-    const fromMs = toMs - rangeMilliseconds[range as keyof typeof rangeMilliseconds];
+    const fromMs = range === 'all'
+      ? 0
+      : range === 'custom'
+        ? customFromMs
+        : toMs - rangeMilliseconds[range as keyof typeof rangeMilliseconds];
     const providers = source === 'combined' ? ['coingecko', 'coinbase', 'kraken'] : [source];
     let queued = 0;
     let skipped = 0;
@@ -617,25 +1023,46 @@
     message = `${queued} supported backfill job${queued === 1 ? '' : 's'} queued${skipped > 0 ? `; ${skipped} unsupported provider/asset pair${skipped === 1 ? '' : 's'} skipped` : ''}. Settings shows live progress and the oldest point reached.`;
   };
 
-  const graphStateChanged = (event: CustomEvent<{
-    range: string;
-    granularity: string;
-    chartMode: 'line' | 'candlestick';
-    customFromMs: number | null;
-    customToMs: number | null;
-    customRangeMode: 'dates' | 'ago';
-    customAgoValue: number;
-    customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
-  }>) => {
-    range = event.detail.range;
-    if (event.detail.customFromMs !== null) customFromMs = event.detail.customFromMs;
-    if (event.detail.customToMs !== null) customToMs = event.detail.customToMs;
-    granularity = event.detail.granularity;
+  const graphStateChanged = async (
+    event: CustomEvent<ChartQueryState & { chartMode: 'line' | 'candlestick' }>
+  ) => {
+    watchedChartState = {
+      range: event.detail.range,
+      granularity: event.detail.granularity,
+      customFromMs: event.detail.customFromMs,
+      customToMs: event.detail.customToMs,
+      customRangeMode: event.detail.customRangeMode,
+      customAgoValue: event.detail.customAgoValue,
+      customAgoUnit: event.detail.customAgoUnit
+    };
+    range = watchedChartState.range;
+    const window = chartWindow(watchedChartState);
+    customFromMs = window.from;
+    customToMs = window.to;
+    granularity = watchedChartState.granularity;
     chartMode = event.detail.chartMode;
+    graphDefaults = {
+      ...graphDefaults,
+      marketsWatchedChartState: watchedChartState,
+      marketsWatchedChartMode: chartMode
+    };
+    let performanceSelectionChanged = false;
     if (chartMode === 'candlestick' && selected.size > 1) {
       selected = new Set([[...selected][0]!]);
+      performanceSelectionChanged = true;
     }
+    await savePreferences({ graphDefaults });
     void loadSeries();
+    if (performanceSelectionChanged) void loadPerformanceSeries();
+  };
+
+  const graphViewChanged = async (event: CustomEvent<ChartDisplayState>) => {
+    watchedDisplayState = { ...event.detail };
+    graphDefaults = {
+      ...graphDefaults,
+      marketsWatchedDisplayState: watchedDisplayState
+    };
+    await savePreferences({ graphDefaults });
   };
 
   onMount(async () => {
@@ -646,6 +1073,7 @@
       }
       await Promise.all([
         loadSeries(),
+        loadPerformanceSeries(),
         loadPortfolioSeries()
       ]);
     } catch (caught) {
@@ -729,6 +1157,7 @@
   </section>
   {:else if blockId === 'portfolio'}
 
+  {#if chartPreferencesReady}
   <PortfolioChart
     title="Combined portfolio history"
     series={portfolioSeries}
@@ -738,25 +1167,41 @@
       primaryCurrency,
       listedCurrencies: tooltipCurrencies
     })}
-    denominationOptions={portfolioDenominationOptions}
+    denominationOptions={portfolioAxisDenominationOptions}
     source="portfolio snapshots"
     {timezone}
-    granularity={1_800}
+    granularity={portfolioResolvedGranularity}
+    selectedGranularitySetting={portfolioGranularity}
     partial={portfolioPartial}
     stale={portfolioStale}
     events={portfolioEvents}
     busy={portfolioLoading}
     saveable
     initialRange={portfolioRange}
+    initialCustomFromMs={portfolioChartState.customFromMs}
+    initialCustomToMs={portfolioChartState.customToMs}
+    initialCustomRangeMode={portfolioChartState.customRangeMode}
+    initialCustomAgoValue={portfolioChartState.customAgoValue}
+    initialCustomAgoUnit={portfolioChartState.customAgoUnit}
+    initialScale={portfolioDisplayState.scale}
+    initialYAxisUnit={portfolioDisplayState.yAxisUnit}
+    initialTooltipUnits={portfolioDisplayState.tooltipUnits}
+    initialNormalized={portfolioDisplayState.normalized}
+    initialShowEvents={portfolioDisplayState.showEvents}
+    initialShowVolume={portfolioDisplayState.showVolume}
     preferenceKey="markets:combined-portfolio"
     partialMessage="Some observed balances or market valuations are unavailable. Portfolio history starts with locally retained snapshots and is not retroactively fabricated."
     emptyMessage="No combined portfolio snapshot exists yet. The first locally observed snapshot is recorded when this chart loads; historical balances are not guessed."
     on:stateChange={portfolioGraphStateChanged}
+    on:viewChange={portfolioGraphViewChanged}
+    on:zoomRange={portfolioGraphZoomed}
     on:saveGraph={savePortfolioGraph}
   />
+  {/if}
 
   {:else if blockId === 'chart'}
 
+  {#if chartPreferencesReady}
   <PortfolioChart
     title="Watched market prices"
     {series}
@@ -769,25 +1214,45 @@
     {source}
     {timezone}
     granularity={resolvedGranularity}
+    selectedGranularitySetting={granularity}
     {partial}
     {stale}
     {events}
     {exportQuery}
     busy={loading}
     saveable
+    initialRange={watchedChartState.range}
+    initialCustomFromMs={watchedChartState.customFromMs}
+    initialCustomToMs={watchedChartState.customToMs}
+    initialCustomRangeMode={watchedChartState.customRangeMode}
+    initialCustomAgoValue={watchedChartState.customAgoValue}
+    initialCustomAgoUnit={watchedChartState.customAgoUnit}
+    initialScale={watchedDisplayState.scale}
+    initialYAxisUnit={watchedDisplayState.yAxisUnit}
+    initialTooltipUnits={watchedDisplayState.tooltipUnits}
+    initialNormalized={watchedDisplayState.normalized}
+    initialShowEvents={watchedDisplayState.showEvents}
+    initialShowVolume={watchedDisplayState.showVolume}
     preferenceKey="markets:watched-prices"
     partialMessage={partialMessage || strings['cryptotracker-data_partial-label']}
     emptyMessage="No cached market prices are available for the selected assets and range. Use Queue backfill in Market controls, then follow progress in Settings → Synchronization."
     on:stateChange={graphStateChanged}
+    on:viewChange={graphViewChanged}
+    on:zoomRange={graphZoomed}
     on:saveGraph={saveGraph}
   />
+  {/if}
 
   {:else if blockId === 'performance'}
   <PerformanceAnalytics
     title="Market performance"
-    {series}
+    series={performanceSeries}
     {timezone}
     returnMethod="price"
+    busy={performanceLoading}
+    saveable
+    on:rangeChange={performanceRangeChanged}
+    on:saveGraph={savePerformanceGraph}
   />
 
   {:else if blockId === 'watchlist'}

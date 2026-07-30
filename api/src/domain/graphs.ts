@@ -38,6 +38,37 @@ export const resolveAutoGranularity = ({
   return (sorted.find((granularity) => granularity >= preferred) ?? sorted.at(-1) ?? 86_400) as Granularity;
 };
 
+export const boundedOverviewGranularity = ({
+  requestedGranularity,
+  fromMs,
+  toMs,
+  seriesCount,
+  maxBucketsPerSeries = 20_000,
+  maxBucketsPerResponse = 250_000
+}: {
+  requestedGranularity: number;
+  fromMs: number;
+  toMs: number;
+  seriesCount: number;
+  maxBucketsPerSeries?: number;
+  maxBucketsPerResponse?: number;
+}) => {
+  const requested = Math.max(1, Math.floor(requestedGranularity));
+  const requestedBuckets = Math.ceil(
+    Math.max(0, toMs - fromMs) / (requested * 1_000)
+  );
+  if (
+    requestedBuckets <= maxBucketsPerSeries
+    && requestedBuckets * Math.max(1, seriesCount) <= maxBucketsPerResponse
+  ) {
+    return requested;
+  }
+  return Math.max(
+    requested,
+    resolveAutoGranularity({ fromMs, toMs })
+  );
+};
+
 export const aggregateLinePoints = ({
   points,
   granularitySeconds

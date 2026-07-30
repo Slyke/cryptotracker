@@ -7,12 +7,18 @@
     ChartSeries
   } from './chart-types';
   import {
+    normalizeTooltipUnits,
     relativeRangeWindow,
     type RelativeRangeUnit,
     type SavedGraph
   } from '$lib/preferences';
   import { apiRequest } from '$lib/api';
+  import { bucketChartSeries } from '$lib/chart-data';
   import { configuredCurrencies } from '$lib/currencies';
+  import {
+    transformPerformanceSeries,
+    type PerformanceMode
+  } from '$lib/performance';
 
   export let graph: SavedGraph;
   export let minimalChrome = false;
@@ -34,9 +40,19 @@
   const stringConfig = (key: string, fallback: string) => (
     typeof graph.config[key] === 'string' ? String(graph.config[key]) : fallback
   );
+  const numberConfig = (key: string, fallback: number | null) => (
+    typeof graph.config[key] === 'number' && Number.isFinite(graph.config[key])
+      ? Number(graph.config[key])
+      : fallback
+  );
+  const isPerformanceChart = () => (
+    graph.type === 'market' && graph.config.analytics === 'performance'
+  );
   const chartCurrency = () => (
-    currentPrimaryCurrency
-    || stringConfig('primaryCurrency', stringConfig('currency', 'CAD')).toUpperCase()
+    isPerformanceChart()
+      ? '%'
+      : currentPrimaryCurrency
+        || stringConfig('primaryCurrency', stringConfig('currency', 'CAD')).toUpperCase()
   );
   const chartYAxisUnit = () => {
     const savedPrimary = stringConfig('primaryCurrency', stringConfig('currency', 'CAD'));
@@ -45,10 +61,20 @@
       ? chartCurrency()
       : savedAxis;
   };
+  const savedTooltipUnits = () => isPerformanceChart()
+    ? ['%']
+    : normalizeTooltipUnits({
+        value: graph.config.tooltipUnits,
+        fallback: Array.isArray(graph.config.tooltipCurrencies)
+          ? graph.config.tooltipCurrencies.map(String)
+          : fallbackTooltipCurrencies
+      });
   const configuredTooltipCurrencies = () => {
+    if (isPerformanceChart()) return ['%'];
     return configuredCurrencies({
       primaryCurrency: chartCurrency(),
-      listedCurrencies: fallbackTooltipCurrencies
+      listedCurrencies: savedTooltipUnits()
+        .filter((unit) => /^[A-Z]{3}$/.test(unit))
     });
   };
   const rangeWindow = () => {
@@ -114,14 +140,20 @@
             granularitySeconds: number;
           };
         }>({
-          url: `/api/portfolio/series?from=${from}&to=${to}&quoteCurrencies=${encodeURIComponent(currencies.join(','))}`
+          url: `/api/portfolio/series?from=${from}&to=${to}&granularitySeconds=${stringConfig('granularity', 'auto')}&quoteCurrencies=${encodeURIComponent(currencies.join(','))}`
         });
-        series = payload.data.series;
+        const selectedGranularity = Number(stringConfig('granularity', 'auto'));
+        resolvedGranularity = Number.isFinite(selectedGranularity)
+          ? Math.max(payload.data.granularitySeconds, selectedGranularity)
+          : payload.data.granularitySeconds;
+        series = bucketChartSeries({
+          series: payload.data.series,
+          granularitySeconds: resolvedGranularity
+        });
         events = payload.data.events;
         denominationOptions = payload.data.denominationOptions;
         partial = payload.data.partial;
         stale = payload.data.stale;
-        resolvedGranularity = payload.data.granularitySeconds;
       } else if (graph.type === 'market') {
         const assetIds = Array.isArray(graph.config.assetIds)
           ? graph.config.assetIds.map(String).filter(Boolean)
@@ -133,11 +165,15 @@
         const currency = currentPrimaryCurrency
           || stringConfig('primaryCurrency', 'CAD').toUpperCase();
         const currencies = configuredTooltipCurrencies();
+        const requestCurrencies = [...new Set([...currencies, 'USD'])];
         const yAxisUnit = stringConfig('yAxisUnit', currency);
         const yAxisIsFiat = currencies.includes(yAxisUnit.toUpperCase());
+        const tooltipCryptoIds = savedTooltipUnits()
+          .filter((unit) => unit !== '%' && !/^[A-Z]{3}$/.test(unit));
         const requestedAssetIds = [...new Set([
           ...assetIds,
-          ...(yAxisIsFiat ? [] : [yAxisUnit])
+          ...(yAxisIsFiat ? [] : [yAxisUnit]),
+          ...tooltipCryptoIds
         ])];
         type MarketSeriesPayload = {
           data: {
@@ -146,9 +182,11 @@
             partial: boolean;
             stale: boolean;
             resolvedGranularity: number;
+            overviewGranularity: number;
+            mixedGranularity: boolean;
           };
         };
-        const payloads = await Promise.all(currencies.map(async (quoteCurrency) => {
+        const payloads = await Promise.all(requestCurrencies.map(async (quoteCurrency) => {
           const params = new URLSearchParams({
             assetIds: requestedAssetIds.join(','),
             quoteCurrency,
@@ -169,7 +207,7 @@
           series = [];
           return;
         }
-        const pointValuesByCurrency = new Map(currencies.map((quoteCurrency) => [
+        const pointValuesByCurrency = new Map(requestCurrencies.map((quoteCurrency) => [
           quoteCurrency,
           new Map((payloadByCurrency.get(quoteCurrency)?.data.series ?? []).flatMap((item) => (
             item.points.map((point) => [
@@ -178,48 +216,71 @@
             ] as const)
           )))
         ]));
-        const denominatorSeries = yAxisIsFiat
-          ? undefined
-          : payload.data.series.find((item) => item.id === yAxisUnit);
-        denominationOptions = yAxisIsFiat
-          ? []
-          : [{
-              id: yAxisUnit,
-              symbol: denominatorSeries?.label.split(' · ')[0] ?? yAxisUnit.toUpperCase(),
-              label: denominatorSeries?.label ?? yAxisUnit
-            }];
+        const denominationIds = [...new Set([
+          ...(yAxisIsFiat ? [] : [yAxisUnit]),
+          ...tooltipCryptoIds
+        ])];
+        denominationOptions = denominationIds.map((denominationId) => {
+          const denominatorSeries = payload.data.series.find((item) => item.id === denominationId);
+          return {
+            id: denominationId,
+            symbol: denominatorSeries?.label.split(' · ')[0] ?? denominationId.toUpperCase(),
+            label: denominatorSeries?.label ?? denominationId
+          };
+        });
         series = payload.data.series
           .filter((item) => assetIds.includes(item.id))
           .map((item) => ({
             ...item,
             points: item.points.map((point) => {
-              const denominatorPoint = denominatorSeries?.points
-                .find((candidate) => candidate.timestampMs === point.timestampMs);
-              const numerator = Number(point.value ?? point.close);
-              const denominator = Number(denominatorPoint?.value ?? denominatorPoint?.close);
+              const denominationCurrencies = [currency, 'USD']
+                .filter((candidate, index, values) => values.indexOf(candidate) === index);
+              const denominations: Record<string, string | null> = {};
+              const denominationFallbacks: Record<string, string> = {};
+              for (const denominationId of denominationIds) {
+                denominations[denominationId] = null;
+                for (const quoteCurrency of denominationCurrencies) {
+                  const numerator = Number(pointValuesByCurrency.get(quoteCurrency)
+                    ?.get(`${item.id}:${point.timestampMs}`));
+                  const denominator = Number(pointValuesByCurrency.get(quoteCurrency)
+                    ?.get(`${denominationId}:${point.timestampMs}`));
+                  if (
+                    !Number.isFinite(numerator)
+                    || !Number.isFinite(denominator)
+                    || denominator <= 0
+                  ) continue;
+                  denominations[denominationId] = String(numerator / denominator);
+                  if (quoteCurrency !== currency) {
+                    denominationFallbacks[denominationId] = quoteCurrency;
+                  }
+                  break;
+                }
+              }
               return {
                 ...point,
-                quotes: Object.fromEntries(currencies.map((quoteCurrency) => [
+                quotes: Object.fromEntries(requestCurrencies.map((quoteCurrency) => [
                   quoteCurrency,
                   pointValuesByCurrency.get(quoteCurrency)
                     ?.get(`${item.id}:${point.timestampMs}`) ?? null
                 ])),
-                denominations: yAxisIsFiat
-                  ? {}
-                  : {
-                      [yAxisUnit]: Number.isFinite(numerator)
-                        && Number.isFinite(denominator)
-                        && denominator > 0
-                        ? String(numerator / denominator)
-                        : null
-                    }
+                denominations,
+                denominationFallbacks
               };
             })
           }));
-        events = payload.data.events;
-        partial = payloads.some(([, candidate]) => candidate.data.partial);
+        if (isPerformanceChart()) {
+          const performanceMode = stringConfig('performanceMode', 'return') as PerformanceMode;
+          series = transformPerformanceSeries({ series, mode: performanceMode });
+          events = [];
+          denominationOptions = [];
+        } else {
+          events = payload.data.events;
+        }
+        partial = payloads.some(([, candidate]) => (
+          candidate.data.partial || candidate.data.mixedGranularity
+        ));
         stale = payloads.some(([, candidate]) => candidate.data.stale);
-        resolvedGranularity = payload.data.resolvedGranularity;
+        resolvedGranularity = payload.data.overviewGranularity;
       } else if (graph.type === 'kraken') {
         const tooltipCurrencyQuery = encodeURIComponent(configuredTooltipCurrencies().join(','));
         const payload = await apiRequest<{
@@ -228,20 +289,23 @@
             events: ChartEvent[];
             denominationOptions: ChartDenominationOption[];
             partial?: boolean;
+            granularitySeconds: number;
           };
-        }>({ url: `/api/kraken/series?from=${from}&to=${to}&quoteCurrencies=${tooltipCurrencyQuery}` });
+        }>({
+          url: `/api/kraken/series?from=${from}&to=${to}&granularitySeconds=${stringConfig('granularity', 'auto')}&quoteCurrencies=${tooltipCurrencyQuery}`
+        });
         const configured = Array.isArray(graph.config.seriesIds)
           ? graph.config.seriesIds.map(String)
           : ['kraken-total'];
         const visible = new Set(configured);
+        resolvedGranularity = payload.data.granularitySeconds;
         series = payload.data.series.filter((item) => visible.has(item.id));
         events = payload.data.events;
         denominationOptions = payload.data.denominationOptions;
         partial = Boolean(payload.data.partial);
-        resolvedGranularity = 1_800;
       } else {
         const currency = currentPrimaryCurrency || stringConfig('currency', 'CAD');
-        const granularity = Number(stringConfig('granularity', '86400')) || 86_400;
+        const granularity = stringConfig('granularity', 'auto');
         const tooltipCurrencyQuery = encodeURIComponent(configuredTooltipCurrencies().join(','));
         const payload = await apiRequest<{
           data: {
@@ -294,9 +358,14 @@
     currency={chartCurrency()}
     tooltipCurrencies={configuredTooltipCurrencies()}
     {denominationOptions}
-    source={graph.type === 'market' ? stringConfig('source', 'combined') : graph.type}
+    source={isPerformanceChart()
+      ? 'derived analytics'
+      : graph.type === 'market'
+        ? stringConfig('source', 'combined')
+        : graph.type}
     timezone={stringConfig('timezone', 'America/Vancouver')}
     granularity={resolvedGranularity}
+    selectedGranularitySetting={stringConfig('granularity', 'auto')}
     partial={partial && !minimalChrome}
     partialMessage="This saved graph contains missing data. Settings → Synchronization identifies active work and cached coverage."
     {stale}
@@ -305,9 +374,28 @@
     preferenceKey={`dashboard:${graph.id}`}
     {minimalChrome}
     initialRange={stringConfig('range', '30d')}
+    initialCustomFromMs={numberConfig('customFromMs', null)}
+    initialCustomToMs={numberConfig('customToMs', null)}
+    initialCustomRangeMode={graph.config.customRangeMode === 'ago' ? 'ago' : 'dates'}
+    initialCustomAgoValue={numberConfig('customAgoValue', 30) ?? 30}
+    initialCustomAgoUnit={['hours', 'days', 'weeks', 'months', 'years'].includes(
+      String(graph.config.customAgoUnit)
+    )
+      ? String(graph.config.customAgoUnit) as RelativeRangeUnit
+      : 'days'}
     initialScale={stringConfig('scale', 'linear') === 'log' ? 'log' : 'linear'}
-    initialYAxisUnit={chartYAxisUnit()}
+    initialYAxisUnit={isPerformanceChart() ? '%' : chartYAxisUnit()}
+    initialTooltipUnits={savedTooltipUnits()}
+    initialMinimumMode={['absolute', 'relative'].includes(stringConfig('minimumMode', 'auto'))
+      ? stringConfig('minimumMode', 'auto') as 'absolute' | 'relative'
+      : 'auto'}
+    initialMaximumMode={['absolute', 'relative'].includes(stringConfig('maximumMode', 'auto'))
+      ? stringConfig('maximumMode', 'auto') as 'absolute' | 'relative'
+      : 'auto'}
+    initialMinimumValue={stringConfig('minimumValue', '')}
+    initialMaximumValue={stringConfig('maximumValue', '')}
     initialNormalized={Boolean(graph.config.normalized)}
+    initialShowWicks={graph.config.showWicks !== false}
     initialShowEvents={graph.config.showEvents !== false}
     initialShowVolume={Boolean(graph.config.showVolume)}
   />

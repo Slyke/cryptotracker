@@ -19,6 +19,7 @@ export interface DashboardRow {
 }
 
 export interface PersonalizationSettings {
+  graphDefaults: Record<string, unknown>;
   pageLayouts: Record<string, string[]>;
   collapsedBlocks: Record<string, string[]>;
   accordionStates: Record<string, boolean>;
@@ -29,10 +30,128 @@ export interface PersonalizationSettings {
   dashboardGraphColumns: 1 | 2 | 3 | 4;
   dismissedNotices: string[];
   retentionDays: number | null;
+  marketHistoryBackfillDays: number | null;
   failedJobRetentionHours: number | null;
 }
 
 export type RelativeRangeUnit = 'hours' | 'days' | 'weeks' | 'months' | 'years';
+
+export interface ChartQueryState {
+  range: string;
+  granularity: string;
+  customFromMs: number | null;
+  customToMs: number | null;
+  customRangeMode: 'dates' | 'ago';
+  customAgoValue: number;
+  customAgoUnit: RelativeRangeUnit;
+}
+
+export interface ChartDisplayState {
+  scale: 'linear' | 'log';
+  normalized: boolean;
+  showEvents: boolean;
+  showVolume: boolean;
+  yAxisUnit: string;
+  tooltipUnits: string[];
+}
+
+export const defaultChartQueryState = ({
+  range = '30d',
+  granularity = 'auto'
+}: {
+  range?: string;
+  granularity?: string;
+} = {}): ChartQueryState => ({
+  range,
+  granularity,
+  customFromMs: null,
+  customToMs: null,
+  customRangeMode: 'dates',
+  customAgoValue: 30,
+  customAgoUnit: 'days'
+});
+
+export const normalizeTooltipUnits = ({
+  value,
+  fallback = []
+}: {
+  value: unknown;
+  fallback?: string[];
+}) => {
+  const candidate = Array.isArray(value) ? value : fallback;
+  return [...new Set(candidate
+    .filter((unit): unit is string => typeof unit === 'string')
+    .map((unit) => unit.trim())
+    .filter(Boolean))]
+    .slice(0, 5);
+};
+
+export const defaultChartDisplayState = (
+  currency: string,
+  tooltipUnits: string[] = [currency]
+): ChartDisplayState => ({
+  scale: 'linear',
+  normalized: false,
+  showEvents: true,
+  showVolume: false,
+  yAxisUnit: currency,
+  tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] })
+});
+
+export const chartQueryStateFromSetting = ({
+  value,
+  fallback
+}: {
+  value: unknown;
+  fallback: ChartQueryState;
+}): ChartQueryState => {
+  if (!value || typeof value !== 'object') return fallback;
+  const candidate = value as Record<string, unknown>;
+  const agoUnit = String(candidate.customAgoUnit ?? fallback.customAgoUnit);
+  return {
+    range: typeof candidate.range === 'string' ? candidate.range : fallback.range,
+    granularity: typeof candidate.granularity === 'string'
+      ? candidate.granularity
+      : fallback.granularity,
+    customFromMs: typeof candidate.customFromMs === 'number'
+      ? candidate.customFromMs
+      : fallback.customFromMs,
+    customToMs: typeof candidate.customToMs === 'number'
+      ? candidate.customToMs
+      : fallback.customToMs,
+    customRangeMode: candidate.customRangeMode === 'ago' ? 'ago' : 'dates',
+    customAgoValue: Number.isFinite(Number(candidate.customAgoValue))
+      ? Math.max(1, Math.floor(Number(candidate.customAgoValue)))
+      : fallback.customAgoValue,
+    customAgoUnit: ['hours', 'days', 'weeks', 'months', 'years'].includes(agoUnit)
+      ? agoUnit as RelativeRangeUnit
+      : fallback.customAgoUnit
+  };
+};
+
+export const chartDisplayStateFromSetting = ({
+  value,
+  fallback
+}: {
+  value: unknown;
+  fallback: ChartDisplayState;
+}): ChartDisplayState => {
+  if (!value || typeof value !== 'object') return fallback;
+  const candidate = value as Record<string, unknown>;
+  return {
+    scale: candidate.scale === 'log' ? 'log' : 'linear',
+    normalized: candidate.normalized === true,
+    showEvents: candidate.showEvents !== false,
+    showVolume: candidate.showVolume === true,
+    yAxisUnit: typeof candidate.yAxisUnit === 'string'
+      ? candidate.yAxisUnit
+      : fallback.yAxisUnit,
+    tooltipUnits: normalizeTooltipUnits({
+      value: candidate.tooltipUnits,
+      fallback: fallback.tooltipUnits
+    })
+  };
+};
 
 export const normalizeOrder = ({
   saved,
@@ -76,6 +195,25 @@ export const toggleCollapsed = ({
     ? collapsed.filter((blockId) => blockId !== id)
     : [...collapsed, id]
 );
+
+export const historyDepthRetentionWarning = ({
+  retentionDays,
+  marketHistoryBackfillDays
+}: {
+  retentionDays: number | null;
+  marketHistoryBackfillDays: number | null;
+}) => {
+  if (
+    retentionDays === null
+    || (marketHistoryBackfillDays !== null && marketHistoryBackfillDays <= retentionDays)
+  ) {
+    return null;
+  }
+  const requestedDepth = marketHistoryBackfillDays === null
+    ? 'maximum available history'
+    : `${marketHistoryBackfillDays.toLocaleString()} days of history`;
+  return `Retention is set to ${retentionDays.toLocaleString()} days, but automatic synchronization requests ${requestedDepth}. Scheduled backfill will stop at the retention limit so older points are not downloaded and immediately deleted.`;
+};
 
 export const savePreferences = async (changes: Record<string, unknown>) => (
   apiRequest({

@@ -11,17 +11,28 @@
     ChartSeries
   } from '../../lib/components/chart-types';
   import { apiRequest } from '$lib/api';
+  import {
+    chartDenominationOptionsFromAssets,
+    type ChartAxisAsset
+  } from '$lib/chart-axis-catalog';
   import { configuredCurrencies } from '$lib/currencies';
   import {
+    chartDisplayStateFromSetting,
+    chartQueryStateFromSetting,
     createSavedGraph,
+    defaultChartDisplayState,
+    defaultChartQueryState,
     formatDateTime,
     formatDisplayNumber,
     formatPercent,
     moveInOrder,
     normalizeOrder,
+    relativeRangeWindow,
     savePreferences,
     savedGraphNameExists,
     toggleCollapsed,
+    type ChartDisplayState,
+    type ChartQueryState,
     type SavedGraph
   } from '$lib/preferences';
   import strings from '$lib/i18n/en-CA.json';
@@ -80,6 +91,19 @@
     balanceReason: string | null;
   };
 
+  type AddressSeriesPayload = {
+    data: {
+      series: ChartSeries[];
+      events: ChartEvent[];
+      denominationOptions: ChartDenominationOption[];
+      partial: boolean;
+      stale: boolean;
+      granularitySeconds: number;
+      requestedGranularitySeconds: number;
+      mixedGranularity: boolean;
+    };
+  };
+
   const buildHoldingColumnOptions = (currencies: string[]) => [
     { id: 'label', label: 'Address label' },
     { id: 'address', label: 'Public address' },
@@ -118,6 +142,7 @@
   let unmappedMainnetAssets: Array<{ id: string; symbol: string }> = [];
   let holdings: Holding[] = [];
   let series: ChartSeries[] = [];
+  let overviewSeries: ChartSeries[] = [];
   let events: ChartEvent[] = [];
   let denominationOptions: ChartDenominationOption[] = [];
   let network: Network = 'bitcoin';
@@ -134,6 +159,8 @@
   let tooltipCurrencies = ['CAD'];
   let timezone = 'America/Vancouver';
   let granularity = 86_400;
+  let selectedGranularity = '86400';
+  let chartRange = '90d';
   let fromMs = Date.now() - (90 * 24 * 60 * 60_000);
   let toMs = Date.now();
   let pageLayouts: Record<string, string[]> = {};
@@ -141,6 +168,15 @@
   let tableColumns: Record<string, string[]> = {};
   let tableDashboardName = 'Address holdings';
   let savedGraphs: SavedGraph[] = [];
+  let graphDefaults: Record<string, unknown> = {};
+  let addressChartState = defaultChartQueryState({
+    range: '90d',
+    granularity: '86400'
+  });
+  let addressDisplayState = defaultChartDisplayState(primaryCurrency);
+  let chartPreferencesReady = false;
+  let loadRequestId = 0;
+  let zoomRequestId = 0;
   let dismissedNotices: string[] = [];
   let pageOrder = [...defaultPageOrder];
   let holdingColumnOptions = buildHoldingColumnOptions(['CAD']);
@@ -167,6 +203,80 @@
   }
 
   const mainnetFor = (networkId: string) => mainnets.find((option) => option.id === networkId);
+  const chartWindow = (state: ChartQueryState) => {
+    const now = Date.now();
+    if (state.range === 'custom' && state.customRangeMode === 'ago') {
+      return relativeRangeWindow({
+        value: state.customAgoValue,
+        unit: state.customAgoUnit,
+        toMs: now
+      }) ?? { from: now - 90 * 24 * 60 * 60_000, to: now };
+    }
+    if (
+      state.range === 'custom'
+      && state.customFromMs !== null
+      && state.customToMs !== null
+    ) {
+      return { from: state.customFromMs, to: state.customToMs };
+    }
+    const ranges: Record<string, number> = {
+      '24h': 24 * 60 * 60_000,
+      '7d': 7 * 24 * 60 * 60_000,
+      '30d': 30 * 24 * 60 * 60_000,
+      '90d': 90 * 24 * 60 * 60_000,
+      '1y': 365 * 24 * 60 * 60_000,
+      '4y': 4 * 365 * 24 * 60 * 60_000
+    };
+    return {
+      from: state.range === 'all'
+        ? 0
+        : now - (ranges[state.range] ?? ranges['90d']),
+      to: now
+    };
+  };
+
+  const fetchAddressSeries = ({
+    windowFromMs = fromMs,
+    windowToMs = toMs
+  }: {
+    windowFromMs?: number;
+    windowToMs?: number;
+  } = {}) => apiRequest<AddressSeriesPayload>({
+    url: `/api/addresses/series?quoteCurrency=${primaryCurrency}&quoteCurrencies=${encodeURIComponent(configuredCurrencies({
+      primaryCurrency,
+      listedCurrencies: tooltipCurrencies
+    }).join(','))}&from=${windowFromMs}&to=${windowToMs}&granularitySeconds=${selectedGranularity}`
+  });
+
+  const mergeDetailedWindow = ({
+    overview,
+    detail,
+    windowFromMs,
+    windowToMs
+  }: {
+    overview: ChartSeries[];
+    detail: ChartSeries[];
+    windowFromMs: number;
+    windowToMs: number;
+  }) => {
+    const detailById = new Map(detail.map((item) => [item.id, item]));
+    return overview.map((item) => {
+      const merged = new Map(item.points
+        .filter((point) => (
+          point.timestampMs < windowFromMs || point.timestampMs > windowToMs
+        ))
+        .map((point) => [point.timestampMs, point]));
+      for (const point of detailById.get(item.id)?.points ?? []) {
+        merged.set(point.timestampMs, point);
+      }
+      return {
+        ...item,
+        points: [...merged.values()].sort((left, right) => (
+          left.timestampMs - right.timestampMs
+        ))
+      };
+    });
+  };
   const selectableTokens = (networkId: string) => {
     const mainnet = mainnetFor(networkId);
     return mainnet?.enabledAssets.filter((asset) => (
@@ -240,6 +350,7 @@
   };
 
   const load = async () => {
+    const requestId = ++loadRequestId;
     loading = true;
     error = '';
     try {
@@ -251,6 +362,7 @@
           pageLayouts: Record<string, string[]>;
           collapsedBlocks: Record<string, string[]>;
           tableColumns: Record<string, string[]>;
+          graphDefaults: Record<string, unknown>;
           savedGraphs: SavedGraph[];
           dismissedNotices: string[];
         };
@@ -261,8 +373,31 @@
       pageLayouts = settingsPayload.settings.pageLayouts;
       collapsedBlocks = settingsPayload.settings.collapsedBlocks ?? {};
       tableColumns = settingsPayload.settings.tableColumns;
+      graphDefaults = settingsPayload.settings.graphDefaults ?? {};
       savedGraphs = settingsPayload.settings.savedGraphs;
       dismissedNotices = settingsPayload.settings.dismissedNotices ?? [];
+      if (!chartPreferencesReady) {
+        addressChartState = chartQueryStateFromSetting({
+          value: graphDefaults.addressesChartState,
+          fallback: defaultChartQueryState({
+            range: '90d',
+            granularity: '86400'
+          })
+        });
+        addressDisplayState = chartDisplayStateFromSetting({
+          value: graphDefaults.addressesDisplayState,
+          fallback: defaultChartDisplayState(primaryCurrency, configuredCurrencies({
+            primaryCurrency,
+            listedCurrencies: tooltipCurrencies
+          }))
+        });
+        chartRange = addressChartState.range;
+        selectedGranularity = addressChartState.granularity;
+        const window = chartWindow(addressChartState);
+        fromMs = window.from;
+        toMs = window.to;
+        chartPreferencesReady = true;
+      }
       const requestedCurrencies = configuredCurrencies({
         primaryCurrency,
         listedCurrencies: tooltipCurrencies
@@ -276,7 +411,7 @@
       selectedHoldingColumns = savedHoldingColumns?.length
         ? savedHoldingColumns.filter((id) => holdingColumnOptions.some((column) => column.id === id))
         : [...defaultHoldingColumns];
-      const [addressPayload, networkPayload, holdingPayload, seriesPayload] = await Promise.all([
+      const [addressPayload, networkPayload, holdingPayload, seriesPayload, watchlistPayload] = await Promise.all([
         apiRequest<{ addresses: TrackedAddress[] }>({ url: '/api/addresses' }),
         apiRequest<{
           mainnets: MainnetOption[];
@@ -285,17 +420,10 @@
         apiRequest<{ holdings: Holding[] }>({
           url: `/api/addresses/holdings?quoteCurrency=${primaryCurrency}&quoteCurrencies=${encodeURIComponent(requestedCurrencies.join(','))}`
         }),
-        apiRequest<{ data: {
-          series: ChartSeries[];
-          events: ChartEvent[];
-          denominationOptions: ChartDenominationOption[];
-          partial: boolean;
-          stale: boolean;
-          granularitySeconds: number;
-        } }>({
-          url: `/api/addresses/series?quoteCurrency=${primaryCurrency}&quoteCurrencies=${encodeURIComponent(tooltipCurrencies.join(','))}&from=${fromMs}&to=${toMs}&granularitySeconds=${granularity}`
-        })
+        fetchAddressSeries(),
+        apiRequest<{ assets: ChartAxisAsset[] }>({ url: '/api/watchlist/assets' })
       ]);
+      if (requestId !== loadRequestId) return;
       addresses = addressPayload.addresses;
       addressAssetSelections = Object.fromEntries(addresses.map((item) => [
         item.id,
@@ -308,15 +436,23 @@
         if (firstSupported) network = firstSupported.id as Network;
       }
       holdings = holdingPayload.holdings;
-      series = seriesPayload.data.series;
+      overviewSeries = seriesPayload.data.series;
+      series = overviewSeries;
       events = seriesPayload.data.events;
-      denominationOptions = seriesPayload.data.denominationOptions;
-      partial = seriesPayload.data.partial;
+      denominationOptions = [
+        ...new Map([
+          ...seriesPayload.data.denominationOptions,
+          ...chartDenominationOptionsFromAssets(watchlistPayload.assets)
+        ].map((option) => [option.id, option])).values()
+      ];
+      partial = seriesPayload.data.partial || seriesPayload.data.mixedGranularity;
       stale = seriesPayload.data.stale;
+      granularity = seriesPayload.data.granularitySeconds;
     } catch (caught) {
+      if (requestId !== loadRequestId) return;
       error = caught instanceof Error ? caught.message : 'Addresses failed to load.';
     } finally {
-      loading = false;
+      if (requestId === loadRequestId) loading = false;
     }
   };
 
@@ -475,34 +611,69 @@
     await savePreferences({ dismissedNotices });
   };
 
-  const graphStateChanged = (event: CustomEvent<{
-    range: string;
-    granularity: string;
-    customFromMs: number | null;
-    customToMs: number | null;
-    customRangeMode: 'dates' | 'ago';
-    customAgoValue: number;
-    customAgoUnit: 'hours' | 'days' | 'weeks' | 'months' | 'years';
-  }>) => {
-    const ranges: Record<string, number> = {
-      '24h': 24 * 60 * 60_000,
-      '7d': 7 * 24 * 60 * 60_000,
-      '30d': 30 * 24 * 60 * 60_000,
-      '90d': 90 * 24 * 60 * 60_000,
-      '1y': 365 * 24 * 60 * 60_000,
-      all: 5 * 365 * 24 * 60 * 60_000,
-      custom: 90 * 24 * 60 * 60_000
+  const graphStateChanged = async (
+    event: CustomEvent<ChartQueryState & { chartMode: 'line' | 'candlestick' }>
+  ) => {
+    addressChartState = {
+      range: event.detail.range,
+      granularity: event.detail.granularity,
+      customFromMs: event.detail.customFromMs,
+      customToMs: event.detail.customToMs,
+      customRangeMode: event.detail.customRangeMode,
+      customAgoValue: event.detail.customAgoValue,
+      customAgoUnit: event.detail.customAgoUnit
     };
-    toMs = event.detail.range === 'custom' && event.detail.customToMs !== null
-      ? event.detail.customToMs
-      : Date.now();
-    fromMs = event.detail.range === 'all'
-      ? 0
-      : event.detail.range === 'custom' && event.detail.customFromMs !== null
-        ? event.detail.customFromMs
-        : toMs - (ranges[event.detail.range] ?? ranges['90d']);
-    granularity = event.detail.granularity === 'auto' ? 86_400 : Number(event.detail.granularity);
+    chartRange = addressChartState.range;
+    selectedGranularity = addressChartState.granularity;
+    const window = chartWindow(addressChartState);
+    fromMs = window.from;
+    toMs = window.to;
+    graphDefaults = {
+      ...graphDefaults,
+      addressesChartState: addressChartState
+    };
+    await savePreferences({ graphDefaults });
     void load();
+  };
+
+  const graphViewChanged = async (event: CustomEvent<ChartDisplayState>) => {
+    addressDisplayState = { ...event.detail };
+    graphDefaults = {
+      ...graphDefaults,
+      addressesDisplayState: addressDisplayState
+    };
+    await savePreferences({ graphDefaults });
+  };
+
+  const graphZoomed = async (
+    event: CustomEvent<{ fromMs: number; toMs: number }>
+  ) => {
+    const requestedGranularity = Number(selectedGranularity);
+    if (
+      selectedGranularity === 'auto'
+      || !Number.isFinite(requestedGranularity)
+      || granularity <= requestedGranularity
+    ) return;
+    const requestId = ++zoomRequestId;
+    loading = true;
+    try {
+      const payload = await fetchAddressSeries({
+        windowFromMs: event.detail.fromMs,
+        windowToMs: event.detail.toMs
+      });
+      if (requestId !== zoomRequestId) return;
+      series = mergeDetailedWindow({
+        overview: overviewSeries,
+        detail: payload.data.series,
+        windowFromMs: event.detail.fromMs,
+        windowToMs: event.detail.toMs
+      });
+    } catch (caught) {
+      if (requestId !== zoomRequestId) return;
+      error = caught instanceof Error ? caught.message : 'Address zoom detail failed.';
+    } finally {
+      if (requestId === zoomRequestId) loading = false;
+    }
   };
 
   const saveGraph = async (event: CustomEvent<{
@@ -715,6 +886,7 @@
         </section>
 
       {:else if blockId === 'chart'}
+        {#if chartPreferencesReady}
         <PortfolioChart
           title="Address portfolio history"
           {series}
@@ -725,16 +897,33 @@
           source="combined"
           {timezone}
           {granularity}
+          selectedGranularitySetting={selectedGranularity}
           {partial}
           {stale}
           {events}
           busy={loading}
           saveable
+          initialRange={chartRange}
+          initialCustomFromMs={addressChartState.customFromMs}
+          initialCustomToMs={addressChartState.customToMs}
+          initialCustomRangeMode={addressChartState.customRangeMode}
+          initialCustomAgoValue={addressChartState.customAgoValue}
+          initialCustomAgoUnit={addressChartState.customAgoUnit}
+          initialScale={addressDisplayState.scale}
+          initialYAxisUnit={addressDisplayState.yAxisUnit}
+          initialTooltipUnits={addressDisplayState.tooltipUnits}
+          initialNormalized={addressDisplayState.normalized}
+          initialShowEvents={addressDisplayState.showEvents}
+          initialShowVolume={addressDisplayState.showVolume}
+          preferenceKey="addresses:portfolio"
           partialMessage={partialMessage()}
           emptyMessage="No address portfolio history is cached yet. Add a public address or use Refresh on a tracked address, then follow progress in Settings → Synchronization."
           on:stateChange={graphStateChanged}
+          on:viewChange={graphViewChanged}
+          on:zoomRange={graphZoomed}
           on:saveGraph={saveGraph}
         />
+        {/if}
 
       {:else if blockId === 'performance'}
         <PerformanceAnalytics

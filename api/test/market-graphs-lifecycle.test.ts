@@ -10,6 +10,7 @@ import {
 } from '../src/domain/market.js';
 import {
   aggregateLinePoints,
+  boundedOverviewGranularity,
   canUseLogScale,
   filterEventMarkers,
   normalizeSeries,
@@ -21,6 +22,7 @@ import {
   resolveObservedValue,
   sameAssetIdentity
 } from '../src/domain/lifecycle.js';
+import { chartDenominationsAt } from '../src/services/chart-values.js';
 
 describe('market arithmetic', () => {
   it('uses exact decimal medians, native preference, fallback, and disputes', () => {
@@ -87,6 +89,18 @@ describe('market arithmetic', () => {
 describe('shared graph contract', () => {
   it('resolves and aggregates granularities deterministically', () => {
     expect(resolveAutoGranularity({ fromMs: 0, toMs: 24 * 60 * 60_000 })).toBe(300);
+    expect(boundedOverviewGranularity({
+      requestedGranularity: 300,
+      fromMs: 0,
+      toMs: 4 * 365 * 24 * 60 * 60_000,
+      seriesCount: 8
+    })).toBe(604_800);
+    expect(boundedOverviewGranularity({
+      requestedGranularity: 300,
+      fromMs: 0,
+      toMs: 7 * 24 * 60 * 60_000,
+      seriesCount: 8
+    })).toBe(300);
     expect(aggregateLinePoints({
       granularitySeconds: 60,
       points: [
@@ -129,6 +143,30 @@ describe('shared graph contract', () => {
       maximum: { mode: 'auto' },
       logScale: true
     }).valid).toBe(false);
+  });
+
+  it('uses USD as an internal reserve for missing direct crypto denomination pairs', () => {
+    expect(chartDenominationsAt({
+      denominationOptions: [{
+        id: 'ethereum',
+        symbol: 'ETH',
+        label: 'ETH · Ethereum'
+      }],
+      quoteValues: {
+        CAD: '140',
+        USD: '100'
+      },
+      primaryCurrency: 'CAD',
+      timestampMs: 1,
+      priceAt: ({ quoteCurrency }) => quoteCurrency === 'USD' ? '2' : null
+    })).toEqual({
+      denominations: {
+        ethereum: '50'
+      },
+      denominationFallbacks: {
+        ethereum: 'USD'
+      }
+    });
   });
 
   it('filters and orders accessible event markers', () => {

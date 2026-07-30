@@ -5,6 +5,7 @@
   import { persistAccordionState } from '$lib/accordion-state';
   import {
     formatDateTime,
+    historyDepthRetentionWarning,
     moveInOrder,
     normalizeOrder,
     savePreferences,
@@ -36,6 +37,7 @@
     dashboardGraphColumns: 1 | 2 | 3 | 4;
     dismissedNotices: string[];
     retentionDays: number | null;
+    marketHistoryBackfillDays: number | null;
     failedJobRetentionHours: number | null;
     pollingIntervalsMinutes: {
       marketCoinGecko: number;
@@ -136,7 +138,8 @@
     dashboardGraphColumns: 2,
     dismissedNotices: [],
     retentionDays: null,
-    failedJobRetentionHours: null,
+    marketHistoryBackfillDays: 5 * 365,
+    failedJobRetentionHours: 720,
     pollingIntervalsMinutes: {
       marketCoinGecko: 30,
       marketCoinbase: 15,
@@ -149,7 +152,8 @@
   let tooltipCurrencyText = 'CAD';
   let retentionMode: 'forever' | 'limited' = 'forever';
   let originalRetentionDays: number | null = null;
-  let failedJobRetentionValue = 'forever';
+  let marketHistoryBackfillValue = String(5 * 365);
+  let failedJobRetentionValue = '720';
   let originalFailedJobRetentionHours: number | null = null;
   let storage: {
     databaseKind: string;
@@ -200,6 +204,7 @@
   let marketCoverageProvider = '';
   let marketCoverageState = '';
   let filteredMarketCoverage: MarketCursor[] = [];
+  let retentionHistoryWarning: string | null = null;
   const pollingIntervalOptions = [
     { minutes: 5, label: 'Every 5 minutes' },
     { minutes: 10, label: 'Every 10 minutes' },
@@ -255,6 +260,14 @@
       ].some((value) => String(value ?? '').toLowerCase().includes(normalized)))
     ));
   }
+  $: retentionHistoryWarning = historyDepthRetentionWarning({
+    retentionDays: retentionMode === 'forever'
+      ? null
+      : Math.max(1, Math.round(Number(settings.retentionDays ?? 365))),
+    marketHistoryBackfillDays: marketHistoryBackfillValue === 'maximum'
+      ? null
+      : Number(marketHistoryBackfillValue)
+  });
   const jobDisplayStatus = (job: SyncJob) => {
     if (
       job.status === 'running'
@@ -317,6 +330,9 @@
       tooltipCurrencyText = settings.tooltipCurrencies.join(', ');
       originalRetentionDays = settings.retentionDays;
       retentionMode = settings.retentionDays === null ? 'forever' : 'limited';
+      marketHistoryBackfillValue = settings.marketHistoryBackfillDays === null
+        ? 'maximum'
+        : String(settings.marketHistoryBackfillDays);
       originalFailedJobRetentionHours = settings.failedJobRetentionHours;
       failedJobRetentionValue = settings.failedJobRetentionHours === null
         ? 'forever'
@@ -345,6 +361,9 @@
       const failedJobRetentionHours = failedJobRetentionValue === 'forever'
         ? null
         : Number(failedJobRetentionValue);
+      const marketHistoryBackfillDays = marketHistoryBackfillValue === 'maximum'
+        ? null
+        : Number(marketHistoryBackfillValue);
       if (
         retentionDays !== null
         && retentionDays !== originalRetentionDays
@@ -377,21 +396,28 @@
           providerDisagreementThresholdPercent: settings.providerDisagreementThresholdPercent,
           costBasisMethod: settings.costBasisMethod,
           retentionDays,
+          marketHistoryBackfillDays,
           failedJobRetentionHours,
           pollingIntervalsMinutes: settings.pollingIntervalsMinutes
         }
       });
       settings = payload.settings;
       originalRetentionDays = settings.retentionDays;
+      marketHistoryBackfillValue = settings.marketHistoryBackfillDays === null
+        ? 'maximum'
+        : String(settings.marketHistoryBackfillDays);
       originalFailedJobRetentionHours = settings.failedJobRetentionHours;
       failedJobRetentionValue = settings.failedJobRetentionHours === null
         ? 'forever'
         : String(settings.failedJobRetentionHours);
       tooltipCurrencyText = settings.tooltipCurrencies.join(', ');
       setDocumentPreferences(settings);
+      const historyDepthLabel = settings.marketHistoryBackfillDays === null
+        ? 'maximum available market history'
+        : `${settings.marketHistoryBackfillDays.toLocaleString()} days of market history`;
       message = settings.retentionDays === null
-        ? 'Settings saved. Historical points and snapshots will be kept forever.'
-        : `Settings saved. Historical points and snapshots are limited to ${settings.retentionDays} days.`;
+        ? `Settings saved. Historical points and snapshots will be kept forever; synchronization targets ${historyDepthLabel}.`
+        : `Settings saved. Historical points and snapshots are limited to ${settings.retentionDays} days; synchronization targets ${historyDepthLabel}.`;
       const storagePayload = await apiRequest<{ storage: NonNullable<typeof storage> }>({
         url: '/api/diagnostics/storage'
       });
@@ -790,6 +816,17 @@
               <legend>Historical data retention</legend>
               <div class="settings-grid three">
                 <div class="field">
+                  <label for="market-history-backfill">Automatically synchronize prices back to</label>
+                  <select id="market-history-backfill" bind:value={marketHistoryBackfillValue}>
+                    <option value="365">1 year</option>
+                    <option value="730">2 years</option>
+                    <option value="1825">5 years (default)</option>
+                    <option value="3650">10 years</option>
+                    <option value="7300">20 years</option>
+                    <option value="maximum">Maximum available</option>
+                  </select>
+                </div>
+                <div class="field">
                   <label for="retention-mode">Maximum age</label>
                   <select id="retention-mode" bind:value={retentionMode}>
                     <option value="forever">Forever (default)</option>
@@ -817,7 +854,10 @@
                   </select>
                 </div>
               </div>
-              <p class="muted retention-copy">Historical retention controls market points and derived portfolio snapshots. Failed-job retention only removes terminal failure records. Transactions, Kraken activity, address events, and cost-basis records are retained.</p>
+              {#if retentionHistoryWarning}
+                <div class="alert warning retention-copy" role="status">{retentionHistoryWarning}</div>
+              {/if}
+              <p class="muted retention-copy">Synchronization depth controls how far back the app requests market prices, subject to each provider’s available history. Retention controls how long market points and derived portfolio snapshots remain stored. Failed-job retention only removes terminal failure records. Transactions, Kraken activity, address events, and cost-basis records are retained.</p>
             </fieldset>
 
             <button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</button>

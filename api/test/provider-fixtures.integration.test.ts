@@ -2,13 +2,34 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapApplicationData } from '../src/services/bootstrap.js';
 import { createChainAdapters } from '../src/providers/chains.js';
 import { createMarketProviders, marketProviderInternals } from '../src/providers/market.js';
-import { MarketService } from '../src/services/market.js';
+import {
+  boundedMarketOverviewGranularity,
+  MarketService
+} from '../src/services/market.js';
 import type { MarketProviderAdapter } from '../src/providers/market.js';
 import type { JobQueue } from '../src/jobs/queue.js';
 import { createTestRuntime, openMigratedTestDatabase } from './helpers.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('market series point budgets', () => {
+  it('uses the requested detail for bounded zooms and a coarse overview for all time', () => {
+    const dayMs = 24 * 60 * 60_000;
+    expect(boundedMarketOverviewGranularity({
+      requestedGranularity: 300,
+      fromMs: Date.now() - (7 * dayMs),
+      toMs: Date.now(),
+      assetCount: 50
+    })).toBe(300);
+    expect(boundedMarketOverviewGranularity({
+      requestedGranularity: 300,
+      fromMs: 0,
+      toMs: Date.now(),
+      assetCount: 1
+    })).toBe(604_800);
+  });
 });
 
 describe('Coinbase historical backfill', () => {
@@ -664,6 +685,37 @@ describe('market persistence', () => {
         providers: ['coinbase']
       });
       expect(series.partial).toBe(true);
+
+      await db.run({
+        sql: `
+          INSERT INTO market_points(
+            id, provider, canonical_asset_id, quote_currency, bucket_start_ms,
+            granularity_seconds, data_kind, close_value, retrieved_at_ms
+          ) VALUES ('coarse-history', 'coinbase', 'bitcoin', 'USD', ?, 86400, 'native', '88', ?)
+        `,
+        parameters: [86_400_000, Date.now()]
+      });
+      const mixedResolution = await market.getSeries({
+        assetIds: ['bitcoin'],
+        quoteCurrency: 'USD',
+        source: 'coinbase',
+        fromMs: 0,
+        toMs: 4 * 365 * 24 * 60 * 60_000,
+        granularity: 900,
+        chartMode: 'line'
+      });
+      expect(mixedResolution).toMatchObject({
+        resolvedGranularity: 900,
+        overviewGranularity: 604_800,
+        mixedGranularity: true,
+        sourceGranularities: [86_400]
+      });
+      expect(mixedResolution.series[0]?.points).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          timestampMs: 0,
+          value: '88'
+        })
+      ]));
     } finally {
       await db.close();
     }

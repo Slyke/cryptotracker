@@ -77,6 +77,41 @@ const parse = <T>({
   return result.data;
 };
 
+const validateSavedGraphNames = ({
+  current,
+  next
+}: {
+  current: UserSettings['savedGraphs'];
+  next: UserSettings['savedGraphs'];
+}) => {
+  const normalize = (name: string) => name.trim().toLocaleLowerCase();
+  const currentById = new Map(current.map((graph) => [graph.id, normalize(graph.name)]));
+  const firstByName = new Map<string, { id: string; index: number }>();
+  next.forEach((graph, index) => {
+    const normalized = normalize(graph.name);
+    const existing = firstByName.get(normalized);
+    if (!existing) {
+      firstByName.set(normalized, { id: graph.id, index });
+      return;
+    }
+    const duplicateAlreadyExisted = currentById.get(existing.id) === normalized
+      && currentById.get(graph.id) === normalized;
+    if (duplicateAlreadyExisted) return;
+    throw new AppError({
+      errorKey: 'INPUT_INVALID',
+      reason: 'Request input failed validation.',
+      status: 400,
+      context: {
+        fieldErrors: {
+          savedGraphs: [
+            `Dashboard item ${index + 1} duplicates the name of item ${existing.index + 1}.`
+          ]
+        }
+      }
+    });
+  });
+};
+
 const identity = ({ req }: { req: Request }) => {
   if (!req.identity) {
     throw new AppError({
@@ -339,22 +374,7 @@ const registerRoutes = ({
           type: z.enum(['market', 'kraken', 'addresses', 'portfolio']),
           hidden: z.boolean(),
           config: z.record(z.string(), z.unknown())
-        })).max(200).superRefine((graphs, refinement) => {
-          const names = new Map<string, number>();
-          graphs.forEach((graph, index) => {
-            const normalized = graph.name.toLocaleLowerCase();
-            const existing = names.get(normalized);
-            if (existing !== undefined) {
-              refinement.addIssue({
-                code: 'custom',
-                path: [index, 'name'],
-                message: `Dashboard item name duplicates item ${existing + 1}.`
-              });
-            } else {
-              names.set(normalized, index);
-            }
-          });
-        }).optional(),
+        })).max(200).optional(),
         savedCalculations: z.array(z.object({
           id: z.string().min(1).max(200),
           name: z.string().trim().min(1).max(120),
@@ -398,6 +418,7 @@ const registerRoutes = ({
           .optional(),
         dismissedNotices: z.array(z.string().min(1).max(200)).max(200).optional(),
         retentionDays: z.number().int().min(1).max(36_500).nullable().optional(),
+        marketHistoryBackfillDays: z.number().int().min(1).max(36_500).nullable().optional(),
         failedJobRetentionHours: z.number().int().min(1).max(87_600).nullable().optional(),
         pollingIntervalsMinutes: z.object({
           marketCoinGecko: z.number().int().min(5).max(10_080),
@@ -410,6 +431,12 @@ const registerRoutes = ({
       }).strict(),
       value: req.body
     }) as Partial<UserSettings>;
+    if (changes.savedGraphs) {
+      validateSavedGraphNames({
+        current: (await context.settings.get()).savedGraphs,
+        next: changes.savedGraphs
+      });
+    }
     const settings = await context.settings.patch({ changes });
     const retention = Object.hasOwn(changes, 'retentionDays')
       ? await context.retention.apply({ retentionDays: settings.retentionDays })
@@ -608,7 +635,11 @@ const registerRoutes = ({
       schema: z.object({
         from: z.coerce.number().int().nonnegative(),
         to: z.coerce.number().int().positive(),
-        quoteCurrencies: z.string().optional()
+        quoteCurrencies: z.string().optional(),
+        granularitySeconds: z.union([
+          z.literal('auto'),
+          z.coerce.number().int().positive()
+        ]).default('auto')
       }),
       value: req.query
     });
@@ -624,6 +655,7 @@ const registerRoutes = ({
       data: await context.portfolio.series({
         fromMs: query.from,
         toMs: query.to,
+        granularitySeconds: query.granularitySeconds,
         ...(query.quoteCurrencies ? {
           quoteCurrencies: query.quoteCurrencies.split(',')
             .map((currency) => currency.trim().toUpperCase())
@@ -803,7 +835,10 @@ const registerRoutes = ({
         quoteCurrencies: z.string().optional(),
         from: z.coerce.number().int().nonnegative(),
         to: z.coerce.number().int().positive(),
-        granularitySeconds: z.coerce.number().int().positive()
+        granularitySeconds: z.union([
+          z.literal('auto'),
+          z.coerce.number().int().positive()
+        ]).default('auto')
       }),
       value: req.query
     });
@@ -899,7 +934,11 @@ const registerRoutes = ({
       schema: z.object({
         from: z.coerce.number().int().nonnegative(),
         to: z.coerce.number().int().positive(),
-        quoteCurrencies: z.string().optional()
+        quoteCurrencies: z.string().optional(),
+        granularitySeconds: z.union([
+          z.literal('auto'),
+          z.coerce.number().int().positive()
+        ]).default('auto')
       }),
       value: req.query
     });
@@ -908,6 +947,7 @@ const registerRoutes = ({
       data: await context.kraken.series({
         fromMs: query.from,
         toMs: query.to,
+        granularitySeconds: query.granularitySeconds,
         ...(query.quoteCurrencies ? {
           quoteCurrencies: query.quoteCurrencies.split(',')
             .map((currency) => currency.trim().toUpperCase())

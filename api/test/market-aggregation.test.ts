@@ -90,6 +90,37 @@ describe('cached market resolution', () => {
     ]);
   });
 
+  it('keeps sparse coarse history when a finer zoom resolution is requested', () => {
+    expect(aggregateCachedMarketRows({
+      granularitySeconds: 900,
+      rows: [
+        point({
+          bucket_start_ms: 0,
+          granularity_seconds: 86_400,
+          close_value: '90'
+        }),
+        point({
+          bucket_start_ms: 900_000,
+          granularity_seconds: 300,
+          close_value: '101'
+        }),
+        point({
+          bucket_start_ms: 1_200_000,
+          granularity_seconds: 300,
+          close_value: '102'
+        })
+      ]
+    }).map((row) => ({
+      bucket: row.bucket_start_ms,
+      close: row.close_value,
+      sourceGranularity: JSON.parse(row.provenance_json).sourceGranularitySeconds
+        ?? row.granularity_seconds
+    }))).toEqual([
+      { bucket: 0, close: '90', sourceGranularity: 86_400 },
+      { bucket: 900_000, close: '102', sourceGranularity: 300 }
+    ]);
+  });
+
   it('prefers a direct quote and otherwise uses a same-bucket CoinGecko ratio', () => {
     const rows = [
       point({ quote_currency: 'USD', close_value: '100', open_value: '90', high_value: '110', low_value: '80' }),

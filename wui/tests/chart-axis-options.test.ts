@@ -3,6 +3,7 @@ import {
   buildChartAxisOptions,
   filterChartAxisOptions
 } from '../src/lib/chart-axis-options.js';
+import { chartDenominationOptionsFromAssets } from '../src/lib/chart-axis-catalog.js';
 
 describe('chart Y-axis options', () => {
   const options = buildChartAxisOptions({
@@ -39,5 +40,31 @@ describe('chart Y-axis options', () => {
     expect(filterChartAxisOptions({ options, query: 'ethereum crypto' }).map((option) => option.value))
       .toEqual(['ethereum']);
     expect(filterChartAxisOptions({ options, query: 'missing' })).toEqual([]);
+  });
+
+  it('builds shared Address and Kraken crypto options from every enabled market asset', () => {
+    expect(chartDenominationOptionsFromAssets([
+      {
+        canonicalId: 'bitcoin',
+        symbol: 'btc',
+        name: 'Bitcoin',
+        enabled: true
+      },
+      {
+        canonicalId: 'dogecoin',
+        symbol: 'doge',
+        name: 'Dogecoin',
+        enabled: true
+      },
+      {
+        canonicalId: 'ethereum',
+        symbol: 'eth',
+        name: 'Ethereum',
+        enabled: false
+      }
+    ])).toEqual([
+      { id: 'bitcoin', symbol: 'BTC', label: 'BTC · Bitcoin' },
+      { id: 'dogecoin', symbol: 'DOGE', label: 'DOGE · Dogecoin' }
+    ]);
   });
 });

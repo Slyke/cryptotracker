@@ -6,29 +6,35 @@
   } from '$lib/chart-axis-options';
 
   export let id: string;
-  export let value: string;
+  export let value: string[] = [];
   export let options: ChartAxisOption[] = [];
   export let disabled = false;
-  export let label = 'option';
+  export let label = 'options';
+  export let maximum = 5;
 
-  const dispatch = createEventDispatcher<{ change: { value: string } }>();
+  const dispatch = createEventDispatcher<{ change: { value: string[] } }>();
   let root: HTMLDivElement;
   let trigger: HTMLButtonElement;
   let searchInput: HTMLInputElement;
   let open = false;
   let query = '';
   let filteredOptions: ChartAxisOption[] = [];
-  let activeIndex = 0;
+  let limitMessage = '';
 
-  $: {
-    filteredOptions = filterChartAxisOptions({ options, query });
-    activeIndex = 0;
-  }
-  $: selectedLabel = options.find((option) => option.value === value)?.label ?? value;
+  $: filteredOptions = filterChartAxisOptions({ options, query });
+  $: selectedLabels = value.map((selectedValue) => (
+    options.find((option) => option.value === selectedValue)?.label ?? selectedValue
+  ));
+  $: triggerLabel = value.length === 0
+    ? 'None selected'
+    : value.length === 1
+      ? selectedLabels[0]!
+      : `${value.length} selected · ${selectedLabels.join(', ')}`;
 
   const openDropdown = async () => {
     if (disabled) return;
     query = '';
+    limitMessage = '';
     open = true;
     await tick();
     searchInput?.focus();
@@ -37,47 +43,26 @@
   const closeDropdown = async ({ restoreFocus = false } = {}) => {
     open = false;
     query = '';
+    limitMessage = '';
     if (restoreFocus) {
       await tick();
       trigger?.focus();
     }
   };
 
-  const selectOption = async (option: ChartAxisOption) => {
-    value = option.value;
+  const toggleOption = (option: ChartAxisOption) => {
+    if (value.includes(option.value)) {
+      value = value.filter((selectedValue) => selectedValue !== option.value);
+      limitMessage = '';
+    } else {
+      if (value.length >= maximum) {
+        limitMessage = `Choose up to ${maximum} popup units. Untick one before adding another.`;
+        return;
+      }
+      value = [...value, option.value];
+      limitMessage = '';
+    }
     dispatch('change', { value });
-    await closeDropdown({ restoreFocus: true });
-  };
-
-  const handleTriggerKeydown = (event: KeyboardEvent) => {
-    if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
-    event.preventDefault();
-    void openDropdown();
-  };
-
-  const handleSearchKeydown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      void closeDropdown({ restoreFocus: true });
-      return;
-    }
-    if (filteredOptions.length === 0) return;
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      activeIndex = (activeIndex + 1) % filteredOptions.length;
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      activeIndex = (activeIndex - 1 + filteredOptions.length) % filteredOptions.length;
-    } else if (event.key === 'Home') {
-      event.preventDefault();
-      activeIndex = 0;
-    } else if (event.key === 'End') {
-      event.preventDefault();
-      activeIndex = filteredOptions.length - 1;
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
-      void selectOption(filteredOptions[activeIndex]!);
-    }
   };
 
   const handleOutsidePointer = (event: PointerEvent) => {
@@ -96,6 +81,12 @@
     ) void closeDropdown();
   };
 
+  const handleSearchKeydown = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    void closeDropdown({ restoreFocus: true });
+  };
+
   const optionId = (option: ChartAxisOption) => (
     `${id}-option-${option.value.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')}`
   );
@@ -103,7 +94,7 @@
 
 <svelte:window on:pointerdown={handleOutsidePointer} />
 
-<div class="searchable-select" bind:this={root} on:focusout={handleFocusOut}>
+<div class="searchable-multi-select" bind:this={root} on:focusout={handleFocusOut}>
   <button
     class="select-trigger"
     bind:this={trigger}
@@ -114,9 +105,8 @@
     aria-expanded={open}
     aria-controls={`${id}-listbox`}
     on:click={() => (open ? void closeDropdown() : void openDropdown())}
-    on:keydown={handleTriggerKeydown}
   >
-    <span>{selectedLabel}</span>
+    <span>{triggerLabel}</span>
     <span class="chevron" aria-hidden="true">{open ? '▴' : '▾'}</span>
   </button>
 
@@ -130,9 +120,6 @@
         placeholder={`Search ${label}`}
         autocomplete="off"
         aria-controls={`${id}-listbox`}
-        aria-activedescendant={filteredOptions[activeIndex]
-          ? optionId(filteredOptions[activeIndex]!)
-          : undefined}
         bind:value={query}
         on:keydown={handleSearchKeydown}
       />
@@ -141,34 +128,51 @@
         id={`${id}-listbox`}
         role="listbox"
         aria-label={label}
+        aria-multiselectable="true"
       >
         {#each filteredOptions as option, index (option.value)}
           {#if index === 0 || filteredOptions[index - 1]?.group !== option.group}
             <div class="option-group" aria-hidden="true">{option.group}</div>
           {/if}
           <button
-            class:active={index === activeIndex}
             class="select-option"
             id={optionId(option)}
             type="button"
             role="option"
-            aria-selected={option.value === value}
-            on:mousemove={() => (activeIndex = index)}
-            on:click={() => void selectOption(option)}
-          >{option.label}</button>
+            aria-selected={value.includes(option.value)}
+            on:click={() => toggleOption(option)}
+          >
+            <span class="tick" aria-hidden="true">{value.includes(option.value) ? '✓' : ''}</span>
+            <span>{option.label}</span>
+          </button>
         {/each}
         {#if filteredOptions.length === 0}
-          <p class="no-results" role="status">No {label} matches “{query}”.</p>
+          <p class="no-results" role="status">No {label} match “{query}”.</p>
         {/if}
       </div>
+      <div class="selection-footer">
+        <span>{value.length} of {maximum} selected</span>
+        {#if value.length > 0}
+          <button
+            class="ghost compact"
+            type="button"
+            on:click={() => {
+              value = [];
+              limitMessage = '';
+              dispatch('change', { value });
+            }}
+          >Clear</button>
+        {/if}
+      </div>
+      {#if limitMessage}<p class="limit-message" role="status">{limitMessage}</p>{/if}
     </div>
   {/if}
 </div>
 
 <style>
-  .searchable-select {
+  .searchable-multi-select {
     position: relative;
-    min-width: min(100%, 17rem);
+    min-width: min(100%, 20rem);
   }
 
   .select-trigger {
@@ -211,10 +215,10 @@
 
   .select-popover {
     position: absolute;
-    z-index: 40;
+    z-index: 45;
     top: calc(100% + 0.35rem);
     left: 0;
-    width: min(28rem, calc(100vw - 2rem));
+    width: min(30rem, calc(100vw - 2rem));
     padding: 0.65rem;
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-md);
@@ -244,7 +248,9 @@
     --button-text: var(--color-text);
     --button-hover-bg: var(--color-start-fill);
     --button-hover-border: var(--color-start-border);
-    justify-content: flex-start;
+    display: grid;
+    grid-template-columns: 1.35rem minmax(0, 1fr);
+    justify-content: stretch;
     width: 100%;
     min-height: 2.35rem;
     padding: 0.45rem 0.55rem;
@@ -256,22 +262,33 @@
   }
 
   .select-option:hover,
-  .select-option:active,
-  .select-option.active {
+  .select-option:active {
     border-color: var(--color-start-border);
     background: var(--color-start-fill);
     box-shadow: none;
     transform: none;
   }
 
-  .select-option[aria-selected="true"] {
+  .tick {
     color: var(--color-start);
-    font-weight: 800;
+    font-weight: 900;
   }
 
-  .no-results {
-    margin: 0;
-    padding: 0.8rem 0.55rem;
+  .selection-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-height: 2.3rem;
+    padding: 0.45rem 0.2rem 0;
     color: var(--color-muted);
+    font-size: 0.82rem;
+  }
+
+  .limit-message,
+  .no-results {
+    margin: 0.5rem 0.35rem;
+    color: var(--color-mid);
+    font-size: 0.82rem;
   }
 </style>

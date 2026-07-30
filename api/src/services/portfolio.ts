@@ -1,9 +1,17 @@
 import { Decimal } from 'decimal.js';
 import type { LoadedRuntime } from '../config/load.js';
 import type { AppDatabase } from '../db/index.js';
+import {
+  boundedOverviewGranularity,
+  resolveAutoGranularity
+} from '../domain/graphs.js';
 import { canonicalKrakenAsset } from '../domain/kraken-assets.js';
 import { createId } from '../utils/ids.js';
-import { enabledChartDenominations, historicalPriceLookup } from './chart-values.js';
+import {
+  chartDenominationsAt,
+  enabledChartDenominations,
+  historicalPriceLookup
+} from './chart-values.js';
 import { addressEvents, krakenEvents } from './event-markers.js';
 
 interface PortfolioSnapshotRow {
@@ -311,15 +319,18 @@ export class PortfolioService {
   async series({
     fromMs,
     toMs,
-    quoteCurrencies
+    quoteCurrencies,
+    granularitySeconds = 'auto'
   }: {
     fromMs: number;
     toMs: number;
     quoteCurrencies?: string[];
+    granularitySeconds?: number | 'auto';
   }) {
     const currencyConfig = await this.configuredCurrencies();
     const currencies = [...new Set([
       currencyConfig.primaryCurrency,
+      'USD',
       ...(quoteCurrencies ?? currencyConfig.currencies)
         .map((currency) => currency.toUpperCase())
         .filter((currency) => /^[A-Z]{3}$/.test(currency))
@@ -332,13 +343,39 @@ export class PortfolioService {
     const effectiveFromMs = fromMs === 0
       ? Number(oldest?.oldest ?? toMs)
       : fromMs;
+    const requestedGranularitySeconds = granularitySeconds === 'auto'
+      ? resolveAutoGranularity({ fromMs: effectiveFromMs, toMs })
+      : granularitySeconds;
+    const sourceGranularitySeconds = 1_800;
+    const resolvedGranularitySeconds = boundedOverviewGranularity({
+      requestedGranularity: Math.max(
+        sourceGranularitySeconds,
+        requestedGranularitySeconds
+      ),
+      fromMs: effectiveFromMs,
+      toMs,
+      seriesCount: 1
+    });
+    const bucketMs = resolvedGranularitySeconds * 1_000;
     const snapshots = await this.db.query<PortfolioSnapshotRow>({
       sql: `
-        SELECT * FROM portfolio_snapshots
-        WHERE captured_at_ms >= ? AND captured_at_ms <= ?
+        WITH ranked_snapshots AS (
+          SELECT *,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY CAST(captured_at_ms / ? AS INTEGER)
+                   ORDER BY captured_at_ms DESC
+                 ) AS bucket_rank
+          FROM portfolio_snapshots
+          WHERE captured_at_ms >= ? AND captured_at_ms <= ?
+        )
+        SELECT id, captured_at_ms, primary_currency, values_json,
+               quantities_json, priced_coverage_percent,
+               incomplete_balance_count, provenance_json
+        FROM ranked_snapshots
+        WHERE bucket_rank = 1
         ORDER BY captured_at_ms
       `,
-      parameters: [effectiveFromMs, toMs]
+      parameters: [bucketMs, effectiveFromMs, toMs]
     });
     const denominationOptions = await enabledChartDenominations({ db: this.db });
     const allAssetIds = [...new Set(snapshots.flatMap((snapshot) => (
@@ -356,6 +393,7 @@ export class PortfolioService {
         quoteCurrency: currency,
         fromMs: effectiveFromMs,
         toMs,
+        queryGranularitySeconds: resolvedGranularitySeconds,
         disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
       })
     ] as const)));
@@ -386,24 +424,25 @@ export class PortfolioService {
         ];
       }));
       const value = quotes[currencyConfig.primaryCurrency] ?? null;
+      const denominationValues = chartDenominationsAt({
+        denominationOptions,
+        quoteValues: quotes,
+        primaryCurrency: currencyConfig.primaryCurrency,
+        timestampMs,
+        priceAt: ({ assetId, quoteCurrency, timestampMs: priceTimestampMs }) => (
+          lookups.get(quoteCurrency)?.({
+            assetId,
+            timestampMs: priceTimestampMs
+          }) ?? null
+        )
+      });
       return {
         timestampMs,
         value,
         quotes,
         quantities,
         coveragePercent: snapshot.priced_coverage_percent,
-        denominations: Object.fromEntries(denominationOptions.map((option) => {
-          const unitPrice = lookups.get(currencyConfig.primaryCurrency)!({
-            assetId: option.id,
-            timestampMs
-          });
-          return [
-            option.id,
-            value === null || unitPrice === null || new Decimal(unitPrice).isZero()
-              ? null
-              : new Decimal(value).dividedBy(unitPrice).toString()
-          ];
-        }))
+        ...denominationValues
       };
     });
     const addressIds = (await this.db.query<{ id: string }>({
@@ -432,7 +471,10 @@ export class PortfolioService {
         from: new Date(effectiveFromMs).toISOString(),
         to: new Date(toMs).toISOString()
       },
-      granularitySeconds: 1_800,
+      requestedGranularitySeconds,
+      granularitySeconds: resolvedGranularitySeconds,
+      overviewGranularity: resolvedGranularitySeconds,
+      mixedGranularity: resolvedGranularitySeconds > requestedGranularitySeconds,
       denominationOptions,
       events: [...chainEvents, ...exchangeEvents]
         .sort((left, right) => left.timestampMs - right.timestampMs || left.id.localeCompare(right.id)),

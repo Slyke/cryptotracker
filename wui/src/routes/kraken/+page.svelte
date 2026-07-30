@@ -14,6 +14,10 @@
   } from '../../lib/components/chart-types';
   import { apiRequest } from '$lib/api';
   import { persistAccordionState } from '$lib/accordion-state';
+  import {
+    chartDenominationOptionsFromAssets,
+    type ChartAxisAsset
+  } from '$lib/chart-axis-catalog';
   import { configuredCurrencies } from '$lib/currencies';
   import strings from '$lib/i18n/en-CA.json';
   import {
@@ -23,6 +27,7 @@
     formatPercent,
     moveInOrder,
     normalizeOrder,
+    normalizeTooltipUnits,
     relativeRangeWindow,
     savePreferences,
     savedGraphNameExists,
@@ -224,6 +229,9 @@
   let holdings: Holding[] = [];
   let earnAllocations: EarnAllocation[] = [];
   let earnOverview = emptyEarnOverview();
+  let earnOverviewSeries: ChartSeries[] = [];
+  let earnApyOverviewSeries: ChartSeries[] = [];
+  let earnZoomRequestId = 0;
   let visibleEarnSeries = new Set<string>();
   let displayedEarnSeries: ChartSeries[] = [];
   let activity = {
@@ -232,6 +240,9 @@
   };
   let pnl: Record<string, unknown> = {};
   let series: ChartSeries[] = [];
+  let krakenOverviewSeries: ChartSeries[] = [];
+  let krakenResolvedGranularity = 1_800;
+  let krakenZoomRequestId = 0;
   let events: ChartEvent[] = [];
   let denominationOptions: ChartDenominationOption[] = [];
   let costBasisMethod: 'acb' | 'fifo' | 'lifo' = 'acb';
@@ -286,6 +297,7 @@
     showEvents: boolean;
     showVolume: boolean;
     yAxisUnit: string;
+    tooltipUnits: string[];
   };
   const defaultChartQueryState = (): ChartQueryState => ({
     range: '1y',
@@ -296,17 +308,22 @@
     customAgoValue: 365,
     customAgoUnit: 'days'
   });
-  const defaultChartDisplayState = (currency: string): ChartDisplayState => ({
+  const defaultChartDisplayState = (
+    currency: string,
+    tooltipUnits: string[] = [currency]
+  ): ChartDisplayState => ({
     scale: 'linear',
     normalized: false,
     showEvents: true,
     showVolume: false,
-    yAxisUnit: currency
+    yAxisUnit: currency,
+    tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] })
   });
   let krakenChartState = defaultChartQueryState();
   let earnChartState = { ...defaultChartQueryState(), granularity: '86400' };
   let krakenDisplayState = defaultChartDisplayState(primaryCurrency);
   let earnDisplayState = defaultChartDisplayState(primaryCurrency);
+  let earnApyDisplayState = defaultChartDisplayState('%', ['%']);
   let chartPreferencesReady = false;
   const changeColumns = [
     ['change24h', '24-hour change'],
@@ -385,7 +402,11 @@
       showVolume: candidate.showVolume === true,
       yAxisUnit: typeof candidate.yAxisUnit === 'string'
         ? candidate.yAxisUnit
-        : fallback.yAxisUnit
+        : fallback.yAxisUnit,
+      tooltipUnits: normalizeTooltipUnits({
+        value: candidate.tooltipUnits,
+        fallback: fallback.tooltipUnits
+      })
     };
   };
   const chartWindow = (state: ChartQueryState) => {
@@ -428,25 +449,6 @@
     if (duration <= 2 * 365 * 24 * 60 * 60_000) return 86_400;
     return 604_800;
   };
-  const bucketSeries = ({
-    input,
-    granularitySeconds
-  }: {
-    input: ChartSeries[];
-    granularitySeconds: number;
-  }) => input.map((item) => {
-    const byBucket = new Map<number, typeof item.points[number]>();
-    for (const point of item.points) {
-      const bucket = Math.floor(point.timestampMs / (granularitySeconds * 1_000))
-        * granularitySeconds * 1_000;
-      const existing = byBucket.get(bucket);
-      if (!existing || point.timestampMs >= existing.timestampMs) byBucket.set(bucket, point);
-    }
-    return {
-      ...item,
-      points: [...byBucket.values()].sort((left, right) => left.timestampMs - right.timestampMs)
-    };
-  });
   const buildBalanceColumns = () => [
     { id: 'asset', label: 'Asset' },
     { id: 'balance', label: 'Balance' },
@@ -762,7 +764,7 @@
           savedGraphs: SavedGraph[];
           dismissedNotices: string[];
         } }>({ url: '/api/settings' }),
-        apiRequest<{ assets: Array<{ canonicalId: string; enabled: boolean }> }>({
+        apiRequest<{ assets: ChartAxisAsset[] }>({
           url: '/api/watchlist/assets'
         })
       ]);
@@ -791,11 +793,15 @@
         });
         krakenDisplayState = chartDisplayFromSetting({
           value: graphDefaults.krakenDisplayState,
-          fallback: defaultChartDisplayState(primaryCurrency)
+          fallback: defaultChartDisplayState(primaryCurrency, activeCurrencies())
         });
         earnDisplayState = chartDisplayFromSetting({
           value: graphDefaults.krakenEarnDisplayState,
-          fallback: defaultChartDisplayState(primaryCurrency)
+          fallback: defaultChartDisplayState(primaryCurrency, activeCurrencies())
+        });
+        earnApyDisplayState = chartDisplayFromSetting({
+          value: graphDefaults.krakenEarnApyDisplayState,
+          fallback: defaultChartDisplayState('%', ['%'])
         });
         chartPreferencesReady = true;
       }
@@ -823,23 +829,38 @@
           series: ChartSeries[];
           events: ChartEvent[];
           denominationOptions: ChartDenominationOption[];
+          granularitySeconds: number;
+          mixedGranularity: boolean;
         } }>({
-          url: `/api/kraken/series?from=${mainWindow.from}&to=${mainWindow.to}&quoteCurrencies=${quoteCurrencies}`
+          url: `/api/kraken/series?from=${mainWindow.from}&to=${mainWindow.to}&granularitySeconds=${krakenChartState.granularity}&quoteCurrencies=${quoteCurrencies}`
         })
       ]);
       status = statusPayload.status;
       summary = summaryPayload.summary;
       holdings = holdingsPayload.holdings;
       earnOverview = earnPayload.data;
+      const activeDenominationOptions = chartDenominationOptionsFromAssets(watchlistPayload.assets);
+      earnOverview.denominationOptions = [
+        ...new Map([
+          ...earnOverview.denominationOptions,
+          ...activeDenominationOptions
+        ].map((option) => [option.id, option])).values()
+      ];
+      earnOverviewSeries = earnOverview.series;
+      earnApyOverviewSeries = earnOverview.apySeries;
       earnAllocations = earnOverview.allocations;
       activity = activityPayload.activity;
       pnl = pnlPayload.pnl;
-      series = bucketSeries({
-        input: seriesPayload.data.series,
-        granularitySeconds: chartGranularity(krakenChartState)
-      });
+      krakenOverviewSeries = seriesPayload.data.series;
+      series = krakenOverviewSeries;
+      krakenResolvedGranularity = seriesPayload.data.granularitySeconds;
       events = seriesPayload.data.events;
-      denominationOptions = seriesPayload.data.denominationOptions;
+      denominationOptions = [
+        ...new Map([
+          ...seriesPayload.data.denominationOptions,
+          ...activeDenominationOptions
+        ].map((option) => [option.id, option])).values()
+      ];
       const configuredSeries = graphDefaults.krakenVisibleSeries;
       const knownSeries = new Set(series.map((item) => item.id));
       const defaultSeries = knownSeries.has('kraken-total')
@@ -1156,17 +1177,125 @@
     target,
     event
   }: {
-    target: 'portfolio' | 'earn';
+    target: 'portfolio' | 'earn' | 'earnApy';
     event: CustomEvent<ChartDisplayState>;
   }) => {
     const next = { ...event.detail };
     if (target === 'portfolio') krakenDisplayState = next;
-    else earnDisplayState = next;
+    else if (target === 'earn') earnDisplayState = next;
+    else earnApyDisplayState = next;
     graphDefaults = {
       ...graphDefaults,
-      [target === 'portfolio' ? 'krakenDisplayState' : 'krakenEarnDisplayState']: next
+      [target === 'portfolio'
+        ? 'krakenDisplayState'
+        : target === 'earn'
+          ? 'krakenEarnDisplayState'
+          : 'krakenEarnApyDisplayState']: next
     };
     await savePreferences({ graphDefaults });
+  };
+
+  const mergeDetailedWindow = ({
+    overview,
+    detail,
+    fromMs,
+    toMs
+  }: {
+    overview: ChartSeries[];
+    detail: ChartSeries[];
+    fromMs: number;
+    toMs: number;
+  }) => {
+    const detailById = new Map(detail.map((item) => [item.id, item]));
+    return overview.map((item) => {
+      const points = new Map(item.points
+        .filter((point) => point.timestampMs < fromMs || point.timestampMs > toMs)
+        .map((point) => [point.timestampMs, point]));
+      for (const point of detailById.get(item.id)?.points ?? []) {
+        points.set(point.timestampMs, point);
+      }
+      return {
+        ...item,
+        points: [...points.values()].sort((left, right) => (
+          left.timestampMs - right.timestampMs
+        ))
+      };
+    });
+  };
+
+  const krakenGraphZoomed = async (
+    event: CustomEvent<{ fromMs: number; toMs: number }>
+  ) => {
+    const requestedGranularity = Number(krakenChartState.granularity);
+    if (
+      krakenChartState.granularity === 'auto'
+      || !Number.isFinite(requestedGranularity)
+      || krakenResolvedGranularity <= requestedGranularity
+    ) return;
+    const requestId = ++krakenZoomRequestId;
+    loading = true;
+    try {
+      const quoteCurrencies = encodeURIComponent(activeCurrencies().join(','));
+      const payload = await apiRequest<{
+        data: {
+          series: ChartSeries[];
+        };
+      }>({
+        url: `/api/kraken/series?from=${event.detail.fromMs}&to=${event.detail.toMs}&granularitySeconds=${krakenChartState.granularity}&quoteCurrencies=${quoteCurrencies}`
+      });
+      if (requestId !== krakenZoomRequestId) return;
+      series = mergeDetailedWindow({
+        overview: krakenOverviewSeries,
+        detail: payload.data.series,
+        fromMs: event.detail.fromMs,
+        toMs: event.detail.toMs
+      });
+    } catch (caught) {
+      if (requestId !== krakenZoomRequestId) return;
+      error = caught instanceof Error ? caught.message : 'Kraken zoom detail failed.';
+    } finally {
+      if (requestId === krakenZoomRequestId) loading = false;
+    }
+  };
+
+  const earnGraphZoomed = async (
+    event: CustomEvent<{ fromMs: number; toMs: number }>
+  ) => {
+    const requestedGranularity = Number(earnChartState.granularity);
+    if (
+      earnChartState.granularity === 'auto'
+      || !Number.isFinite(requestedGranularity)
+      || earnOverview.granularitySeconds <= requestedGranularity
+    ) return;
+    const requestId = ++earnZoomRequestId;
+    loading = true;
+    try {
+      const quoteCurrencies = encodeURIComponent(activeCurrencies().join(','));
+      const payload = await apiRequest<{ data: EarnOverview }>({
+        url: `/api/kraken/earn/series?from=${event.detail.fromMs}&to=${event.detail.toMs}&granularitySeconds=${requestedGranularity}&quoteCurrencies=${quoteCurrencies}`
+      });
+      if (requestId !== earnZoomRequestId) return;
+      earnOverview = {
+        ...earnOverview,
+        series: mergeDetailedWindow({
+          overview: earnOverviewSeries,
+          detail: payload.data.series,
+          fromMs: event.detail.fromMs,
+          toMs: event.detail.toMs
+        }),
+        apySeries: mergeDetailedWindow({
+          overview: earnApyOverviewSeries,
+          detail: payload.data.apySeries,
+          fromMs: event.detail.fromMs,
+          toMs: event.detail.toMs
+        })
+      };
+    } catch (caught) {
+      if (requestId !== earnZoomRequestId) return;
+      error = caught instanceof Error ? caught.message : 'Kraken Earn zoom detail failed.';
+    } finally {
+      if (requestId === earnZoomRequestId) loading = false;
+    }
   };
 
   onMount(() => {
@@ -1447,13 +1576,20 @@
         events={earnOverview.events}
         busy={loading}
         initialRange={earnChartState.range}
+        initialCustomFromMs={earnChartState.customFromMs}
+        initialCustomToMs={earnChartState.customToMs}
+        initialCustomRangeMode={earnChartState.customRangeMode}
+        initialCustomAgoValue={earnChartState.customAgoValue}
+        initialCustomAgoUnit={earnChartState.customAgoUnit}
         initialScale={earnDisplayState.scale}
         initialYAxisUnit={earnDisplayState.yAxisUnit}
+        initialTooltipUnits={earnDisplayState.tooltipUnits}
         initialNormalized={earnDisplayState.normalized}
         initialShowEvents={earnDisplayState.showEvents}
         initialShowVolume={earnDisplayState.showVolume}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
         on:viewChange={(event) => void graphViewChanged({ target: 'earn', event })}
+        on:zoomRange={earnGraphZoomed}
       />
       {/if}
 
@@ -1477,12 +1613,20 @@
         emptyMessage="No observed Kraken Earn rate estimates are available yet. Refresh Kraken to capture the current strategy rates."
         busy={loading}
         initialRange={earnChartState.range}
-        initialScale="linear"
-        initialYAxisUnit="%"
-        initialNormalized={false}
-        initialShowEvents={false}
-        initialShowVolume={false}
+        initialCustomFromMs={earnChartState.customFromMs}
+        initialCustomToMs={earnChartState.customToMs}
+        initialCustomRangeMode={earnChartState.customRangeMode}
+        initialCustomAgoValue={earnChartState.customAgoValue}
+        initialCustomAgoUnit={earnChartState.customAgoUnit}
+        initialScale={earnApyDisplayState.scale}
+        initialYAxisUnit={earnApyDisplayState.yAxisUnit}
+        initialTooltipUnits={earnApyDisplayState.tooltipUnits}
+        initialNormalized={earnApyDisplayState.normalized}
+        initialShowEvents={earnApyDisplayState.showEvents}
+        initialShowVolume={earnApyDisplayState.showVolume}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
+        on:viewChange={(event) => void graphViewChanged({ target: 'earnApy', event })}
+        on:zoomRange={earnGraphZoomed}
       />
       {/if}
 
@@ -1677,7 +1821,7 @@
     {denominationOptions}
     source="kraken"
     {timezone}
-    granularity={chartGranularity(krakenChartState)}
+    granularity={krakenResolvedGranularity}
     selectedGranularitySetting={krakenChartState.granularity}
     partial={unpricedHoldings().length > 0}
     partialMessage={krakenPartialMessage()}
@@ -1688,14 +1832,21 @@
     tooltipEnabledAssetIds={[...enabledMarketAssets]}
     showAllTooltipAssetsControl
     initialRange={krakenChartState.range}
+    initialCustomFromMs={krakenChartState.customFromMs}
+    initialCustomToMs={krakenChartState.customToMs}
+    initialCustomRangeMode={krakenChartState.customRangeMode}
+    initialCustomAgoValue={krakenChartState.customAgoValue}
+    initialCustomAgoUnit={krakenChartState.customAgoUnit}
     initialScale={krakenDisplayState.scale}
     initialYAxisUnit={krakenDisplayState.yAxisUnit}
+    initialTooltipUnits={krakenDisplayState.tooltipUnits}
     initialNormalized={krakenDisplayState.normalized}
     initialShowEvents={krakenDisplayState.showEvents}
     initialShowVolume={krakenDisplayState.showVolume}
     saveable
     on:stateChange={(event) => void graphStateChanged({ target: 'portfolio', event })}
     on:viewChange={(event) => void graphViewChanged({ target: 'portfolio', event })}
+    on:zoomRange={krakenGraphZoomed}
     on:saveGraph={saveGraph}
   />
   {/if}

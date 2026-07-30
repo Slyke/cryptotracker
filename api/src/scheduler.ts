@@ -8,6 +8,66 @@ import type { PortfolioService } from './services/portfolio.js';
 import type { RetentionService } from './services/retention.js';
 import type { SettingsService } from './services/settings.js';
 
+const DAY_MS = 24 * 60 * 60_000;
+const HOUR_HISTORY_DAYS = 90;
+const DAILY_HISTORY_DAYS = 2 * 365;
+const COINGECKO_DAILY_HISTORY_DAYS = 365;
+
+export interface MarketHistoryProfile {
+  durationMs: number | null;
+  granularitySeconds: 3_600 | 86_400 | 604_800;
+}
+
+export const effectiveMarketHistoryBackfillDays = ({
+  marketHistoryBackfillDays,
+  retentionDays
+}: {
+  marketHistoryBackfillDays: number | null;
+  retentionDays: number | null;
+}) => {
+  if (marketHistoryBackfillDays === null) return retentionDays;
+  if (retentionDays === null) return marketHistoryBackfillDays;
+  return Math.min(marketHistoryBackfillDays, retentionDays);
+};
+
+export const marketHistoryProfiles = ({
+  provider,
+  marketHistoryBackfillDays,
+  retentionDays
+}: {
+  provider: 'coingecko' | 'coinbase' | 'kraken';
+  marketHistoryBackfillDays: number | null;
+  retentionDays: number | null;
+}): MarketHistoryProfile[] => {
+  const effectiveDays = effectiveMarketHistoryBackfillDays({
+    marketHistoryBackfillDays,
+    retentionDays
+  });
+  const profiles: MarketHistoryProfile[] = [{
+    durationMs: Math.min(effectiveDays ?? HOUR_HISTORY_DAYS, HOUR_HISTORY_DAYS) * DAY_MS,
+    granularitySeconds: 3_600
+  }];
+  if (effectiveDays === null || effectiveDays > HOUR_HISTORY_DAYS) {
+    const dailyLimitDays = provider === 'coingecko'
+      ? COINGECKO_DAILY_HISTORY_DAYS
+      : DAILY_HISTORY_DAYS;
+    profiles.push({
+      durationMs: Math.min(effectiveDays ?? dailyLimitDays, dailyLimitDays) * DAY_MS,
+      granularitySeconds: 86_400
+    });
+  }
+  if (
+    provider !== 'coingecko'
+    && (effectiveDays === null || effectiveDays > DAILY_HISTORY_DAYS)
+  ) {
+    profiles.push({
+      durationMs: effectiveDays === null ? null : effectiveDays * DAY_MS,
+      granularitySeconds: 604_800
+    });
+  }
+  return profiles;
+};
+
 export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
   private readonly lastScheduledAt = new Map<string, number>();
@@ -66,15 +126,6 @@ export class Scheduler {
         settings.primaryCurrency,
         ...settings.tooltipCurrencies
       ])];
-      const historyProfiles = [
-        { durationMs: 90 * 24 * 60 * 60_000, granularitySeconds: 3_600 },
-        { durationMs: 2 * 365 * 24 * 60 * 60_000, granularitySeconds: 86_400 },
-        { durationMs: 5 * 365 * 24 * 60 * 60_000, granularitySeconds: 604_800 }
-      ];
-      const coinGeckoHistoryProfiles = [
-        historyProfiles[0]!,
-        { durationMs: 365 * 24 * 60 * 60_000, granularitySeconds: 86_400 }
-      ];
       const historyBackfillLimitPerCycle = 6;
       let historyBackfillsQueued = 0;
       const watchedAssetIds = (await this.market.listWatchlist())
@@ -109,19 +160,23 @@ export class Scheduler {
                 granularitySeconds: 300
               });
               if (historyBackfillsQueued >= historyBackfillLimitPerCycle) continue;
-              const providerHistoryProfiles = provider === 'coingecko'
-                ? coinGeckoHistoryProfiles
-                : historyProfiles;
+              const providerHistoryProfiles = marketHistoryProfiles({
+                provider: provider as 'coingecko' | 'coinbase' | 'kraken',
+                marketHistoryBackfillDays: settings.marketHistoryBackfillDays,
+                retentionDays: settings.retentionDays
+              });
               for (const profile of providerHistoryProfiles) {
                 if (historyBackfillsQueued >= historyBackfillLimitPerCycle) break;
-                const providerDurationMs = provider === 'kraken'
-                  ? Math.min(profile.durationMs, 720 * profile.granularitySeconds * 1_000)
-                  : profile.durationMs;
+                const providerDurationMs = profile.durationMs === null
+                  ? null
+                  : provider === 'kraken'
+                    ? Math.min(profile.durationMs, 720 * profile.granularitySeconds * 1_000)
+                    : profile.durationMs;
                 const queued = await this.market.queueBackfillIfNeeded({
                   provider,
                   canonicalAssetId,
                   quoteCurrency,
-                  fromMs: now - providerDurationMs,
+                  fromMs: providerDurationMs === null ? 0 : now - providerDurationMs,
                   toMs: now,
                   granularitySeconds: profile.granularitySeconds
                 });

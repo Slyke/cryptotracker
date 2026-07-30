@@ -57,7 +57,7 @@ granularity values are seconds.
 | Method and path | Input | Result |
 |---|---|---|
 | `GET /api/settings` | None | Complete database-backed user settings. |
-| `PATCH /api/settings` | Strict partial settings object | Saves supplied fields only. Supports locale/timezone, theme/font/content width, currencies, market source, disagreement threshold, cost-basis method, graph/page/accordion/table preferences, saved Dashboard items/rows, saved calculations, dismissed notices, retention, failed-job retention, and per-integration polling. Applying a retention field also prunes the selected eligible records. |
+| `PATCH /api/settings` | Strict partial settings object | Saves supplied fields only. Supports locale/timezone, theme/font/content width, currencies, market source, disagreement threshold, cost-basis method, graph/page/accordion/table preferences, saved Dashboard items/rows, saved calculations, dismissed notices, market-history backfill depth, retention, failed-job retention, and per-integration polling. Applying a retention field also prunes the selected eligible records. |
 | `GET /api/providers/status` | None | Provider enablement, health, contribution/cooldown, and Kraken permission state. |
 | `GET /api/sync/progress` | `failedQuery?`, `failedType?`, `failedPage=1`, `failedPageSize=10` (`10`, `20`, `50`, or `100`) | Generated-at time, active/recent jobs, paginated newest-first terminal failures, market cursors, and Kraken cursors. |
 | `GET /api/diagnostics/storage` | None | Database kind/size estimate, category/table row counts, retained ranges, and retention explanation. |
@@ -72,7 +72,8 @@ granularity values are seconds.
 - up to 200 dismissed notice IDs;
 - up to five tooltip currencies;
 - point retention of `null` (Forever) or 1–36,500 days;
-- failed-job retention of `null` or 1–87,600 hours;
+- automatic market-history backfill depth of `null` (maximum provider-available) or 1–36,500 days; the default is 1,825 days;
+- failed-job retention of `null` or 1–87,600 hours; the default is 720 hours (one month);
 - polling intervals of 5–10,080 minutes.
 
 ## Catalog, watchlist, market, and portfolio
@@ -88,9 +89,9 @@ granularity values are seconds.
 | `DELETE /api/watchlist/assets/:id` | Exact watchlist row ID | `204`; removes the watchlist row without deleting shared market history. |
 | `GET /api/watchlist/currencies` | None | Primary and tooltip currencies. |
 | `PUT /api/watchlist/currencies` | `{ primaryCurrency, tooltipCurrencies[1..5] }` | Saves the normalized three-letter codes. |
-| `GET /api/market/series` | Required `assetIds`, `from`, `to`; optional `quoteCurrency=CAD`, `source=combined`, `granularity=auto`, `chartMode=line` | Cached market series, candles/points, resolved granularity, provenance, events, quality flags, and missing intervals. `from` must be less than `to`. |
+| `GET /api/market/series` | Required `assetIds`, `from`, `to`; optional `quoteCurrency=CAD`, `source=combined`, `granularity=auto`, `chartMode=line` | Cached market series, candles/points, resolved granularity, provenance, events, quality flags, and missing intervals. Explicit granularities retain sparse older coarse observations and use finer cached observations where available, which supports zooming without fabricating points. `from` must be less than `to`; extremely large range/resolution combinations are rejected. |
 | `GET /api/market/metrics` | `assetIds`, `quoteCurrencies=CAD`; capped at 100 assets and six currencies | Current prices and configured change periods for balance tables. |
-| `GET /api/portfolio/series` | Required `from`, `to`; optional `quoteCurrencies` (up to six) | Locally observed combined address/Kraken portfolio value, event markers, asset denominations, and quality flags. `from=0` requests all retained history. |
+| `GET /api/portfolio/series` | Required `from`, `to`; optional `quoteCurrencies` (up to six), `granularitySeconds=auto` | Locally observed combined address/Kraken portfolio value, event markers, every activated asset denomination, resolved overview granularity, and quality flags. USD is always loaded as an internal reserve quote; `denominationFallbacks` marks points derived through it. `from=0` requests all retained history; long fine-detail requests are bucketed before snapshots and price rows are loaded. |
 | `POST /api/market/backfill` | `{ provider, canonicalAssetId, quoteCurrency, fromMs, toMs, granularitySeconds }` | `202`; queues missing supported provider history. |
 | `POST /api/market/repair` | Same as backfill | `202`; queues an explicit overlapping repair. |
 
@@ -109,7 +110,7 @@ providers. `chartMode` is `line` or `candlestick`.
 | `PUT /api/addresses/:id/assets` | `{ assets: [{ canonicalAssetId, contractOrMint }] }` | Replaces optional token selections, resets the provider cursor, and queues a replay. The native asset remains implicit. |
 | `POST /api/addresses/:id/refresh` | Empty JSON | `202`; queues a manual read-only refresh or reports that the provider is unavailable. |
 | `GET /api/addresses/holdings` | `quoteCurrency=CAD`, optional `quoteCurrencies` (up to six) | Current observed quantities, values, per-currency values, pricing coverage/reason, and history coverage. |
-| `GET /api/addresses/series` | Required `from`, `to`, `granularitySeconds`; optional `quoteCurrency=CAD`, `quoteCurrencies` | Individual and combined address series, events, denomination choices, and quality/completeness. |
+| `GET /api/addresses/series` | Required `from`, `to`; optional `granularitySeconds=auto`, `quoteCurrency=CAD`, `quoteCurrencies` | Individual and combined address series, events, denomination choices, requested/resolved granularity, and quality/completeness. Generated timelines use per-series and whole-response point budgets. |
 
 Networks are `bitcoin`, `dogecoin`, `ethereum`, `polkadot`, and `solana`. An asset selection contains
 a nullable contract/mint; service validation enforces the network’s native asset and reviewed token
@@ -127,7 +128,7 @@ mapping rules.
 | `GET /api/kraken/earn/series` | Required `from`, `to`; optional `granularitySeconds=86400` (minimum 60), `quoteCurrencies` | Earn summary/assets/allocations, reconstructed/exact balance series, locally observed APY series, events/activity, payout distribution, denominations, and coverage messages. |
 | `GET /api/kraken/activity` | `limit=200`, range `1..500` | Imported trades and ledger entries. |
 | `GET /api/kraken/pnl` | `method=acb`; `acb`, `fifo`, or `lifo` | Informational realised result, basis coverage, lots/dispositions, and incomplete-basis state. Invalid values fall back to ACB. |
-| `GET /api/kraken/series` | Required `from`, `to`; optional `quoteCurrencies` (up to six) | Total and per-asset locally observed value series, denominations, and Kraken/transfer events. |
+| `GET /api/kraken/series` | Required `from`, `to`; optional `quoteCurrencies` (up to six), `granularitySeconds=auto` | Total and per-asset locally observed value series, requested/resolved granularity, denominations, and Kraken/transfer events. Snapshot and price rows are bucketed in the database for bounded long-range overviews. |
 
 No Kraken route places/cancels orders, deposits, withdraws, transfers, changes settings, changes Earn
 allocations, or calls Futures.

@@ -12,6 +12,63 @@ const signIn = async (page: Page) => {
   await expect(page.getByRole('navigation')).toBeVisible();
 };
 
+test('chart warnings and selector edge styling render above the chart controls', async ({ page }) => {
+  await signIn(page);
+  await page.getByRole('link', { name: 'Markets', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Markets', exact: true })).toBeVisible();
+  const expandMarketChart = page.getByRole('button', { name: 'Expand Market chart' });
+  const wasCollapsed = await expandMarketChart.isVisible();
+  if (wasCollapsed) await expandMarketChart.click();
+
+  const dataWarning = page.getByRole('button', { name: 'Partial data notice' }).first();
+  await expect(dataWarning).toBeVisible();
+  expect(await dataWarning.evaluate((element) => (
+    element.parentElement?.classList.contains('chart-toolbar')
+    && element.parentElement.lastElementChild === element
+  ))).toBe(true);
+  const rangeControl = dataWarning.locator(
+    'xpath=../div[./label[normalize-space()="Range"]]/select'
+  );
+  const [warningBounds, rangeBounds] = await Promise.all([
+    dataWarning.boundingBox(),
+    rangeControl.boundingBox()
+  ]);
+  expect(warningBounds).not.toBeNull();
+  expect(rangeBounds).not.toBeNull();
+  expect(Math.abs(
+    warningBounds!.y + warningBounds!.height
+    - (rangeBounds!.y + rangeBounds!.height)
+  )).toBeLessThanOrEqual(1);
+  await dataWarning.hover();
+  const dataWarningTooltip = dataWarning.getByRole('tooltip');
+  await expect(dataWarningTooltip).toBeVisible();
+  expect(await dataWarningTooltip.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return document.elementFromPoint(
+      bounds.left + bounds.width / 2,
+      bounds.top + bounds.height / 2
+    ) === element;
+  })).toBe(true);
+
+  const chartPanel = dataWarning.locator('xpath=ancestor::section[contains(@class,"chart-panel")]');
+  await chartPanel.getByText('Scale bounds, display, events, and exports', { exact: true }).click();
+  for (const label of ['Y-axis unit', 'Popup units']) {
+    expect(await chartPanel.getByLabel(label, { exact: true }).evaluate((element) => ({
+      topGlint: getComputedStyle(element, '::before').display,
+      bottomShade: getComputedStyle(element, '::after').display
+    }))).toEqual({ topGlint: 'none', bottomShade: 'block' });
+  }
+  for (const label of ['Minimum', 'Maximum']) {
+    expect(await chartPanel.getByLabel(label, { exact: true }).evaluate((element) => (
+      getComputedStyle(element).boxShadow.includes('inset')
+    ))).toBe(true);
+  }
+
+  if (wasCollapsed) {
+    await page.getByRole('button', { name: 'Collapse Market chart' }).click();
+  }
+});
+
 test('currency popup, refresh state, SHIB holdings, and Earn coverage work on real pages', async ({ page }) => {
   await signIn(page);
   await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
@@ -212,7 +269,7 @@ test('Kraken Earn rates, configured currencies, and chart inspection controls ar
 
   await expect(
     page.locator('#kraken-earn-history-granularity option[value="3600"]')
-  ).toBeDisabled();
+  ).toBeEnabled();
   await expect(page.locator('.chart[aria-label*="Click or focus to enable horizontal time navigation"]').first())
     .toBeVisible();
   if (!totalWasSelected) {

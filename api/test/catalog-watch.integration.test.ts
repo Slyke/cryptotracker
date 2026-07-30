@@ -93,6 +93,16 @@ describe('ranked catalog watch actions', () => {
       });
 
       await market.patchAsset({ id: asset.id, enabled: false });
+      const bucketStartMs = Math.floor(now / 86_400_000) * 86_400_000;
+      await db.run({
+        sql: `
+          INSERT INTO market_points(
+            id, provider, canonical_asset_id, quote_currency, bucket_start_ms,
+            granularity_seconds, data_kind, close_value, retrieved_at_ms
+          ) VALUES ('disabled-eth-history', 'coingecko', 'ethereum', 'CAD', ?, 86400, 'native', '5000', ?)
+        `,
+        parameters: [bucketStartMs, now]
+      });
       const job = await db.one<{ status: string }>({
         sql: 'SELECT status FROM jobs WHERE id = ?',
         parameters: ['job-eth']
@@ -109,11 +119,27 @@ describe('ranked catalog watch actions', () => {
       const progress = await new DiagnosticsService(
         db, runtime, market, null as never, null as never
       ).syncProgress();
+      const savedDashboardSeries = await market.getSeries({
+        assetIds: ['ethereum'],
+        quoteCurrency: 'CAD',
+        source: 'combined',
+        fromMs: bucketStartMs,
+        toMs: bucketStartMs + 86_400_000,
+        granularity: 86_400,
+        chartMode: 'line'
+      });
 
       expect(job?.status).toBe('cancelled');
       expect(backfill).toMatchObject({ skipped: true, canonicalAssetId: 'ethereum' });
       expect(progress.market).toEqual([]);
       expect(progress.jobs.some((entry) => entry.id === 'job-eth')).toBe(false);
+      expect(savedDashboardSeries.series).toEqual([
+        expect.objectContaining({
+          id: 'ethereum',
+          label: 'ETH · Ethereum',
+          points: [expect.objectContaining({ value: '5000' })]
+        })
+      ]);
     } finally {
       await db.close();
     }

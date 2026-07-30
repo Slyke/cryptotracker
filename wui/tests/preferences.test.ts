@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  chartDisplayStateFromSetting,
+  chartQueryStateFromSetting,
+  defaultChartDisplayState,
+  defaultChartQueryState,
   formatDateTime,
   formatDisplayNumber,
   formatPercent,
+  historyDepthRetentionWarning,
   moveInOrder,
   normalizeOrder,
   relativeRangeWindow,
@@ -34,6 +39,73 @@ describe('database-backed UI preferences', () => {
   it('toggles a block in the persisted collapsed list', () => {
     expect(toggleCollapsed({ collapsed: ['sync'], id: 'storage' })).toEqual(['sync', 'storage']);
     expect(toggleCollapsed({ collapsed: ['sync', 'storage'], id: 'sync' })).toEqual(['storage']);
+  });
+
+  it('restores persisted chart query and display controls with safe fallbacks', () => {
+    expect(chartQueryStateFromSetting({
+      value: {
+        range: 'all',
+        granularity: '300',
+        customFromMs: 1,
+        customToMs: 2,
+        customRangeMode: 'ago',
+        customAgoValue: 4,
+        customAgoUnit: 'years'
+      },
+      fallback: defaultChartQueryState()
+    })).toEqual({
+      range: 'all',
+      granularity: '300',
+      customFromMs: 1,
+      customToMs: 2,
+      customRangeMode: 'ago',
+      customAgoValue: 4,
+      customAgoUnit: 'years'
+    });
+    expect(chartDisplayStateFromSetting({
+      value: {
+        scale: 'log',
+        normalized: true,
+        showEvents: false,
+        showVolume: true,
+        yAxisUnit: 'ethereum',
+        tooltipUnits: ['CAD', 'USD', 'bitcoin', 'ethereum', 'dogecoin', 'solana']
+      },
+      fallback: defaultChartDisplayState('CAD')
+    })).toEqual({
+      scale: 'log',
+      normalized: true,
+      showEvents: false,
+      showVolume: true,
+      yAxisUnit: 'ethereum',
+      tooltipUnits: ['CAD', 'USD', 'bitcoin', 'ethereum', 'dogecoin']
+    });
+    expect(chartQueryStateFromSetting({
+      value: { customAgoValue: 0, customAgoUnit: 'centuries' },
+      fallback: defaultChartQueryState()
+    })).toMatchObject({
+      customAgoValue: 1,
+      customAgoUnit: 'days'
+    });
+  });
+
+  it('warns when retention is shorter than automatic market-history synchronization', () => {
+    expect(historyDepthRetentionWarning({
+      retentionDays: 730,
+      marketHistoryBackfillDays: 1_825
+    })).toContain('Retention is set to 730 days');
+    expect(historyDepthRetentionWarning({
+      retentionDays: 730,
+      marketHistoryBackfillDays: null
+    })).toContain('maximum available history');
+    expect(historyDepthRetentionWarning({
+      retentionDays: null,
+      marketHistoryBackfillDays: null
+    })).toBeNull();
+    expect(historyDepthRetentionWarning({
+      retentionDays: 3_650,
+      marketHistoryBackfillDays: 1_825
+    })).toBeNull();
   });
 
   it('rounds displayed percentages to at most four decimals', () => {

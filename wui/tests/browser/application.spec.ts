@@ -18,16 +18,62 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await page.getByRole('button', { name: /refresh catalog/i }).click();
   await expect(catalogFilter).toHaveValue('');
   await expect(page.getByRole('button', { name: /save table to dashboard/i })).toBeVisible();
+  const performanceRange = page.locator('#market-performance-range');
+  await expect(performanceRange).toBeVisible();
+  await expect(page.getByRole('button', { name: /save chart to dashboard/i })).toBeVisible();
+  await performanceRange.selectOption('custom');
+  await expect(page.locator('#market-performance-ago-value')).toBeVisible();
+  await expect(page.locator('#market-performance-ago-unit')).toBeVisible();
+  await performanceRange.selectOption('30d');
   await page.getByText(/scale bounds, display, events, and exports/i).click();
   const yAxisUnit = page.getByLabel(/y-axis unit/i);
   await expect(yAxisUnit).toBeVisible();
   await yAxisUnit.click();
   const yAxisSearch = page.getByLabel(/search y-axis currencies or crypto assets/i);
   await expect(yAxisSearch).toBeVisible();
+  const expectedAxisOptions = await page.evaluate(async () => {
+    const [settingsResponse, watchlistResponse] = await Promise.all([
+      fetch('/api/settings'),
+      fetch('/api/watchlist/assets')
+    ]);
+    const settings = (await settingsResponse.json()).settings as {
+      primaryCurrency: string;
+      tooltipCurrencies: string[];
+    };
+    const assets = (await watchlistResponse.json()).assets as Array<{
+      symbol: string;
+      name: string;
+      enabled: boolean;
+    }>;
+    return {
+      currencies: [...new Set([
+        settings.primaryCurrency,
+        ...settings.tooltipCurrencies
+      ].map((currency) => currency.toUpperCase()))],
+      assets: assets.filter((asset) => asset.enabled)
+        .map((asset) => `${asset.symbol.toUpperCase()} · ${asset.name}`)
+    };
+  });
+  const yAxisPopover = page.locator('.select-popover');
+  for (const currency of expectedAxisOptions.currencies) {
+    await expect(yAxisPopover.getByRole('option', {
+      name: new RegExp(`^${currency} ·`)
+    })).toBeVisible();
+  }
+  for (const asset of expectedAxisOptions.assets) {
+    await expect(yAxisPopover.getByRole('option', { name: asset, exact: true })).toBeVisible();
+  }
   await yAxisSearch.fill('primary');
   await expect(page.getByRole('option', { name: /primary currency/i })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(yAxisSearch).toBeHidden();
+  const popupUnits = page.getByLabel(/popup units/i).first();
+  await popupUnits.click();
+  const popupUnitPopover = page.locator('.searchable-multi-select .select-popover').first();
+  for (const asset of expectedAxisOptions.assets) {
+    await expect(popupUnitPopover.getByRole('option', { name: asset, exact: true })).toBeVisible();
+  }
+  await page.keyboard.press('Escape');
   await expect(page.getByLabel(/y scale/i).getByRole('option', { name: /logarithmic/i })).toBeEnabled();
 
   const inspector = page.getByRole('button', { name: /keyboard chart inspector/i });
@@ -66,11 +112,47 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await page.getByRole('link', { name: 'Kraken', exact: true }).click();
   await expect(page.getByRole('heading', { name: /staked value, rewards, and activity/i })).toBeVisible();
   await expect(page.getByRole('heading', { name: /payout distribution/i })).toBeVisible();
+  const krakenChart = page.locator('section.chart-panel').filter({
+    has: page.getByText('Kraken portfolio history', { exact: true })
+  });
+  await expect(krakenChart).toHaveAttribute(
+    'data-effective-axis-option-count',
+    String(expectedAxisOptions.assets.length)
+  );
+  await krakenChart.getByText(/scale bounds, display, events, and exports/i).click();
+  await krakenChart.getByLabel(/y-axis unit/i).click();
+  for (const asset of expectedAxisOptions.assets) {
+    await expect(krakenChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
+  }
+  await page.keyboard.press('Escape');
+  await krakenChart.getByLabel(/popup units/i).click();
+  for (const asset of expectedAxisOptions.assets) {
+    await expect(krakenChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
+  }
+  await page.keyboard.press('Escape');
 
   await page.getByRole('link', { name: 'Addresses', exact: true }).click();
   const addressNetwork = page.locator('#network');
   await expect(addressNetwork).toBeVisible();
   await expect(addressNetwork.getByRole('option', { name: /bitcoin mainnet/i })).toHaveCount(1);
+  const addressChart = page.locator('section.chart-panel').filter({
+    has: page.getByText('Address portfolio history', { exact: true })
+  });
+  await expect(addressChart).toHaveAttribute(
+    'data-effective-axis-option-count',
+    String(expectedAxisOptions.assets.length)
+  );
+  await addressChart.getByText(/scale bounds, display, events, and exports/i).click();
+  await addressChart.getByLabel(/y-axis unit/i).click();
+  for (const asset of expectedAxisOptions.assets) {
+    await expect(addressChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
+  }
+  await page.keyboard.press('Escape');
+  await addressChart.getByLabel(/popup units/i).click();
+  for (const asset of expectedAxisOptions.assets) {
+    await expect(addressChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
+  }
+  await page.keyboard.press('Escape');
 
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: /how far back each source has reached/i })).toBeVisible();

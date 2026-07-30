@@ -45,3 +45,29 @@ export const closestCandidateWithinRadius = <
     ? candidate
     : closest
 ), null);
+
+export const bucketChartSeries = ({
+  series,
+  granularitySeconds
+}: {
+  series: ChartSeries[];
+  granularitySeconds: number;
+}) => {
+  const bucketMs = Math.max(1, Math.floor(granularitySeconds)) * 1_000;
+  return series.map((item) => {
+    const byBucket = new Map<number, ChartSeries['points'][number]>();
+    for (const point of item.points) {
+      const bucket = Math.floor(point.timestampMs / bucketMs) * bucketMs;
+      const existing = byBucket.get(bucket);
+      if (!existing || point.timestampMs >= existing.timestampMs) {
+        byBucket.set(bucket, point);
+      }
+    }
+    return {
+      ...item,
+      points: [...byBucket.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([timestampMs, point]) => ({ ...point, timestampMs }))
+    };
+  });
+};
