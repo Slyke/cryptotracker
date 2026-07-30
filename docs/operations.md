@@ -13,6 +13,12 @@ The production example runs two containers. The application serves the browser a
 
 Named keys in the API `secrets.apiKeys` authenticate REST requests through `X-API-Key`. MCP clients use separate named Bearer keys configured in the sidecar. The sidecar then uses its dedicated upstream API key when calling CryptoTracker. Reusing a client key as the upstream key is rejected at startup.
 
+The exhaustive REST route, input, authentication, response-content, and backup/restore reference is
+in [HTTP API reference](api.md). The optional API HTTPS listener serves only `/api/*` and health
+routes; browser login and WUI pages remain on the normal HTTP ingress unless an external reverse
+proxy supplies browser-facing TLS. `readwrite` REST API keys are non-browser credentials and do not
+send Origin/CSRF headers; `read` keys cannot mutate.
+
 The MCP server exposes:
 
 - one focused `cryptotracker_*` tool per allowlisted `/api` operation, with fixed method/path and path-parameter validation;
@@ -24,9 +30,13 @@ The exhaustive focused-tool list is maintained in `mcp/README.md`. Read identiti
 
 Focused tools accept named route parameters directly (for example `id`), optional query values in `query`, and mutation payloads in `body`. Every focused mutation includes `apply`, defaulting to false; destructive tools additionally include `confirm`.
 
-`api_write` defaults to `apply: false`. DELETE calls require `confirm: true`. A read key cannot call mutations or download a complete application export. Export downloads require a readwrite key plus `confirmSensitiveDownload: true`. The 20 MiB MCP response ceiling prevents accidentally placing an unbounded archive into model context; larger exports remain available through authenticated REST.
+`api_write` defaults to `apply: false`. DELETE calls require `confirm: true`. An MCP read key cannot call mutations or download a complete application export. MCP export downloads require a readwrite key plus `confirmSensitiveDownload: true`. The 20 MiB MCP response ceiling prevents accidentally placing an unbounded archive into model context; larger exports remain available through authenticated REST.
 
 Dry-run and applied MCP writes are recorded in the sidecar’s bounded redacted history. Applied API mutations are also recorded by the API’s database audit log. Named client keys have independent read, write, and destructive fixed-window limits. Set the sidecar’s `readOnly: true` to omit `api_write` and focused mutations from tool discovery entirely.
+
+Binary backup inspection/restore is REST/WUI-only and is intentionally absent from MCP tool
+discovery. Complete-export download remains available to a readwrite MCP client only with
+`confirmSensitiveDownload: true` and within the 20 MiB response ceiling.
 
 Kraken refresh means “import through the immutable query-only Kraken client.” Neither MCP nor REST implements order placement, cancellation, deposits, withdrawals, staking changes, or any other exchange mutation. Current account state that Kraken does not expose historically is stored in `kraken_account_observations`. Each changed response creates a version; an unchanged response only advances the version's `last_seen_at_ms`, avoiding repeated copies of large recent-transfer lists.
 
@@ -62,7 +72,16 @@ For SQLite, persist `/app/data`, including the database, WAL, and SHM files. Use
 
 For PostgreSQL, use normal PostgreSQL physical or logical backup tooling and test restores. Protect both database backups and deployment secrets.
 
-Settings can create a streaming ZIP backup and restore selected dependency-safe JSON data groups. Credentials, password hashes, sessions, jobs, audit history, and deployment secrets are always excluded. A restore atomically replaces the selected application data groups, but the ZIP is not a transaction-consistent substitute for SQLite or PostgreSQL operator backups. Generated download artifacts expire after the configured TTL; canonical rows do not.
+Settings can create a streaming ZIP backup and restore selected dependency-safe Preferences,
+Markets, Addresses, Kraken, Portfolio, and Calculations JSON data groups present in the archive.
+Saved what-if scenarios travel with Preferences; Calculations contains reconciliation and cost-basis
+evidence.
+Credentials, password hashes, sessions, jobs, audit history, and deployment secrets are always
+excluded. Upload inspection validates the manifest, checksums, compressed/expanded size, and group
+dependencies without changing data. A confirmed restore atomically replaces every row in the
+selected groups, but the ZIP is not a transaction-consistent substitute for SQLite or PostgreSQL
+operator backups. Generated download artifacts expire after the configured TTL; canonical rows do
+not.
 
 ## Production container
 

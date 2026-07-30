@@ -10,11 +10,15 @@ npm test
 npm run build
 ```
 
-The API tests cover exact decimal market arithmetic, graph rules, lifecycle rules, address reconstruction, transfer reconciliation, cost-basis methods, authentication/CSRF/proxy behavior, secret exclusion, rate limiting, provider URL allowlists, SQLite migrations, persistent jobs, streaming exports, chain fixtures, market persistence, and interrupted Kraken pagination.
+The API tests cover exact decimal market arithmetic, graph rules, lifecycle rules, address reconstruction, transfer reconciliation, cost-basis methods, authentication/CSRF/proxy behavior, secret exclusion, rate limiting, provider URL allowlists, SQLite migrations, persistent jobs, combined portfolio snapshots, streaming exports, backup inspection/selective restore, retention, chain fixtures, market persistence, and interrupted Kraken/Earn pagination.
 
 The standalone MCP tests cover config/environment precedence, complete disablement, HTTP/HTTPS transport selection, separate upstream/client key loading, timing-safe Bearer authentication, API request construction, read/write tool discovery, dry-run safety, credential redaction, rate-limit isolation, and bounded mutation history.
 
-The WUI tests cover API/CSRF helpers and timezone/DST conversion. Playwright tests are opt-in:
+The WUI unit tests cover API/CSRF helpers, cached document preferences, searchable chart-axis
+options, relative ranges, number/date formatting, and timezone/DST conversion. Opt-in Playwright
+coverage exercises login/navigation, theme and block persistence, chart controls/keyboard
+inspection, Dashboard refresh persistence and row layout, currency popups, market catalog controls,
+address holdings, Kraken Earn/APY coverage, and failed-job filtering/retention payload isolation:
 
 ```bash
 PLAYWRIGHT_BASE_URL=http://127.0.0.1:8192 \

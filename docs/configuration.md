@@ -1,6 +1,8 @@
 # Configuration
 
-CryptoTracker loads optional JSON5 config and secrets files, applies explicit environment overrides, validates the result, and then starts. Unknown or invalid values fail startup.
+CryptoTracker loads optional JSON5 config and secrets files, applies explicit environment overrides,
+validates recognized fields, and then starts. Invalid recognized values fail startup; unrecognized
+object keys are ignored by the current schema and should not be used for forward compatibility.
 
 ## Generic environment references
 
@@ -27,6 +29,96 @@ Use:
 
 Credentials belong only in the secrets file or secret environment variables. Credential changes require a restart.
 
+## JSON5 setting reference
+
+The checked-in example contains a runnable configuration. Omitted fields use the schema defaults
+below; unrecognized fields have no effect.
+
+### Runtime, WUI, and interface defaults
+
+| Path | Default | Meaning |
+|---|---|---|
+| `appName` | `CryptoTracker` | Public application name. |
+| `publicBaseUrl` | `http://localhost:8192` | Canonical browser origin used for secure-cookie and Origin/CSRF decisions. |
+| `api.host` / `api.port` | `0.0.0.0` / `8192` | HTTP API and WUI-ingress listener. |
+| `api.trustProxy` | `false` | Enables Express proxy-address handling; it does not expand trusted-header CIDRs. |
+| `api.bodyLimit` | `256kb` | JSON request-body limit. Binary restore has a separate limit. |
+| `api.https.*` | disabled, port `8194` | API/health-only HTTPS listener and its certificate behavior. |
+| `wui.upstreamBaseUrl` | `http://127.0.0.1:3000` | Fixed internal SvelteKit origin used by ingress. |
+| `wui.healthPath` | `/wui-health` | Internal readiness path; must begin with `/`. |
+| `wui.timeoutMs` | `10000` | WUI health/proxy timeout. |
+| `ui.locale` / `ui.timezone` | `en-CA` / `America/Vancouver` | Initial user setting and display-time context. |
+| `ui.defaultTheme` / `defaultFont` / `defaultContentWidth` | `dark` / `ui-mono` / `standard` | First-user appearance defaults. Width accepts `min`, `1080`, `standard`, `1440`, `1920`, or `full`. |
+| `ui.defaultPrimaryCurrency` | `CAD` | Initial three-letter primary currency. |
+| `ui.defaultTooltipCurrencies` | `["CAD"]` | Initial one-to-five display currencies. |
+| `ui.defaultMarketSource` | `combined` | `combined`, `coingecko`, `coinbase`, or `kraken`. |
+| `ui.defaultProviderDisagreementThresholdPercent` | `5` | Combined-price dispute threshold, from 0 through 1000. |
+| `ui.defaultWatchedAssets` | `["bitcoin"]` | Canonical assets enabled during bootstrap. |
+| `ui.defaultCostBasisMethod` | `acb` | `acb`, `fifo`, or `lifo`. |
+
+These `ui` values seed database-backed user settings; later config-file changes do not overwrite
+preferences that have already been saved.
+
+### Authentication and database
+
+| Path | Default | Meaning |
+|---|---|---|
+| `auth.apiKey.enabled` / `headerName` | `false` / `X-API-Key` | Enables named REST API keys. The header must be a dedicated valid HTTP token. |
+| `auth.local.enabled` / `username` / `sessionTtlMinutes` | `true` / `admin` / `1440` | Single local account and session lifetime. |
+| `auth.header.enabled` | `false` | Enables trusted direct-peer identity headers. |
+| `auth.header.trustedCidrs` | loopback CIDRs | Exact direct peers allowed to assert identity. |
+| `auth.header.usernameHeader` / `groupsHeader` / `groupsSeparator` | `Remote-User` / `Remote-Groups` / `,` | Plain trusted identity parsing. |
+| `auth.header.allowedUsers` / `allowedGroups` | empty | Case-insensitive OR allowlist. At least one entry is required when header auth is enabled. |
+| `auth.header.signedIdentity.*` | disabled | HS256 header, issuer, audience, 0–300 second clock skew, and 60–31,536,000 second maximum token lifetime. |
+| `database.sqlite.busyTimeoutMs` / `synchronous` | `5000` / `FULL` | SQLite lock wait and durability (`OFF`, `NORMAL`, `FULL`, or `EXTRA`). |
+| `database.postgres` | `null` | Host, port, database, user, pool maximum, TLS enablement, and certificate verification. Required in Postgres mode. |
+
+API-key entries in the secrets file have unique names, a minimum 16-character key, and a `read` or
+`readwrite` role. An entry may use `keyFile`; it is resolved and normalized before the runtime
+secrets schema is validated.
+
+### Providers, scheduling, exports, and logging
+
+| Path | Default | Meaning |
+|---|---|---|
+| `providers.market.{coinGecko,coinbase,kraken}` | enabled official URLs | Market adapter enablement, fixed base URL, and independent rate policy. |
+| `providers.chains.bitcoin` | Esplora, 6 confirmations | Bitcoin mainnet history. |
+| `providers.chains.dogecoin` | BlockCypher, 6 confirmations | Dogecoin mainnet history. |
+| `providers.chains.ethereum` | Etherscan + public RPC, chain 1, 12 confirmations | Native/ERC-20 history plus current balance sampling. |
+| `providers.chains.polkadot` | Subscan | Polkadot mainnet history; secret key required for availability. |
+| `providers.chains.solana` | Helius `mainnet-beta` | Native/SPL mainnet history; secret key required. |
+| `sync.pollMinutes` | `30` | Retained compatibility setting. The current scheduler checks once per minute; database-backed per-integration polling preferences decide when work is due. |
+| `sync.maxConcurrentJobs` | `2` | In-process worker concurrency, 1–16. |
+| `sync.staleAfterMinutes` | `90` | Cached-data stale threshold. |
+| `sync.overlapBuckets` | `3` | Recent buckets repeated to repair revisions. |
+| `exports.directory` / `artifactTtlHours` | `/app/data/exports` / `24` | Complete-backup artifact location and expiry. |
+| `exports.restoreBodyLimit` | `128mb` | Compressed ZIP request limit. |
+| `exports.restoreMaxUncompressedBytes` | `536870912` | Independent expanded archive-content ceiling. |
+| `logging.logTextFormat` | documented schema default | Template for text sinks. |
+| `logging.sinks` | console text enabled | Console, file, HTTP, and UDP/TCP/TLS syslog destinations with enablement, format, and level filters. |
+| `logging.gates` | `{}` | Named event gates that can override level and per-sink routing. |
+| `logging.kubernetes.enabled` | `false` | Adds Kubernetes-oriented log metadata. |
+
+Every market and chain provider accepts a `rate` object. In addition to the values listed later in
+this document, it includes `requestTimeoutMs` (1–300 seconds). CoinGecko uses a more conservative
+default spacing/burst/refill policy than the generic provider default.
+
+### Secrets fields
+
+| Path | Required when |
+|---|---|
+| `sessionSecret` | Local or trusted-header browser access is enabled. Use a high-entropy value of at least 32 characters; the current schema requires a non-empty value but does not enforce that recommendation. |
+| `localPassword` | Local authentication is enabled. |
+| `signedIdentitySecret` | Signed trusted identity is enabled. |
+| `apiKeys[]` | REST/MCP-upstream API-key access is enabled. |
+| `providers.coinGeckoApiKey` | Optional higher CoinGecko allowance. |
+| `providers.blockCypherApiToken` | Optional higher Dogecoin allowance. |
+| `providers.etherscanApiKey` | Ethereum/ERC-20 historical transactions. |
+| `providers.heliusApiKey` | Solana/SPL history. |
+| `providers.subscanApiKey` | Polkadot history. |
+| `kraken.apiKey` and `kraken.apiSecret` | Kraken account integration; both or neither. |
+| `postgresPassword` | PostgreSQL mode. |
+
 ## File selection and database
 
 | Variable | Meaning | Default |
@@ -36,6 +128,7 @@ Credentials belong only in the secrets file or secret environment variables. Cre
 | `CRYPTOTRACKER_DB_KIND` | `sqlite` or `postgres` | `sqlite` |
 | `CRYPTOTRACKER_SQLITE_PATH` | SQLite database path | `./data/cryptotracker.sqlite` |
 | `CRYPTOTRACKER_POSTGRES_PASSWORD` | PostgreSQL password | secret file value |
+| `CRYPTOTRACKER_MIGRATIONS_PATH` | Packaging/test override containing `sqlite/` and `postgres/` migration directories | built-in repository/image path |
 
 Postgres host, port, database, user, pool maximum, TLS, and certificate verification are configured under `database.postgres`.
 
@@ -69,7 +162,7 @@ The production launcher also accepts `CRYPTOTRACKER_WUI_HOST`, `CRYPTOTRACKER_WU
 | `CRYPTOTRACKER_AUTH_LOCAL_ENABLED` | Enable local authentication |
 | `CRYPTOTRACKER_AUTH_LOCAL_USERNAME` | Local username |
 | `CRYPTOTRACKER_AUTH_LOCAL_PASSWORD` | Local password secret |
-| `CRYPTOTRACKER_SESSION_SECRET` | Session signing secret, at least 32 characters |
+| `CRYPTOTRACKER_SESSION_SECRET` | Session signing secret; use at least 32 high-entropy characters |
 | `CRYPTOTRACKER_AUTH_HEADER_ENABLED` | Enable trusted-header authentication |
 | `CRYPTOTRACKER_AUTH_HEADER_TRUSTED_CIDRS` | Comma-separated direct-peer CIDRs |
 | `CRYPTOTRACKER_AUTH_HEADER_USERNAME_HEADER` | Identity header |
@@ -82,6 +175,7 @@ The production launcher also accepts `CRYPTOTRACKER_WUI_HOST`, `CRYPTOTRACKER_WU
 | `CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_ISSUER` | Expected issuer |
 | `CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_AUDIENCE` | Expected audience |
 | `CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_SECRET` | HMAC secret |
+| `CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_MAX_TTL_SECONDS` | Maximum accepted `exp - iat`, from 60 seconds through one year |
 
 Allowed users and allowed groups use OR semantics. Never trust identity headers from an Internet-facing peer; restrict `trustedCidrs` to the directly connected authentication proxy.
 
@@ -101,6 +195,11 @@ The normal browser/WUI and local API listener remains HTTP on `api.port` (8192 b
 
 Direct overrides are available as `CRYPTOTRACKER_HTTPS_ENABLED`, `CRYPTOTRACKER_HTTPS_PORT`, `CRYPTOTRACKER_HTTPS_CERT_PATH`, `CRYPTOTRACKER_HTTPS_KEY_PATH`, and `CRYPTOTRACKER_HTTPS_GENERATE_SELF_SIGNED`.
 
+Compose uses `CRYPTOTRACKER_SHARED_CERT_PATH` and `CRYPTOTRACKER_SHARED_KEY_PATH` as interpolation
+inputs for all three services. The one-shot certificate-generator container receives those resolved
+values as `CRYPTOTRACKER_CERT_PATH` and `CRYPTOTRACKER_KEY_PATH`; those two names configure the
+generator helper, not the API listener.
+
 ## MCP sidecar
 
 MCP is a standalone subproject and Compose sidecar. Its public configuration is loaded from `CRYPTOTRACKER_MCP_CONFIG_PATH`; client and upstream keys are loaded from `CRYPTOTRACKER_MCP_SECRETS_PATH`. The checked-in examples are `mcp/config.example.json5` and `mcp/secrets.example.json5`.
@@ -116,7 +215,11 @@ The upstream key must be configured in the API’s `secrets.apiKeys` and must di
 
 Common sidecar overrides include `CRYPTOTRACKER_MCP_ENABLED`, `CRYPTOTRACKER_MCP_READ_ONLY`, `CRYPTOTRACKER_MCP_HTTP_ENABLED`, `CRYPTOTRACKER_MCP_HTTP_PORT`, `CRYPTOTRACKER_MCP_HTTPS_ENABLED`, `CRYPTOTRACKER_MCP_HTTPS_PORT`, `CRYPTOTRACKER_MCP_UPSTREAM_BASE_URL`, `CRYPTOTRACKER_MCP_UPSTREAM_VERIFY_TLS`, `CRYPTOTRACKER_MCP_UPSTREAM_CA_CERT_PATH`, `CRYPTOTRACKER_MCP_READ_CLIENT_API_KEYS`, and `CRYPTOTRACKER_MCP_READWRITE_CLIENT_API_KEYS`. The complete list is in `mcp/.env.example`.
 
-## Provider secret overrides
+## Provider secret environment variables
+
+The checked-in secrets examples map all of these names with whole-value `${ENV_VAR}` references.
+CoinGecko, Etherscan, Helius, Kraken, and PostgreSQL also have direct loader overrides; custom
+secrets files must explicitly reference the BlockCypher and Subscan names.
 
 | Variable | Secret |
 |---|---|

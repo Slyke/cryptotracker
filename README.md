@@ -1,6 +1,6 @@
 # CryptoTracker
 
-CryptoTracker is a self-hosted, single-tenant, read-only cryptocurrency portfolio viewer. It combines cached public market data, public Bitcoin, Dogecoin, Ethereum, Polkadot, and Solana address history, and one query-only Kraken Spot account in a SvelteKit WUI behind one API ingress.
+CryptoTracker is a self-hosted, single-tenant, read-only cryptocurrency portfolio viewer. It combines cached public market data, public Bitcoin, Dogecoin, Ethereum, Polkadot, and Solana address history, and one query-only Kraken Spot account in a SvelteKit WUI behind one API ingress. It also includes saved Dashboard views, local compound-growth scenarios, return/drawdown analytics, synchronization and storage diagnostics, and selective portable backup/restore.
 
 The application never requests wallet secrets, signs transactions, broadcasts blockchain transactions, places orders, transfers funds, or calls a Kraken mutation endpoint.
 
@@ -79,7 +79,7 @@ npm run build
 docker build -f dockerfiles/cryptotracker.Dockerfile -t cryptotracker:local .
 ```
 
-See [configuration](docs/configuration.md), [architecture](docs/architecture.md), [operations](docs/operations.md), [testing](docs/testing.md), and [documented deviations](docs/spec-deviations.md).
+See the [user guide](docs/user-guide.md), [HTTP API reference](docs/api.md), [implemented specification](docs/spec.md), [configuration](docs/configuration.md), [architecture](docs/architecture.md), [operations](docs/operations.md), [testing](docs/testing.md), and [documented deviations](docs/spec-deviations.md).
 
 ## Image publishing
 

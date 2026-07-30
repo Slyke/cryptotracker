@@ -22,7 +22,7 @@ npm ci
 npm run dev
 ```
 
-Set `CRYPTOTRACKER_MCP_CONFIG_PATH` and `CRYPTOTRACKER_MCP_SECRETS_PATH` when the files live elsewhere. Every setting has an environment override; `.env.example` lists the common deployment variables. Environment values take precedence over files.
+Set `CRYPTOTRACKER_MCP_CONFIG_PATH` and `CRYPTOTRACKER_MCP_SECRETS_PATH` when the files live elsewhere. Every setting has an environment override; `.env.example` lists the complete set. Environment values take precedence over files.
 
 `enabled: false` or `CRYPTOTRACKER_MCP_ENABLED=false` disables MCP completely and opens no listener. The sidecar process remains idle so Compose does not enter a restart loop.
 
@@ -128,6 +128,10 @@ Mutating focused tools:
 - `cryptotracker_exports_application_post`
 
 Mutation tools are registered only for `readwrite` client identities when `readOnly` is false. Every mutation defaults to dry-run. Destructive operations additionally require `confirm: true`. No exchange-side mutation endpoint or tool exists.
+
+The API's binary `POST /api/backups/inspect` and `POST /api/backups/restore` workflows are
+intentionally not MCP tools: they accept potentially large ZIP bodies and restore replaces selected
+application data. Use the authenticated WUI or REST API for that explicit operator workflow.
 
 ## Health, history, and limits
 

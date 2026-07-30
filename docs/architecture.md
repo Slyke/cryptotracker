@@ -69,4 +69,14 @@ All upstream adapters enforce explicit read-only path allowlists. URL constructi
 
 The desktop-first SvelteKit UI follows the adjacent WUI styleguide: monospace tool aesthetic, semantic status colours, raised controls, restrained panels, keyboard access, responsive tables, and dark/light themes.
 
-One ECharts component implements range/custom-range, UTC conversion from the configured timezone, granularity, linear/log scale, independent bounds, normalization, candles and wicks, synchronized volume, event filters, keyboard inspection, accessible provenance tables, and graph exports.
+One ECharts component implements preset, absolute-custom, and rolling-lookback ranges; UTC conversion from the configured timezone; granularity; linear/log scale; searchable fiat/crypto Y-axis denomination; independent bounds; normalization; candles and wicks; synchronized volume; event filters; keyboard inspection; accessible provenance tables; and graph exports.
+
+Markets, Addresses, and Kraken reuse a client-side analytics component for cumulative return,
+annualized return/volatility, maximum drawdown, and benchmark comparisons over the currently loaded
+series. The Calculations page is a local compound-growth projection tool whose uniquely named
+scenarios live in user settings and never call a provider.
+
+The Dashboard renders named saved chart/table configurations in independently sized rows and can
+periodically reload cached API data. Settings owns user preferences, live job/cursor and storage
+diagnostics, saved-item management, portable ZIP generation, archive inspection, and
+dependency-safe selected-domain restore.

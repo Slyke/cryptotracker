@@ -1,8 +1,8 @@
 # CryptoTracker Specification
 
-- Status: Draft approved for implementation planning
-- Version: 0.2
-- Date: 2026-07-28
+- Status: Implemented baseline
+- Version: 0.3
+- Date: 2026-07-29
 
 ## 1. Summary
 
@@ -10,7 +10,7 @@ CryptoTracker is a self-hosted, single-tenant portfolio viewer for cryptocurrenc
 
 The product is strictly read-only with respect to exchanges and blockchains. It may write application-owned configuration, cached market data, synchronization state, imported read-only account history, and user preferences to its own database. It must never place trades, transfer funds, withdraw assets, modify exchange settings, sign blockchain transactions, or broadcast transactions.
 
-The application has three primary product areas:
+The application has four primary product areas:
 
 1. Markets
    - Watch user-selected crypto assets, with BTC watched by default.
@@ -20,7 +20,7 @@ The application has three primary product areas:
    - Display a single focused asset as OHLC candlesticks with optional wicks.
    - Show a crosshair tooltip containing all visible asset values in up to five selected quote currencies.
 2. Addresses
-   - Track user-added Bitcoin, Ethereum, and Solana addresses.
+   - Track user-added Bitcoin, Dogecoin, Ethereum, Polkadot, and Solana mainnet addresses through reviewed adapters.
    - Track only the native assets and tokens the user selects.
    - Reconstruct history from the first transaction when the configured provider makes that history available.
    - Show each enabled address separately and show a combined line.
@@ -31,6 +31,11 @@ The application has three primary product areas:
    - Do not support Kraken Futures in the initial scope.
    - Reconstruct historical portfolio activity where possible and maintain 30-minute snapshots.
    - Present informational realised and unrealised gain/loss estimates with configurable cost-basis methods.
+4. Calculations and analytics
+   - Project compound growth, recurring contributions, earnings, and target contributions using local what-if scenarios.
+   - Save uniquely named scenarios in database-backed preferences and include them in portable backups.
+   - Derive cumulative return, annualized return/volatility, maximum drawdown, and optional benchmark comparisons from the market, address, and Kraken series currently loaded in the WUI.
+   - State when portfolio-value returns include deposits and withdrawals and are therefore not cash-flow-adjusted or time-weighted.
 
 Every time-series graph must share a common interaction contract:
 
@@ -104,9 +109,11 @@ The following are out of scope unless a later specification adds them:
 
 ### 4.1 High-Level Runtime Shape
 
-The repository is a Node.js and SvelteKit monolith with separate runtime directories and two processes.
+The main application is a Node.js and SvelteKit monolith with separate runtime directories and two
+required processes. An independently deployable MCP sidecar is a third process in the complete
+deployment.
 
-The production container runs:
+The main production container runs:
 
 1. API and ingress process
    - Node.js + TypeScript
@@ -118,6 +125,8 @@ The production container runs:
    - owns application pages, layouts, components, graph rendering, and browser interactivity
    - listens only on an internal loopback or container-local port
    - is never exposed directly by Docker, Compose, Kubernetes, or a reverse proxy
+The separate MCP container runs:
+
 3. MCP sidecar process
    - runs from the standalone `mcp/` subproject
    - authenticates MCP clients with named Bearer API keys
@@ -176,32 +185,45 @@ The container is considered ready only when:
 
 ### 4.3 Repository Layout
 
-The initial repository layout should be:
+The implemented source layout is:
 
 ```text
 ./
   api/
+    migrations/
     src/
     test/
     package.json
     tsconfig.json
   wui/
     src/
-    static/
     tests/
     package.json
     svelte.config.js
     vite.config.ts
     tsconfig.json
+  mcp/
+    scripts/
+    src/
+    test/
+    Dockerfile
+    package.json
   runtime/
     launcher.mjs
+    dev-launcher.mjs
+    dev-container-entrypoint.mjs
   config/
     examples/
   dockerfiles/
     cryptotracker.Dockerfile
     cryptotracker.dev.Dockerfile
   docs/
+    api.md
+    architecture.md
+    configuration.md
+    operations.md
     spec.md
+    user-guide.md
   scripts/
     write-build-info.mjs
   package.json
@@ -210,7 +232,8 @@ The initial repository layout should be:
   docker-compose.dev.yml
 ```
 
-The root package is an npm workspace containing `./api` and `./wui`.
+The root package is an npm workspace containing `./api` and `./wui`. MCP is intentionally a
+standalone subproject with its own lockfile and image.
 
 ### 4.4 Recommended Implementation Baseline
 
@@ -306,7 +329,14 @@ Secrets precedence:
 1. secrets JSON5
 2. explicit secret environment variable
 
-There must not be a generic rule that maps every environment variable into arbitrary nested configuration. Environment overrides must be explicit, documented, validated, and tested.
+Before schema validation, any string in either JSON5 file whose complete value is `${ENV_VAR}` is
+resolved recursively. An unset variable becomes `null`, a present empty variable remains an empty
+string, and partial interpolation such as `prefix-${NAME}` is not performed. Documented direct
+overrides are applied afterward and retain higher precedence.
+
+There is no generic environment-name-to-object-path mapping. Every target is either declared
+explicitly in the file with a whole-value reference or has a documented direct override, and the
+fully resolved object is validated and tested.
 
 ### 6.3 Example Config Shape
 
@@ -318,9 +348,13 @@ There must not be a generic rule that maps every environment variable into arbit
     host: '0.0.0.0',
     port: 8192,
     trustProxy: true,
+    bodyLimit: '256kb',
     https: {
       enabled: true,
       port: 8194,
+      certPath: '/app/data/certs/server.crt',
+      keyPath: '/app/data/certs/server.key',
+      generateSelfSigned: true,
     },
   },
   wui: {
@@ -331,6 +365,7 @@ There must not be a generic rule that maps every environment variable into arbit
     timezone: 'America/Vancouver',
     defaultTheme: 'dark',
     defaultFont: 'ui-mono',
+    defaultContentWidth: 'standard',
     defaultPrimaryCurrency: 'CAD',
     defaultTooltipCurrencies: ['CAD'],
     defaultMarketSource: 'combined',
@@ -339,6 +374,10 @@ There must not be a generic rule that maps every environment variable into arbit
     defaultCostBasisMethod: 'acb',
   },
   auth: {
+    apiKey: {
+      enabled: true,
+      headerName: 'X-API-Key',
+    },
     local: {
       enabled: true,
       username: 'admin',
@@ -373,7 +412,7 @@ There must not be a generic rule that maps every environment variable into arbit
       },
       coinbase: {
         enabled: true,
-        baseUrl: 'https://api.coinbase.com',
+        baseUrl: 'https://api.exchange.coinbase.com',
       },
       kraken: {
         enabled: true,
@@ -386,14 +425,27 @@ There must not be a generic rule that maps every environment variable into arbit
         provider: 'esplora',
         baseUrl: 'https://blockstream.info/api',
       },
+      dogecoin: {
+        enabled: true,
+        provider: 'blockcypher',
+        baseUrl: 'https://api.blockcypher.com/v1/doge/main',
+      },
       ethereum: {
         enabled: true,
         provider: 'etherscan',
+        baseUrl: 'https://api.etherscan.io',
+        rpcBaseUrl: 'https://ethereum-rpc.publicnode.com',
         chainId: 1,
+      },
+      polkadot: {
+        enabled: true,
+        provider: 'subscan',
+        baseUrl: 'https://polkadot.api.subscan.io',
       },
       solana: {
         enabled: true,
         provider: 'helius',
+        baseUrl: 'https://api.helius.xyz',
         cluster: 'mainnet-beta',
       },
     },
@@ -401,6 +453,14 @@ There must not be a generic rule that maps every environment variable into arbit
   sync: {
     pollMinutes: 30,
     maxConcurrentJobs: 2,
+    staleAfterMinutes: 90,
+    overlapBuckets: 3,
+  },
+  exports: {
+    directory: '/app/data/exports',
+    artifactTtlHours: 24,
+    restoreBodyLimit: '128mb',
+    restoreMaxUncompressedBytes: 536870912,
   },
   logging: {
     // Styleguide-compatible sink and gate configuration.
@@ -417,13 +477,22 @@ There must not be a generic rule that maps every environment variable into arbit
   signedIdentitySecret: null,
   providers: {
     coinGeckoApiKey: null,
+    blockCypherApiToken: null,
     etherscanApiKey: null,
     heliusApiKey: null,
+    subscanApiKey: null,
   },
   kraken: {
     apiKey: null,
     apiSecret: null,
   },
+  apiKeys: [
+    {
+      name: 'cryptotracker-mcp',
+      key: 'replace-with-a-dedicated-upstream-api-key',
+      role: 'readwrite',
+    },
+  ],
   postgresPassword: null,
 }
 ```
@@ -450,12 +519,26 @@ CRYPTOTRACKER_SECRETS_PATH=
 CRYPTOTRACKER_DB_KIND=sqlite
 CRYPTOTRACKER_SQLITE_PATH=
 CRYPTOTRACKER_POSTGRES_PASSWORD=
+CRYPTOTRACKER_MIGRATIONS_PATH=
 
 # Public runtime
 CRYPTOTRACKER_PUBLIC_BASE_URL=
 CRYPTOTRACKER_API_HOST=
 CRYPTOTRACKER_API_PORT=
 CRYPTOTRACKER_WUI_UPSTREAM_BASE_URL=
+CRYPTOTRACKER_HTTPS_ENABLED=
+CRYPTOTRACKER_HTTPS_PORT=
+CRYPTOTRACKER_HTTPS_CERT_PATH=
+CRYPTOTRACKER_HTTPS_KEY_PATH=
+CRYPTOTRACKER_HTTPS_GENERATE_SELF_SIGNED=
+
+# Named REST API key
+CRYPTOTRACKER_API_KEY_ENABLED=
+CRYPTOTRACKER_API_KEY_HEADER=
+CRYPTOTRACKER_API_KEY=
+CRYPTOTRACKER_API_KEY_FILE=
+CRYPTOTRACKER_API_KEY_NAME=
+CRYPTOTRACKER_API_KEY_ROLE=
 
 # Local authentication
 CRYPTOTRACKER_AUTH_LOCAL_ENABLED=
@@ -478,11 +561,14 @@ CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_HEADER=
 CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_SECRET=
 CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_ISSUER=
 CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_AUDIENCE=
+CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_MAX_TTL_SECONDS=
 
 # Market and chain providers
 CRYPTOTRACKER_COINGECKO_API_KEY=
+CRYPTOTRACKER_BLOCKCYPHER_API_TOKEN=
 CRYPTOTRACKER_ETHERSCAN_API_KEY=
 CRYPTOTRACKER_HELIUS_API_KEY=
+CRYPTOTRACKER_SUBSCAN_API_KEY=
 
 # Kraken
 CRYPTOTRACKER_KRAKEN_API_KEY=
@@ -494,6 +580,9 @@ CRYPTOTRACKER_DEFAULT_TIMEZONE=America/Vancouver
 CRYPTOTRACKER_DEFAULT_PRIMARY_CURRENCY=CAD
 CRYPTOTRACKER_DEFAULT_MARKET_SOURCE=combined
 ```
+
+The exhaustive main-application and MCP sidecar override tables are maintained in
+[configuration](configuration.md) and [`mcp/.env.example`](../mcp/.env.example).
 
 Array environment variables use comma-separated exact values with surrounding whitespace removed. JSON5 arrays should be used when a value itself needs punctuation that would make the environment representation ambiguous.
 
@@ -555,6 +644,7 @@ The initial schema should include equivalents of:
 - `user_settings`
 - `watched_assets`
 - `selected_quote_currencies`
+- `asset_catalog`
 - `asset_provider_mappings`
 - `asset_lifecycle_events`
 - `market_points`
@@ -574,12 +664,18 @@ The initial schema should include equivalents of:
 - `kraken_earn_strategy_rates`
 - `kraken_account_observations`
 - `kraken_sync_cursors`
+- `portfolio_snapshots`
 - `internal_transfer_matches`
 - `cost_basis_lots`
 - `calculation_runs`
 - `application_exports`
 - `jobs`
 - `audit_log`
+
+Named what-if scenarios are stored in the `savedCalculations` user-setting value and exported with
+the Preferences backup group. The Calculations backup group contains `calculation_runs`,
+`cost_basis_lots`, and `internal_transfer_matches`, which retain portfolio calculation and
+reconciliation evidence.
 
 `market_points` must distinguish:
 
@@ -692,7 +788,11 @@ Disabling a series or removing an asset from the watchlist does not delete share
 
 Temporary HTTP response bodies, expired sessions, and generated export archives may use bounded retention because they are not canonical portfolio history.
 
-Settings must show the current retention selection, storage use by major data category, and oldest/newest retained records. It does not show a generic alarming indefinite-retention warning when `Forever` is selected.
+A separate database-backed failed-job retention setting may be `Forever` or a finite number of hours.
+Finite failed-job retention deletes only terminal `failed` job records after explicit confirmation; it
+does not delete active, queued, retrying, or completed synchronization history.
+
+Settings must show the current retention selections, storage use by major data category, and oldest/newest retained records. It does not show a generic alarming indefinite-retention warning when `Forever` is selected.
 
 ## 9. Market Data
 
@@ -900,17 +1000,20 @@ Lifecycle mappings, derived continuity, and valuation assumptions must be inspec
 
 ### 10.1 Range Controls
 
-Every graph supports:
+Every full graph toolbar supports:
 
 - 24 hours
 - 7 days
 - 30 days
 - 90 days
 - 1 year
+- 4 years where the source page enables that preset
 - All available
 - custom start and end
+- a rolling custom lookback in hours, days, weeks, months, or years
 
 Range controls operate in the configured display timezone, while API queries and storage use UTC.
+Compact Dashboard and local-calculation charts intentionally omit the full toolbar.
 
 The UI must handle daylight-saving transitions without duplicating or losing UTC data.
 
@@ -984,6 +1087,11 @@ Wheel and horizontal-pan time navigation is inactive until the plotting surface 
 
 The keyboard inspector is an actual interactive control: activating it reveals instructions, Left/Right moves one data point, Home/End jumps to the first/last point, and the active point is announced. Its label must not imply functionality that is unavailable.
 
+The Table action reveals every currently loaded point with display-timezone timestamp, series,
+plotted value/unit, quality status, providers, coverage, and serialized provenance/evidence. Kraken's
+portfolio popup filters disabled/inactive asset quantities by default and provides an explicit
+“Show all” control.
+
 Chart title, subtitle/source, legend, controls, plot, and through-date metadata occupy distinct layout regions at all supported widths. Each reorderable block except the first begins after a visible horizontal separator with useful top and bottom padding; the separator belongs above the Up/Down/Collapse controls.
 
 Graph state should be serializable into the URL when practical so a view can be bookmarked.
@@ -1030,6 +1138,23 @@ A graph configured on Markets, Addresses, or Kraken can be named and saved to th
 The Dashboard supports one, two, three, or four graphs per row and unlimited rows subject to normal page performance. Dashboard graphs use a compact presentation without duplicating the full configuration toolbar.
 
 A saved graph may be hidden from the Dashboard, restored, renamed, removed from the Dashboard, or permanently deleted in Settings. “Remove” on the Dashboard hides it so accidental removal is reversible.
+
+### 10.8 Performance Analytics
+
+Markets, Addresses, and Kraken derive client-side analytics from the series currently loaded in the
+WUI. For a selected series the analytics show:
+
+- total return from the first non-zero observation to the last observation
+- annualized return when both endpoints are positive and at least one day apart
+- sample annualized volatility scaled from the median positive observation interval
+- maximum drawdown from the preceding peak
+- observation count
+- total-return difference from an optional selected benchmark
+
+The analytics graph switches between cumulative return from the first non-zero observation and
+drawdown from the preceding peak. Market analytics use cached prices. Address and Kraken analytics
+use observed portfolio value; deposits and withdrawals are not removed, so those values must be
+labelled as not cash-flow-adjusted and not time-weighted.
 
 ## 11. Graph And Data Exports
 
@@ -1156,7 +1281,12 @@ The archive excludes:
 
 The UI shows progress, estimated or known archive size, completion, failure, and expiry of the generated download. Archive artifacts may expire without deleting canonical data. Generation must be streaming or chunked and must not load the entire database or archive into memory.
 
-The ZIP contains dependency-safe JSON files for preferences, markets, addresses, Kraken, portfolio snapshots, and calculations. Settings can inspect an uploaded ZIP and atomically replace any selected files. This application-level restore is intentionally separate from transaction-consistent database backup and disaster recovery, which remain operator-managed.
+The ZIP contains dependency-safe JSON files for Preferences, Markets, Addresses, Kraken, Portfolio,
+and Calculations. Saved what-if scenarios are part of Preferences; Calculations contains calculation
+runs, cost-basis lots, and internal-transfer matches. Settings can inspect an uploaded ZIP and
+atomically replace any selected archive-present groups after explicit confirmation. This
+application-level restore is intentionally separate from transaction-consistent database backup and
+disaster recovery, which remain operator-managed.
 
 ## 12. Address Tracking
 
@@ -1637,9 +1767,27 @@ Request behavior:
 
 When `oauth-wrapper` protects the whole application, local login may only be reachable through explicitly configured deployment bypasses or a trusted direct route. The application must not weaken `oauth-wrapper` to make local fallback reachable.
 
-### 14.6 CSRF And Same-Origin Security
+### 14.6 Named API-Key Authentication
 
-Every application mutation requires:
+Named API keys provide non-browser REST access and the MCP sidecar's upstream credential. Each
+secret entry has a unique audit name, a key supplied inline or from a file relative to the secrets
+file, and a `read` or `readwrite` role. The direct environment override creates one equivalent named
+key.
+
+Clients may send the value in the configured dedicated header (`X-API-Key` by default) or as
+`Authorization: Bearer`. Authentication compares hashed values using timing-safe equality. API-key
+authentication is evaluated before trusted-header or local-session authentication.
+
+A REST `read` key may call authenticated GET APIs, including complete-backup status and download. A
+`readwrite` key may also call local application mutations. Independently, the MCP sidecar exposes a
+complete-backup download only to a readwrite MCP client that supplies explicit sensitive-download
+confirmation. API-key roles do not create application tenants or upstream exchange permissions,
+and no API route mutates Kraken or a blockchain. MCP client Bearer keys are a separate credential
+set and must not reuse the sidecar's upstream API key.
+
+### 14.7 CSRF And Same-Origin Security
+
+Every browser-session or trusted-header mutation requires:
 
 - an authenticated identity
 - same-origin validation
@@ -1654,6 +1802,11 @@ This includes:
 - manual refresh
 - repair jobs
 - starting a complete application export
+- inspecting or restoring an application backup
+
+A named `readwrite` API key is a non-browser credential and may call local application mutations
+without an Origin or CSRF token. A named `read` API key is rejected from every mutation. API-key
+mutations remain authenticated and audited.
 
 Read-only graph and export endpoints must not mutate upstream systems.
 
@@ -1667,6 +1820,7 @@ Initial pages:
 - Markets
 - Addresses
 - Kraken
+- Calculations
 - Settings
 
 Dashboard:
@@ -1677,6 +1831,8 @@ Dashboard:
 - watched market summary
 - provider and sync health
 - warnings for partial history, stale data, disputed prices, unpriced assets, and incomplete cost basis
+- optional cached-data refresh every 30 seconds, 1, 2, 5, 10, or 30 minutes, or 1 hour
+- a compact “Remove fluff” mode for saved items
 
 Markets, Addresses, and Kraken expose “Save table to dashboard” beside each configured table, while chart options expose “Save to dashboard”. The saved table retains its selected columns and source context.
 
@@ -1690,6 +1846,7 @@ Markets:
 
 - watched assets
 - source selection
+- locally observed combined address/Kraken portfolio chart
 - line/candlestick selection
 - optional candlestick wicks
 - optional volume subplot when supported
@@ -1701,6 +1858,7 @@ Markets:
 - shared graph controls
 - asset add/remove
 - graph exports
+- price-return, annualized-return/volatility, maximum-drawdown, and benchmark analytics
 
 Addresses:
 
@@ -1713,6 +1871,7 @@ Addresses:
 - normalized comparison where compatible
 - address transaction and reconciled-transfer markers
 - graph exports
+- observed-value return, volatility, drawdown, and benchmark analytics with a non-cash-flow-adjusted warning
 
 Kraken:
 
@@ -1720,12 +1879,27 @@ Kraken:
 - portfolio summary
 - visible spot/Earn/staking/margin sections only when used
 - holdings and activity
+- configurable and persisted total/per-asset chart series
+- reconstructed and exact Earn value history
+- locally observed estimated-APY history
+- searchable, type-filtered, paginated Earn activity with CSV/JSON export
 - P&L estimates and coverage
 - historical graph
 - trade, deposit, withdrawal, reward, and reconciled-transfer markers
 - transfer reconciliation status and evidence inspection
 - manual refresh
 - graph exports
+- observed-value return, volatility, drawdown, and benchmark analytics with a non-cash-flow-adjusted warning
+
+Calculations:
+
+- local compound-growth projection with APY or APR
+- yearly, monthly, weekly, or daily compounding and end-of-period contributions
+- duration in days, months, or years
+- optional target and required contribution per period
+- ending balance, contributed amount, earnings, complete-period count, and projection chart
+- uniquely named database-backed scenarios that can be saved, loaded, updated, or deleted
+- an explicit constant-rate/no-tax/no-fee/no-inflation/no-volatility assumption notice
 
 Settings:
 
@@ -1740,12 +1914,15 @@ Settings:
 - graph defaults
 - cost-basis method
 - historical point/snapshot retention, defaulting to Forever
+- terminal failed-job retention, independently defaulting to Forever
 - independent automatic-polling intervals for each integration, with a five-minute minimum
+- restoration of previously dismissed informational notices
 - live synchronization progress and cursor coverage, with recent failed jobs first
 - requested start, oldest reached, newest stored, and last activity by source
 - named saved-graph management and one-to-four dashboard columns
 - storage diagnostics by category, including estimated bytes, row counts, and oldest/newest records
-- complete application export creation, progress, and download
+- complete application backup creation, progress, expiry, and download
+- uploaded-backup inspection and atomic, confirmed replacement of selected dependency-safe data groups
 - no secrets or credentials
 
 Related fields are grouped into separate rows or fieldsets: locale/timezone, appearance, currencies/market source, calculations, and retention.
@@ -1793,7 +1970,8 @@ Provider attribution, data-quality labels, lifecycle details, event details, and
 
 ## 16. HTTP Surface
 
-The exact payload schemas are implementation work, but the initial route families are:
+The implemented route families are below. Authentication, authorization, query/body constraints,
+response envelopes, and result contents are documented in [the HTTP API reference](api.md).
 
 ### 16.1 Health
 
@@ -1831,12 +2009,14 @@ The exact payload schemas are implementation work, but the initial route familie
 - `PUT /api/watchlist/currencies`
 - `GET /api/market/series`
 - `GET /api/market/metrics`
+- `GET /api/portfolio/series`
 - `POST /api/market/backfill`
 - `POST /api/market/repair`
 
 ### 16.5 Addresses
 
 - `GET /api/addresses`
+- `GET /api/addresses/networks`
 - `POST /api/addresses`
 - `PATCH /api/addresses/:id`
 - `DELETE /api/addresses/:id`
@@ -1851,6 +2031,8 @@ The exact payload schemas are implementation work, but the initial route familie
 - `POST /api/kraken/refresh`
 - `GET /api/kraken/summary`
 - `GET /api/kraken/holdings`
+- `GET /api/kraken/earn`
+- `GET /api/kraken/earn/series`
 - `GET /api/kraken/activity`
 - `GET /api/kraken/pnl`
 - `GET /api/kraken/series`
@@ -1862,8 +2044,17 @@ The exact payload schemas are implementation work, but the initial route familie
 - `POST /api/exports/application`
 - `GET /api/exports/application/:id`
 - `GET /api/exports/application/:id/download`
+- `POST /api/backups/inspect`
+- `POST /api/backups/restore`
 
 The application-export POST creates an authenticated, CSRF-protected job. Status and download routes enforce the same single-tenant authentication. Download responses are streamed and use attachment headers.
+
+Backup inspect and restore accept ZIP bytes instead of JSON. Inspect validates the manifest,
+checksums, expanded-size limit, dependencies, and restorable groups without changing data. Restore
+requires at least one selected archive-present group plus the literal confirmation
+`replace-selected-data`, and atomically replaces Preferences, Markets, Addresses, Kraken, Portfolio,
+and/or Calculations data. These binary workflows are deliberately REST/WUI-only and are not exposed
+through MCP.
 
 PNG and SVG graph snapshots are normally produced in the WUI from the rendered graph state.
 
@@ -2031,9 +2222,9 @@ The UI names the affected assets, addresses, currencies, or intervals. It links 
 
 ## 21. Deployment
 
-### 21.1 Production Image
+### 21.1 Production Images
 
-One multi-stage Docker build contains:
+The main multi-stage Docker build contains:
 
 - API runtime
 - compiled SvelteKit WUI runtime
@@ -2041,28 +2232,35 @@ One multi-stage Docker build contains:
 - production dependencies
 - generated build metadata
 
-The final image:
+The final application image:
 
 - uses a non-root user
 - includes `tini` or equivalent init behavior
-- exposes only the API/ingress port
+- exposes the HTTP and optional HTTPS API/ingress ports, never the internal WUI port
 - does not include `.git`
 - does not require Git at runtime
 - contains generated `build-info.json`
 - supports read-only root filesystem with writable data and temp mounts
+
+The standalone `mcp/` build produces a separate non-root image containing the Streamable HTTP MCP
+server, health check, certificate helper, production dependencies, and build metadata. It exposes
+HTTPS and optional HTTP MCP ports and owns no application database.
 
 ### 21.2 Compose
 
 `./docker-compose.yml` provides:
 
 - CryptoTracker application
+- one-shot shared-certificate generation
+- standalone MCP sidecar, independently disableable
 - persistent SQLite data volume by default
+- separate persistent MCP history and shared certificate volumes
 - read-only mounted config and secrets
-- optional Postgres profile or documented alternate compose file
-- optional `oauth-wrapper` example profile or companion example
-- one published application port
+- optional Postgres profile
+- HTTP/HTTPS application ports and HTTPS/optional-HTTP MCP ports
 
-The internal WUI port is not published.
+The internal WUI port is not published. The generated certificate volume is shared by the API and
+MCP containers; client-facing MCP keys remain distinct from the MCP-to-API key.
 
 `./docker-compose.dev.yml` provides:
 
@@ -2078,11 +2276,13 @@ The internal WUI port is not published.
 The primary Kubernetes shape is one pod containing:
 
 - CryptoTracker application container
-- optional `oauth-wrapper` sidecar
+- CryptoTracker MCP sidecar
+- an init container that generates the shared certificate when it is absent
 
 The CryptoTracker container still runs its API and WUI child processes.
 
-Only the API ingress container port is exposed by the Service.
+The Service exposes application HTTP/HTTPS and MCP HTTPS/optional HTTP. It never exposes the
+internal SvelteKit port.
 
 Config and secrets may be mounted from ConfigMaps and Secrets.
 
@@ -2141,6 +2341,8 @@ Required coverage includes:
 - transfer cost-basis continuity and fee treatment
 - P&L cost-basis methods
 - unknown-basis coverage
+- compound projection APR/APY, contribution, fractional-period, and target-contribution arithmetic
+- performance total/annualized return, median-interval volatility, drawdown, and benchmark arithmetic
 - asset migrations, redenominations, wrapped identities, and stablecoin pricing
 - header allowlist OR semantics
 - trusted CIDR checks
@@ -2160,9 +2362,12 @@ Required coverage includes:
 - initial and incremental synchronization
 - restart/resume of jobs
 - graph-series API partial responses
+- combined portfolio snapshots and series
 - CSV and JSON exports
 - complete application export streaming, manifest, and secret exclusion
+- application backup inspection, checksum/size validation, selected-domain atomic restore, and rollback
 - Forever retention and finite-window point/snapshot pruning
+- independent failed-job retention
 - protected transaction, activity, and cost-basis records under finite retention
 - top-100 catalog refresh, BTC-only default, searchable explicit enablement, and disabled-asset sync exclusion
 - persisted page order, table columns, saved graphs, and notice dismissal
@@ -2208,7 +2413,11 @@ Use Playwright or equivalent for:
 - searchable, 25-row paginated accessible event details
 - save, arrange, hide, restore, rename, and delete dashboard charts and tables
 - independent one-to-four-column mixed chart/table dashboard rows
+- Dashboard cached-data refresh enablement and interval persistence
 - reorder and collapse page blocks and retain both states after reload
+- performance return/drawdown modes, metrics, benchmark comparison, and cash-flow warning
+- calculation projection inputs, results, save/load/update/delete, and assumption notice
+- backup inspection, domain selection, replacement confirmation, and restore result
 
 ### 22.4 Security Tests
 
@@ -2249,7 +2458,7 @@ The initial implementation is acceptable when:
 17. Log scale never silently drops zero or negative values.
 18. CSV and JSON exports reproduce the selected graph data and filters.
 19. PNG and SVG exports reproduce the visible graph.
-20. The user can add Bitcoin, Ethereum, and Solana addresses.
+20. The user can add Bitcoin, Dogecoin, Ethereum, Polkadot, and Solana mainnet addresses when their reviewed provider is configured.
 21. The user can select native assets, ERC-20 contracts, and SPL mints as applicable.
 22. Address backfill is resumable and reports complete or partial history.
 23. Address graphs show individual enabled addresses and a combined line.
@@ -2282,7 +2491,7 @@ The initial implementation is acceptable when:
 50. Settings shows storage use, row counts, oldest/newest retained data, the selected retention window, and live per-source synchronization progress including requested start and oldest point reached.
 51. Market views expose provider attribution and disputed, derived, converted, fallback, partial, and stale states without requiring hover.
 52. Chart titles, legends, metadata, controls, and plot areas do not overlap.
-53. All primary pages have database-backed Up/Down block ordering, adjacent `+`/`−` collapse controls, and a separator above every non-first block.
+53. Dashboard, Markets, Addresses, Kraken, and Settings have database-backed Up/Down block ordering, adjacent `+`/`−` collapse controls, and a separator above every non-first block.
 54. Markets, Addresses, and Kraken have searchable, database-backed table column configuration.
 55. Named chart and table configurations can be saved into independently sized one-to-four-column Dashboard rows, mixed freely, moved, hidden, restored, renamed, removed, or deleted.
 56. Kraken unpriced holdings identify the pricing reason without expanding row height, and displayed values at magnitude 10 or greater are rounded to two decimal places.
@@ -2297,6 +2506,11 @@ The initial implementation is acceptable when:
 65. Kraken imports current Earn allocation fields, repairs previously blank allocation identities on refresh, and classifies suffixed staked balances under Earn.
 66. Kraken charts expose a persisted total toggle and one persisted toggle per held canonical asset; saved Dashboard charts retain those selections.
 67. A full refresh applies the last-known root content width before first paint and reconciles it with database settings.
+68. Dashboard automatic cached-data refresh is optional, supports the documented intervals, and persists independently from provider polling.
+69. Markets, Addresses, and Kraken expose cumulative return, annualized return/volatility, maximum drawdown, observation count, and optional benchmark comparison; portfolio-value analytics disclose that cash flows are not removed.
+70. Calculations projects APY/APR compound growth, end-of-period contributions, earnings, and target contribution, and persists uniquely named scenarios without calling any upstream mutation.
+71. Settings can inspect a portable ZIP and atomically replace explicitly selected Preferences, Markets, Addresses, Kraken, Portfolio, or Calculations groups only after confirmation.
+72. Failed-job retention defaults to Forever and, when finite, removes only expired terminal failure records.
 
 ## 24. Implementation Order
 
