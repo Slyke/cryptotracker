@@ -2114,7 +2114,7 @@ Health responses include:
 ```json
 {
   "ok": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "buildHash": "abc1234def56"
 }
 ```
