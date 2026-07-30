@@ -105,6 +105,13 @@
     'history'
   ];
   const defaultPageOrder = ['add', 'tracked', 'chart', 'performance', 'holdings'];
+  const nativeAssetSymbols: Record<Network, string> = {
+    bitcoin: 'BTC',
+    dogecoin: 'DOGE',
+    ethereum: 'ETH',
+    polkadot: 'DOT',
+    solana: 'SOL'
+  };
 
   let addresses: TrackedAddress[] = [];
   let mainnets: MainnetOption[] = [];
@@ -320,15 +327,17 @@
       error = selectedMainnet?.reason ?? 'Choose a configured mainnet before adding an address.';
       return;
     }
-    const knownAssets = selectableTokens(network)
+    const knownAssets = network === 'ethereum'
+      ? selectableTokens(network)
       .filter((asset) => selectedNewAssetIds.has(asset.id))
       .map((asset) => ({
         canonicalAssetId: asset.id,
         contractOrMint: asset.contractOrMint
-      }));
+      }))
+      : [];
     const assets = [
       ...knownAssets,
-      ...(optionalAssetId && contractOrMint && !knownAssets.some((asset) => (
+      ...(network === 'ethereum' && optionalAssetId && contractOrMint && !knownAssets.some((asset) => (
         asset.canonicalAssetId === optionalAssetId
       ))
         ? [{ canonicalAssetId: optionalAssetId, contractOrMint }]
@@ -566,7 +575,7 @@
       {#if blockId === 'add'}
         <section class="panel">
           <p class="eyebrow">Add an address</p>
-          <h2>Native asset plus optional selected token</h2>
+          <h2>Track a public address</h2>
           <DismissableNotice
             noticeId="addresses-provider-privacy"
             dismissed={dismissedNotices.includes('addresses-provider-privacy')}
@@ -578,7 +587,7 @@
               <select id="network" bind:value={network}>
                 {#each mainnets as mainnet (mainnet.id)}
                   <option value={mainnet.id} disabled={!mainnet.supported}>
-                    {mainnet.label} · {mainnet.enabledAssets.map((asset) => asset.symbol).join(', ')}
+                    {mainnet.label} · {nativeAssetSymbols[mainnet.id as Network] ?? mainnet.nativeAssetId}
                     {mainnet.supported ? '' : ' · provider required'}
                   </option>
                 {/each}
@@ -592,27 +601,34 @@
               <label for="label">Label</label>
               <input id="label" bind:value={label} required />
             </div>
-            {#if network === 'ethereum' || network === 'solana'}
-              {#each selectableTokens(network) as asset (asset.id)}
-                <label class="check token-choice">
-                  <input
-                    type="checkbox"
-                    checked={selectedNewAssetIds.has(asset.id)}
-                    on:change={() => toggleNewAsset(asset.id)}
-                  />
-                  Track {asset.symbol}
-                </label>
-              {/each}
-              <div class="field">
-                <label for="optional-asset">Other canonical asset ID</label>
-                <input id="optional-asset" bind:value={optionalAssetId} placeholder={network === 'ethereum' ? 'usd-coin-ethereum' : 'usd-coin-solana'} />
-              </div>
-              <div class="field grow">
-                <label for="contract-mint">{network === 'ethereum' ? 'ERC-20 contract' : 'SPL mint'}</label>
-                <input id="contract-mint" bind:value={contractOrMint} />
-              </div>
+            {#if network === 'ethereum'}
+              <fieldset class="optional-token-options">
+                <legend>Additional Ethereum tokens (optional)</legend>
+                <p class="muted">ETH is tracked automatically. Choose any ERC-20 tokens you also want to track.</p>
+                <div class="optional-token-fields">
+                  {#each selectableTokens(network) as asset (asset.id)}
+                    <label class="check token-choice">
+                      <input
+                        type="checkbox"
+                        checked={selectedNewAssetIds.has(asset.id)}
+                        on:change={() => toggleNewAsset(asset.id)}
+                      />
+                      Track {asset.symbol}
+                    </label>
+                  {/each}
+                  <div class="field">
+                    <label for="optional-asset">Other canonical asset ID</label>
+                    <input id="optional-asset" bind:value={optionalAssetId} placeholder="usd-coin-ethereum" />
+                  </div>
+                  <div class="field grow">
+                    <label for="contract-mint">ERC-20 contract</label>
+                    <input id="contract-mint" bind:value={contractOrMint} />
+                  </div>
+                </div>
+              </fieldset>
             {/if}
             <button
+              class="address-submit"
               type="submit"
               disabled={!mainnets.some((option) => option.id === network && option.supported)}
             >Add and synchronize</button>
@@ -861,6 +877,42 @@
   .token-choice {
     align-self: center;
     min-height: 2.8rem;
+  }
+
+  .optional-token-options {
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    padding: 0.8rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-panel);
+  }
+
+  .optional-token-options legend {
+    padding: 0 0.35rem;
+    color: var(--color-text);
+    font-size: 0.82rem;
+    font-weight: 700;
+  }
+
+  .optional-token-options p {
+    margin: 0 0 0.7rem;
+  }
+
+  .optional-token-fields {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.7rem;
+  }
+
+  .optional-token-fields .grow {
+    flex: 1 1 24rem;
+  }
+
+  .address-submit {
+    margin-left: auto;
   }
 
   .tracked-assets {
