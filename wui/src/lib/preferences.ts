@@ -54,7 +54,7 @@ export interface ChartDisplayState {
   yAxisUnit: string;
   tooltipUnits: string[];
   visibleSeriesIds: string[] | null;
-  rightYAxisSeriesId: string;
+  rightYAxisUnit: string;
 }
 
 export const defaultChartQueryState = ({
@@ -99,7 +99,7 @@ export const defaultChartDisplayState = (
   yAxisUnit: currency,
   tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] }),
   visibleSeriesIds: null,
-  rightYAxisSeriesId: ''
+  rightYAxisUnit: ''
 });
 
 export const chartQueryStateFromSetting = ({
@@ -160,9 +160,9 @@ export const chartDisplayStateFromSetting = ({
           .map((id) => id.trim())
           .filter(Boolean))]
       : fallback.visibleSeriesIds,
-    rightYAxisSeriesId: typeof candidate.rightYAxisSeriesId === 'string'
-      ? candidate.rightYAxisSeriesId
-      : fallback.rightYAxisSeriesId
+    rightYAxisUnit: typeof candidate.rightYAxisUnit === 'string'
+      ? candidate.rightYAxisUnit
+      : fallback.rightYAxisUnit
   };
 };
 

@@ -1285,7 +1285,7 @@
     initialShowEvents={portfolioDisplayState.showEvents}
     initialShowVolume={portfolioDisplayState.showVolume}
     initialVisibleSeriesIds={portfolioDisplayState.visibleSeriesIds}
-    initialRightYAxisSeriesId={portfolioDisplayState.rightYAxisSeriesId}
+    initialRightYAxisUnit={portfolioDisplayState.rightYAxisUnit}
     initialMinimumMode={boundMode(portfolioEditConfig, 'minimumMode')}
     initialMaximumMode={boundMode(portfolioEditConfig, 'maximumMode')}
     initialMinimumValue={configString(portfolioEditConfig, 'minimumValue')}
@@ -1339,7 +1339,7 @@
     initialShowEvents={watchedDisplayState.showEvents}
     initialShowVolume={watchedDisplayState.showVolume}
     initialVisibleSeriesIds={watchedDisplayState.visibleSeriesIds}
-    initialRightYAxisSeriesId={watchedDisplayState.rightYAxisSeriesId}
+    initialRightYAxisUnit={watchedDisplayState.rightYAxisUnit}
     initialMinimumMode={boundMode(watchedEditConfig, 'minimumMode')}
     initialMaximumMode={boundMode(watchedEditConfig, 'maximumMode')}
     initialMinimumValue={configString(watchedEditConfig, 'minimumValue')}

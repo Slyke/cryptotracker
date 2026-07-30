@@ -35,10 +35,10 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   if (await marketChartOptions.getAttribute('open') === null) {
     await marketChart.getByText(/scale bounds, display, events, and exports/i).click();
   }
-  const yAxisUnit = marketChart.getByLabel(/y-axis unit/i);
+  const yAxisUnit = marketChart.getByLabel(/left y-axis/i);
   await expect(yAxisUnit).toBeVisible();
   await yAxisUnit.click();
-  const yAxisSearch = page.getByLabel(/search y-axis currencies or crypto assets/i);
+  const yAxisSearch = page.getByLabel(/search left y-axis currencies or crypto assets/i);
   await expect(yAxisSearch).toBeVisible();
   const expectedAxisOptions = await page.evaluate(async () => {
     const [settingsResponse, watchlistResponse] = await Promise.all([
@@ -136,11 +136,13 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   if (await krakenChartOptions.getAttribute('open') === null) {
     await krakenChart.getByText(/scale bounds, display, events, and exports/i).click();
   }
-  await krakenChart.getByLabel(/y-axis unit/i).click();
-  for (const asset of expectedAxisOptions.assets) {
-    await expect(krakenChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
+  for (const axisLabel of [/left y-axis/i, /right y-axis/i]) {
+    await krakenChart.getByLabel(axisLabel).click();
+    for (const asset of expectedAxisOptions.assets) {
+      await expect(krakenChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
+    }
+    await page.keyboard.press('Escape');
   }
-  await page.keyboard.press('Escape');
   await krakenChart.getByLabel(/popup units/i).click();
   for (const asset of expectedAxisOptions.assets) {
     await expect(krakenChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
@@ -165,11 +167,13 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   if (await addressChartOptions.getAttribute('open') === null) {
     await addressChart.getByText(/scale bounds, display, events, and exports/i).click();
   }
-  await addressChart.getByLabel(/y-axis unit/i).click();
-  for (const asset of expectedAxisOptions.assets) {
-    await expect(addressChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
+  for (const axisLabel of [/left y-axis/i, /right y-axis/i]) {
+    await addressChart.getByLabel(axisLabel).click();
+    for (const asset of expectedAxisOptions.assets) {
+      await expect(addressChart.getByRole('option', { name: asset, exact: true })).toBeVisible();
+    }
+    await page.keyboard.press('Escape');
   }
-  await page.keyboard.press('Escape');
   await addressChart.getByLabel(/popup units/i).click();
   for (const asset of expectedAxisOptions.assets) {
     await expect(addressChart.getByRole('option', { name: asset, exact: true })).toBeVisible();

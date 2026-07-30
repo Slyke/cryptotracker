@@ -115,7 +115,7 @@
   export let initialShowEvents = true;
   export let initialShowVolume = false;
   export let initialVisibleSeriesIds: string[] | null = null;
-  export let initialRightYAxisSeriesId = '';
+  export let initialRightYAxisUnit = '';
   export let initialSaveGraphName = title;
   export let preferenceKey = '';
 
@@ -138,7 +138,7 @@
       yAxisUnit: string;
       tooltipUnits: string[];
       visibleSeriesIds: string[];
-      rightYAxisSeriesId: string;
+      rightYAxisUnit: string;
     };
     zoomRange: {
       fromMs: number;
@@ -156,7 +156,7 @@
       yAxisUnit: string;
       tooltipUnits: string[];
       visibleSeriesIds: string[];
-      rightYAxisSeriesId: string;
+      rightYAxisUnit: string;
       minimumMode: 'auto' | 'absolute' | 'relative';
       maximumMode: 'auto' | 'absolute' | 'relative';
       minimumValue: string;
@@ -205,7 +205,7 @@
   let selectedSeriesIds = initialVisibleSeriesIds === null
     ? []
     : [...new Set(initialVisibleSeriesIds)];
-  let rightYAxisSeriesId = initialRightYAxisSeriesId;
+  let rightYAxisUnit = initialRightYAxisUnit;
   let eventCategories = new Set([
     'trade',
     'purchase',
@@ -320,23 +320,53 @@
     requestedGranularitySeconds() !== null
     && granularity > requestedGranularitySeconds()!
   );
-  const denominationFallbackCurrencies = () => [...new Set(
+  const denominationFallbackCurrencies = (unit: string) => [...new Set(
     allPoints()
-      .map((point) => point.denominationFallbacks?.[yAxisUnit])
+      .map((point) => point.denominationFallbacks?.[unit])
       .filter((fallback): fallback is string => Boolean(fallback))
   )];
-  const approximateDenomination = () => denominationFallbackCurrencies().length > 0;
+  const approximateDenomination = () => (
+    denominationFallbackCurrencies(yAxisUnit).length > 0
+    || (
+      rightYAxisUnit !== ''
+      && denominationFallbackCurrencies(rightYAxisUnit).length > 0
+    )
+  );
   const qualityMessage = () => {
     const resolutionMessage = resolutionLimited()
       && !partialMessage.includes('zoomed-out overview resolves')
       ? `${granularityLabel(requestedGranularitySeconds()!)} detail is selected, while the zoomed-out chart currently resolves to ${granularityLabel(granularity)}. Zoomed periods use finer observations where the local history contains them.`
       : '';
-    const denominationMessage = approximateDenomination()
-      ? `${yAxisUnitLabel()} Y-axis values are approximate where a direct ${currency.toUpperCase()} pair was unavailable; those points were normalized through ${denominationFallbackCurrencies().join(' or ')} reserve prices.`
+    const denominationMessages = [
+      {
+        side: 'Left',
+        unit: yAxisUnit,
+        label: yAxisUnitLabel()
+      },
+      ...rightYAxisUnit
+        ? [{
+            side: 'Right',
+            unit: rightYAxisUnit,
+            label: unitLabel(rightYAxisUnit)
+          }]
+        : []
+    ].flatMap(({ side, unit, label }) => {
+      const fallbacks = denominationFallbackCurrencies(unit);
+      return fallbacks.length > 0
+        ? [`${side} ${label} Y-axis values are approximate where a direct ${currency.toUpperCase()} pair was unavailable; those points were normalized through ${fallbacks.join(' or ')} reserve prices.`]
+        : [];
+    });
+    const rightAxisMessage = rightYAxisUnit
+      ? normalized
+        ? 'The Right Y-axis is hidden while Normalize to 0% is enabled.'
+        : rightYAxisConversionRatio() === null
+        ? `The Right ${unitLabel(rightYAxisUnit)} Y-axis is selected, but no overlapping conversion is available yet.`
+        : `The Right ${unitLabel(rightYAxisUnit)} Y-axis is a reference scale based on the latest overlapping conversion. Popup units remain point-in-time values.`
       : '';
     return [
       resolutionMessage,
-      denominationMessage,
+      ...denominationMessages,
+      rightAxisMessage,
       partial ? partialMessage : ''
     ].filter(Boolean).join(' ');
   };
@@ -345,9 +375,6 @@
     useAllSeriesByDefault || selectedSeriesIds.includes(id)
   );
   const visibleChartSeries = () => series.filter((item) => seriesIsVisible(item.id));
-  const leftAxisChartSeries = () => visibleChartSeries().filter((item) => (
-    item.id !== rightYAxisSeriesId
-  ));
   const allPoints = () => series.flatMap((item) => item.points);
   const rawPointValue = (point: ChartPoint) => point.value ?? point.close ?? null;
   let effectiveDenominationOptionList: ChartDenominationOption[] = [];
@@ -355,7 +382,7 @@
   let yAxisOptionList: ChartAxisOption[] = [];
   let tooltipUnitOptionList: ChartAxisOption[] = [];
   let displayedSeriesOptionList: ChartAxisOption[] = [];
-  let rightYAxisOptionList: ChartAxisOption[] = [];
+  let rightYAxisUnitOptionList: ChartAxisOption[] = [];
   $: effectiveDenominationOptionList = [
     ...new Map<string, ChartDenominationOption>([
       ...denominationOptions,
@@ -388,26 +415,66 @@
     group: 'Display units' as const,
     searchText: `${item.id} ${item.label} chart line series`
   }));
-  $: rightYAxisOptionList = [
+  $: rightYAxisUnitOptionList = [
     {
       value: '',
       label: 'Off · use left Y-axis',
       group: 'Display units' as const,
       searchText: 'off disabled left axis'
     },
-    ...displayedSeriesOptionList.filter((option) => seriesIsVisible(option.value))
+    ...yAxisOptionList
   ];
   const isFiatUnit = (unit: string) => configuredFiatCurrencyList.includes(unit.toUpperCase());
-  const plottedPointValue = (point: ChartPoint) => (
-    chartMode === 'line' && yAxisUnit !== currency
-      ? isFiatUnit(yAxisUnit)
-        ? point.quotes?.[yAxisUnit.toUpperCase()] ?? null
-        : point.denominations?.[yAxisUnit] ?? null
+  const pointValueForUnit = (point: ChartPoint, unit: string) => (
+    unit !== currency
+      ? isFiatUnit(unit)
+        ? point.quotes?.[unit.toUpperCase()] ?? null
+        : point.denominations?.[unit] ?? null
       : rawPointValue(point)
   );
-  const yAxisUnitLabel = () => isFiatUnit(yAxisUnit)
-    ? yAxisUnit.toUpperCase()
-    : effectiveDenominationOptionList.find((option) => option.id === yAxisUnit)?.symbol ?? yAxisUnit;
+  const plottedPointValue = (point: ChartPoint) => pointValueForUnit(point, yAxisUnit);
+  const unitLabel = (unit: string) => isFiatUnit(unit)
+    ? unit.toUpperCase()
+    : effectiveDenominationOptionList.find((option) => option.id === unit)?.symbol ?? unit;
+  const yAxisUnitLabel = () => unitLabel(yAxisUnit);
+  const rightYAxisConversionRatio = () => {
+    if (!rightYAxisUnit) return null;
+    if (rightYAxisUnit === yAxisUnit) return 1;
+    const points = visibleChartSeries()
+      .flatMap((item) => item.points)
+      .sort((left, right) => right.timestampMs - left.timestampMs);
+    for (const point of points) {
+      const rawLeftValue = pointValueForUnit(point, yAxisUnit);
+      const rawRightValue = pointValueForUnit(point, rightYAxisUnit);
+      if (rawLeftValue === null || rawRightValue === null) continue;
+      const leftValue = Number(rawLeftValue);
+      const rightValue = Number(rawRightValue);
+      if (
+        Number.isFinite(leftValue)
+        && leftValue !== 0
+        && Number.isFinite(rightValue)
+        && rightValue !== 0
+      ) return rightValue / leftValue;
+    }
+    return null;
+  };
+  const candlestickValueForUnit = ({
+    point,
+    value
+  }: {
+    point: ChartPoint;
+    value: number;
+  }) => {
+    if (yAxisUnit === currency) return value;
+    const rawReference = Number(rawPointValue(point));
+    const convertedReference = Number(pointValueForUnit(point, yAxisUnit));
+    if (
+      !Number.isFinite(rawReference)
+      || rawReference === 0
+      || !Number.isFinite(convertedReference)
+    ) return Number.NaN;
+    return value * (convertedReference / rawReference);
+  };
   const tooltipUnitLabel = (unit: string) => {
     if (unit === '%') return '%';
     if (isFiatUnit(unit)) return unit.toUpperCase();
@@ -443,7 +510,7 @@
     : currency.trim() === '%'
       ? formatPercent(value)
       : formatDisplayNumber({ value });
-  const validNumericValues = () => leftAxisChartSeries()
+  const validNumericValues = () => visibleChartSeries()
     .flatMap((item) => item.points)
     .map(plottedPointValue)
     .filter((value): value is string => value !== null && value !== undefined)
@@ -713,10 +780,8 @@
     const sourceSeries = normalized && chartMode === 'line'
       ? series.map((item) => ({ ...item, points: normalizedSeries(item) }))
       : series;
-    const activeRightYAxisSeries = sourceSeries.find((item) => (
-      item.id === rightYAxisSeriesId && seriesIsVisible(item.id)
-    )) ?? null;
-    const hasRightYAxis = activeRightYAxisSeries !== null;
+    const rightAxisRatio = normalized ? null : rightYAxisConversionRatio();
+    const hasRightYAxis = rightYAxisUnit !== '' && rightAxisRatio !== null;
     renderedCandlestickSeriesCount = chartMode === 'candlestick'
       ? sourceSeries.filter((item) => seriesIsVisible(item.id)).length
       : 0;
@@ -747,7 +812,7 @@
           id: item.id,
           name: item.label,
           type: 'candlestick',
-          yAxisIndex: item.id === activeRightYAxisSeries?.id ? 1 : 0,
+          yAxisIndex: 0,
           encode: {
             x: 0,
             y: [1, 2, 3, 4]
@@ -766,10 +831,18 @@
                 meta: null
               };
             }
-            const open = Number(point.open ?? point.close ?? 0);
-            const close = Number(point.close ?? point.open ?? 0);
-            const low = showWicks ? Number(point.low ?? Math.min(open, close)) : Math.min(open, close);
-            const high = showWicks ? Number(point.high ?? Math.max(open, close)) : Math.max(open, close);
+            const rawOpen = Number(point.open ?? point.close ?? 0);
+            const rawClose = Number(point.close ?? point.open ?? 0);
+            const rawLow = showWicks
+              ? Number(point.low ?? Math.min(rawOpen, rawClose))
+              : Math.min(rawOpen, rawClose);
+            const rawHigh = showWicks
+              ? Number(point.high ?? Math.max(rawOpen, rawClose))
+              : Math.max(rawOpen, rawClose);
+            const open = candlestickValueForUnit({ point, value: rawOpen });
+            const close = candlestickValueForUnit({ point, value: rawClose });
+            const low = candlestickValueForUnit({ point, value: rawLow });
+            const high = candlestickValueForUnit({ point, value: rawHigh });
             return {
               value: [timestampMs, open, close, low, high],
               meta: point
@@ -788,7 +861,7 @@
           id: item.id,
           name: item.label,
           type: 'line',
-          yAxisIndex: item.id === activeRightYAxisSeries?.id ? 1 : 0,
+          yAxisIndex: 0,
           showSymbol: false,
           symbolSize: 8,
           connectNulls: false,
@@ -825,6 +898,34 @@
           })
         });
       }
+    }
+    if (hasRightYAxis) {
+      chartSeries.push({
+        id: 'right-axis-reference-scale',
+        name: 'Right axis reference scale',
+        type: 'line',
+        yAxisIndex: 1,
+        showSymbol: false,
+        symbol: 'none',
+        silent: true,
+        lineStyle: {
+          opacity: 0
+        },
+        itemStyle: {
+          opacity: 0
+        },
+        tooltip: {
+          show: false
+        },
+        data: sourceSeries
+          .filter((item) => seriesIsVisible(item.id))
+          .flatMap((item) => item.points.map((point) => [
+            point.timestampMs,
+            normalized && chartMode === 'line'
+              ? scaledValue(point.normalizedPercent)
+              : scaledValue(plottedPointValue(point))
+          ]))
+      });
     }
     const primarySeriesIndex = sourceSeries.findIndex((item) => seriesIsVisible(item.id));
     const primaryPoints = primarySeriesIndex >= 0
@@ -1040,15 +1141,15 @@
         ...(hasRightYAxis
           ? [{
             type: (scale === 'log' ? 'log' : 'value') as 'log' | 'value',
-            name: activeRightYAxisSeries.label,
+            name: unitLabel(rightYAxisUnit),
+            min: axisBounds.min,
+            max: axisBounds.max,
             scale: true,
             gridIndex: 0,
             position: 'right' as const,
             axisLabel: {
               color: mutedColor,
-              formatter: (value: number) => normalized
-                ? formatPercent(value)
-                : formatChartValue(value)
+              formatter: (value: number) => formatChartValue(value * rightAxisRatio)
             }
           }]
           : []),
@@ -1729,18 +1830,12 @@
       yAxisUnit,
       tooltipUnits: selectedTooltipUnits,
       visibleSeriesIds: series.filter((item) => seriesIsVisible(item.id)).map((item) => item.id),
-      rightYAxisSeriesId
+      rightYAxisUnit
     });
   };
 
   const displayedSeriesChanged = () => {
     useAllSeriesByDefault = false;
-    if (
-      rightYAxisSeriesId
-      && !selectedSeriesIds.includes(rightYAxisSeriesId)
-    ) {
-      rightYAxisSeriesId = '';
-    }
     viewChanged();
   };
 
@@ -1776,7 +1871,7 @@
       yAxisUnit,
       tooltipUnits: selectedTooltipUnits,
       visibleSeriesIds: series.filter((item) => seriesIsVisible(item.id)).map((item) => item.id),
-      rightYAxisSeriesId,
+      rightYAxisUnit,
       minimumMode,
       maximumMode,
       minimumValue,
@@ -1840,7 +1935,6 @@
         selectedSeriesIds = selected
           ? [...new Set([...selectedSeriesIds, item.id])]
           : selectedSeriesIds.filter((id) => id !== item.id);
-        if (!selected && rightYAxisSeriesId === item.id) rightYAxisSeriesId = '';
         if (!compact) viewChanged();
         return;
       }
@@ -1909,13 +2003,6 @@
       selectedSeriesIds = allSeriesIds;
     }
   }
-  $: if (
-    rightYAxisSeriesId
-    && series.length > 0
-    && !series.some((item) => item.id === rightYAxisSeriesId && seriesIsVisible(item.id))
-  ) {
-    rightYAxisSeriesId = '';
-  }
   $: hasPlottedData = hasMinimumValuedObservations({
     series,
     minimum: minimumValuedObservations
@@ -1945,7 +2032,12 @@
     && !isFiatUnit(yAxisUnit)
     && !effectiveDenominationOptionList.some((option) => option.id === yAxisUnit)
   ) yAxisUnit = currency;
-  $: if (chartMode === 'candlestick' && yAxisUnit !== currency) yAxisUnit = currency;
+  $: if (
+    !busy
+    && rightYAxisUnit
+    && !isFiatUnit(rightYAxisUnit)
+    && !effectiveDenominationOptionList.some((option) => option.id === rightYAxisUnit)
+  ) rightYAxisUnit = '';
 </script>
 
 <svelte:window on:keydown={inspectByKeyboard} />
@@ -1960,7 +2052,8 @@
   data-chart-axis="time"
   data-chart-mode={chartMode}
   data-visible-series-count={visibleSeriesCount}
-  data-right-y-axis-series-id={rightYAxisSeriesId}
+  data-left-y-axis-unit={yAxisUnit}
+  data-right-y-axis-unit={rightYAxisUnit}
   data-rendered-candlestick-series-count={renderedCandlestickSeriesCount}
   data-rendered-range-from-ms={renderedRangeFromMs ?? ''}
   data-rendered-range-to-ms={renderedRangeToMs ?? ''}
@@ -2069,7 +2162,7 @@
     </div>
     <button class="ghost" type="button" on:click={resetZoom}>Reset zoom</button>
     <button class="ghost" type="button" on:click={() => (tableVisible = !tableVisible)} aria-pressed={tableVisible}>Table</button>
-    {#if (partial || resolutionLimited() || approximateDenomination()) && !busy}
+    {#if (partial || resolutionLimited() || approximateDenomination() || rightYAxisUnit) && !busy}
       <button
         type="button"
         class="partial-data-tip chart-toolbar-warning"
@@ -2109,25 +2202,25 @@
             on:change={displayedSeriesChanged}
           />
         </div>
-        <div class="field">
-          <label for={controlId('right-y-axis-series')}>Right Y-axis</label>
+      </div>
+      <div class="toolbar axis-unit-controls">
+        <div class="field grow">
+          <label for={controlId('left-y-axis-unit')}>Left Y-Axis</label>
           <SearchableSelect
-            id={controlId('right-y-axis-series')}
-            bind:value={rightYAxisSeriesId}
-            options={rightYAxisOptionList}
-            label="right Y-axis series"
-            disabled={displayedSeriesOptionList.length === 0}
+            id={controlId('left-y-axis-unit')}
+            bind:value={yAxisUnit}
+            options={yAxisOptionList}
+            label="Left Y-Axis currencies or crypto assets"
             on:change={viewChanged}
           />
         </div>
-        <div class="field">
-          <label for={controlId('y-axis-unit')}>Y-axis unit</label>
+        <div class="field grow">
+          <label for={controlId('right-y-axis-unit')}>Right Y-Axis</label>
           <SearchableSelect
-            id={controlId('y-axis-unit')}
-            bind:value={yAxisUnit}
-            options={yAxisOptionList}
-            label="Y-axis currencies or crypto assets"
-            disabled={chartMode === 'candlestick'}
+            id={controlId('right-y-axis-unit')}
+            bind:value={rightYAxisUnit}
+            options={rightYAxisUnitOptionList}
+            label="Right Y-Axis currencies or crypto assets"
             on:change={viewChanged}
           />
         </div>
@@ -2142,6 +2235,8 @@
             on:change={viewChanged}
           />
         </div>
+      </div>
+      <div class="toolbar">
         <div class="field">
           <label for={controlId('minimum-mode')}>Minimum</label>
           <select id={controlId('minimum-mode')} bind:value={minimumMode} on:change={renderChart}>
@@ -2489,6 +2584,11 @@
 
   .chart-options {
     margin-top: 0.8rem;
+  }
+
+  .axis-unit-controls,
+  .axis-unit-controls + .toolbar {
+    margin-top: 0.7rem;
   }
 
   .option-toggles {

@@ -220,10 +220,10 @@ Full charts provide:
 - automatic or explicit 5-minute, 15-minute, 30-minute, 1-hour, 4-hour, daily, or weekly
   granularity, with every choice remaining selectable;
 - line/candlestick mode where applicable;
-- linear/logarithmic scale and a searchable Y-axis unit chosen from configured currencies and
-  every activated crypto denomination;
+- linear/logarithmic scale and searchable Left Y-Axis and optional Right Y-Axis units chosen from
+  the same configured currencies and every activated crypto denomination;
 - a searchable multi-select for showing zero to five fiat or crypto units in graph popups;
-- a searchable displayed-lines selector and an optional independently scaled right Y-axis;
+- a searchable displayed-lines selector;
 - independent automatic, absolute, or percentage-padded minimum and maximum;
 - normalization to 0%, candlestick wicks, volume, and event toggles where applicable;
 - wheel/gesture pan and zoom after the plot is clicked or focused, drag zoom, and Reset zoom;
@@ -237,7 +237,7 @@ Full charts provide:
 
 Compact Dashboard and calculation charts intentionally omit the full configuration toolbar.
 Markets, Addresses, and Kraken full charts store their range, granularity, custom lookback, scale,
-Y-axis unit, popup units, displayed lines, optional right-axis assignment, normalization, event,
+Left and Right Y-Axis units, popup units, displayed lines, normalization, event,
 and volume choices in the database and restore them on refresh. The keyboard inspector and
 optional inactive-asset popup toggle sit below the graph's source, resolution, and latest-timestamp
 labels. Data-quality details use the yellow indicator at the right side of the graph-options
@@ -273,7 +273,7 @@ While a chart is loading it is dimmed, inert, and has no hover or pinned popup. 
 while the plot itself was active, the plot regains focus and wheel navigation when rendering
 finishes, unless you selected another control in the meantime.
 
-All non-percentage full charts offer every activated crypto as a Y-axis unit. When a direct pair
+All non-percentage full charts offer every activated crypto on both Y-axis unit selectors. When a direct pair
 to the primary currency is missing, CryptoTracker uses USD internally as the reserve quote
 (portfolio value in USD divided by the selected crypto's USD price). USD stays hidden unless it
 is also a configured display currency, and the yellow data-quality notice marks reserve-derived

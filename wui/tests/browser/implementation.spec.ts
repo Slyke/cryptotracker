@@ -52,7 +52,7 @@ test('chart warnings and selector edge styling render above the chart controls',
 
   const chartPanel = dataWarning.locator('xpath=ancestor::section[contains(@class,"chart-panel")]');
   await chartPanel.getByText('Scale bounds, display, events, and exports', { exact: true }).click();
-  for (const label of ['Y-axis unit', 'Popup units']) {
+  for (const label of ['Left Y-Axis', 'Right Y-Axis', 'Popup units']) {
     expect(await chartPanel.getByLabel(label, { exact: true }).evaluate((element) => ({
       topGlint: getComputedStyle(element, '::before').display,
       bottomShade: getComputedStyle(element, '::after').display
@@ -380,7 +380,14 @@ test('dashboard graph editing restores display state and replacement keeps its i
       graphDefaults: settings.graphDefaults
     };
     if (assetIds.length < 2) {
-      return { id, name, assetIds, original, created: false };
+      return {
+        id,
+        name,
+        assetIds,
+        rightYAxisUnit: settings.primaryCurrency,
+        original,
+        created: false
+      };
     }
     const graph = {
       id,
@@ -403,7 +410,7 @@ test('dashboard graph editing restores display state and replacement keeps its i
         yAxisUnit: settings.primaryCurrency,
         tooltipUnits: [settings.primaryCurrency],
         visibleSeriesIds: assetIds,
-        rightYAxisSeriesId: assetIds[1] ?? ''
+        rightYAxisUnit: settings.primaryCurrency
       }
     };
     const response = await fetch('/api/settings', {
@@ -421,6 +428,7 @@ test('dashboard graph editing restores display state and replacement keeps its i
       id,
       name,
       assetIds,
+      rightYAxisUnit: settings.primaryCurrency,
       original,
       created: true
     };
@@ -449,20 +457,67 @@ test('dashboard graph editing restores display state and replacement keeps its i
     await expect(chartPanel).toHaveAttribute('data-visible-series-count', '2');
     await expect(chartPanel).toHaveAttribute('data-rendered-candlestick-series-count', '2');
     await expect(chartPanel).toHaveAttribute(
-      'data-right-y-axis-series-id',
-      fixture.assetIds[1]!
+      'data-right-y-axis-unit',
+      fixture.rightYAxisUnit
     );
 
     await chartPanel.getByText('Scale bounds, display, events, and exports', {
       exact: true
     }).click();
+    const displayedLinesBox = await chartPanel.getByLabel(
+      'Displayed lines',
+      { exact: true }
+    ).boundingBox();
+    const leftAxisControl = chartPanel.getByLabel('Left Y-Axis', { exact: true });
+    const rightAxisControl = chartPanel.getByLabel('Right Y-Axis', { exact: true });
+    const popupUnitsControl = chartPanel.getByLabel('Popup units', { exact: true });
+    const axisBoxes = await Promise.all([
+      leftAxisControl.boundingBox(),
+      rightAxisControl.boundingBox(),
+      popupUnitsControl.boundingBox()
+    ]);
+    expect(displayedLinesBox).not.toBeNull();
+    expect(axisBoxes.every(Boolean)).toBe(true);
+    expect(axisBoxes.every((box) => box!.y > displayedLinesBox!.y)).toBe(true);
+    expect(Math.max(...axisBoxes.map((box) => box!.y))
+      - Math.min(...axisBoxes.map((box) => box!.y))).toBeLessThan(3);
+
+    await leftAxisControl.click();
+    const leftAxisOptions = await chartPanel.locator(
+      '#watched-market-prices-left-y-axis-unit-listbox [role="option"]'
+    ).allTextContents();
+    await leftAxisControl.click();
+    await rightAxisControl.click();
+    const rightAxisOptions = await chartPanel.locator(
+      '#watched-market-prices-right-y-axis-unit-listbox [role="option"]'
+    ).allTextContents();
+    await rightAxisControl.click();
+    expect(rightAxisOptions.slice(1)).toEqual(leftAxisOptions);
+
+    await leftAxisControl.click();
+    const selectedCandlestickUnit = fixture.assetIds[0]!;
+    const selectedCandlestickUnitOptionId = selectedCandlestickUnit
+      .toLowerCase()
+      .replaceAll(/[^a-z0-9]+/g, '-');
+    await chartPanel.locator(
+      `#watched-market-prices-left-y-axis-unit-option-${selectedCandlestickUnitOptionId}`
+    ).click();
+    await expect(chartPanel).toHaveAttribute(
+      'data-left-y-axis-unit',
+      selectedCandlestickUnit
+    );
+    await expect(chartPanel).toHaveAttribute('data-rendered-candlestick-series-count', '2');
+
     await chartPanel.getByLabel('Displayed lines', { exact: true }).click();
     await chartPanel.locator(
       `#watched-market-prices-displayed-series-option-${fixture.assetIds[1]}`
     ).click();
     await chartPanel.getByLabel('Displayed lines', { exact: true }).click();
     await expect(chartPanel).toHaveAttribute('data-visible-series-count', '1');
-    await expect(chartPanel).toHaveAttribute('data-right-y-axis-series-id', '');
+    await expect(chartPanel).toHaveAttribute(
+      'data-right-y-axis-unit',
+      fixture.rightYAxisUnit
+    );
     await expect(chartPanel.locator('.chart')).toHaveAttribute('aria-busy', 'false');
 
     page.once('dialog', async (dialog) => {
@@ -484,8 +539,9 @@ test('dashboard graph editing restores display state and replacement keeps its i
       return settings.savedGraphs.find((graph) => graph.id === id) ?? null;
     }, fixture.id);
     expect(replaced).not.toBeNull();
+    expect(replaced!.config.yAxisUnit).toBe(fixture.assetIds[0]);
     expect(replaced!.config.visibleSeriesIds).toEqual([fixture.assetIds[0]]);
-    expect(replaced!.config.rightYAxisSeriesId).toBe('');
+    expect(replaced!.config.rightYAxisUnit).toBe(fixture.rightYAxisUnit);
 
     await page.goto('/dashboard', { waitUntil: 'networkidle' });
     const expandGraphsAgain = page.getByRole('button', { name: 'Expand graphs' });
@@ -507,7 +563,7 @@ test('dashboard graph editing restores display state and replacement keeps its i
     await replacedCard.getByRole('button', { name: 'Remove', exact: true }).click();
     await expect(replacedCard).toBeHidden();
   } finally {
-    await page.evaluate(async (original) => {
+    if (!page.isClosed()) await page.evaluate(async (original) => {
       const meResponse = await fetch('/api/me');
       const csrfToken = String((await meResponse.json()).csrfToken);
       await fetch('/api/settings', {

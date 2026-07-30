@@ -71,6 +71,7 @@ describe('database-backed UI preferences', () => {
         showEvents: false,
         showVolume: true,
         yAxisUnit: 'ethereum',
+        rightYAxisUnit: 'bitcoin',
         tooltipUnits: ['CAD', 'USD', 'bitcoin', 'ethereum', 'dogecoin', 'solana']
       },
       fallback: defaultChartDisplayState('CAD')
@@ -80,9 +81,9 @@ describe('database-backed UI preferences', () => {
       showEvents: false,
       showVolume: true,
       yAxisUnit: 'ethereum',
+      rightYAxisUnit: 'bitcoin',
       tooltipUnits: ['CAD', 'USD', 'bitcoin', 'ethereum', 'dogecoin'],
-      visibleSeriesIds: null,
-      rightYAxisSeriesId: ''
+      visibleSeriesIds: null
     });
     expect(chartQueryStateFromSetting({
       value: { customAgoValue: 0, customAgoUnit: 'centuries' },

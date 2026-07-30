@@ -984,7 +984,7 @@
           initialShowEvents={addressDisplayState.showEvents}
           initialShowVolume={addressDisplayState.showVolume}
           initialVisibleSeriesIds={addressDisplayState.visibleSeriesIds}
-          initialRightYAxisSeriesId={addressDisplayState.rightYAxisSeriesId}
+          initialRightYAxisUnit={addressDisplayState.rightYAxisUnit}
           initialMinimumMode={boundMode('minimumMode')}
           initialMaximumMode={boundMode('maximumMode')}
           initialMinimumValue={configString('minimumValue')}

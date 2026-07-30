@@ -300,7 +300,7 @@
     yAxisUnit: string;
     tooltipUnits: string[];
     visibleSeriesIds: string[] | null;
-    rightYAxisSeriesId: string;
+    rightYAxisUnit: string;
   };
   const defaultChartQueryState = (): ChartQueryState => ({
     range: '1y',
@@ -322,7 +322,7 @@
     yAxisUnit: currency,
     tooltipUnits: normalizeTooltipUnits({ value: tooltipUnits, fallback: [currency] }),
     visibleSeriesIds: null,
-    rightYAxisSeriesId: ''
+    rightYAxisUnit: ''
   });
   let krakenChartState = defaultChartQueryState();
   let earnChartState = { ...defaultChartQueryState(), granularity: '86400' };
@@ -430,9 +430,9 @@
       visibleSeriesIds: Array.isArray(candidate.visibleSeriesIds)
         ? [...new Set(candidate.visibleSeriesIds.map(String).filter(Boolean))]
         : fallback.visibleSeriesIds,
-      rightYAxisSeriesId: typeof candidate.rightYAxisSeriesId === 'string'
-        ? candidate.rightYAxisSeriesId
-        : fallback.rightYAxisSeriesId
+      rightYAxisUnit: typeof candidate.rightYAxisUnit === 'string'
+        ? candidate.rightYAxisUnit
+        : fallback.rightYAxisUnit
     };
   };
   const chartWindow = (state: ChartQueryState) => {
@@ -1673,7 +1673,7 @@
         initialShowEvents={earnDisplayState.showEvents}
         initialShowVolume={earnDisplayState.showVolume}
         initialVisibleSeriesIds={earnDisplayState.visibleSeriesIds}
-        initialRightYAxisSeriesId={earnDisplayState.rightYAxisSeriesId}
+        initialRightYAxisUnit={earnDisplayState.rightYAxisUnit}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
         on:viewChange={(event) => void graphViewChanged({ target: 'earn', event })}
         on:zoomRange={earnGraphZoomed}
@@ -1712,7 +1712,7 @@
         initialShowEvents={earnApyDisplayState.showEvents}
         initialShowVolume={earnApyDisplayState.showVolume}
         initialVisibleSeriesIds={earnApyDisplayState.visibleSeriesIds}
-        initialRightYAxisSeriesId={earnApyDisplayState.rightYAxisSeriesId}
+        initialRightYAxisUnit={earnApyDisplayState.rightYAxisUnit}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
         on:viewChange={(event) => void graphViewChanged({ target: 'earnApy', event })}
         on:zoomRange={earnGraphZoomed}
@@ -1933,7 +1933,7 @@
     initialShowEvents={krakenDisplayState.showEvents}
     initialShowVolume={krakenDisplayState.showVolume}
     initialVisibleSeriesIds={krakenDisplayState.visibleSeriesIds}
-    initialRightYAxisSeriesId={krakenDisplayState.rightYAxisSeriesId}
+    initialRightYAxisUnit={krakenDisplayState.rightYAxisUnit}
     initialMinimumMode={editBoundMode('minimumMode')}
     initialMaximumMode={editBoundMode('maximumMode')}
     initialMinimumValue={editConfigString('minimumValue')}

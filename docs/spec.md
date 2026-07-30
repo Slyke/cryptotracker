@@ -1038,19 +1038,24 @@ Supported Y-axis scales:
 - Linear
 - Logarithmic
 
-For valuation and price charts, the Y-axis unit selector contains the primary
+For valuation and price charts, the Left Y-Axis unit selector contains the primary
 currency, every configured display currency (up to five), and every activated
 crypto asset, even when that asset is not a plotted series on the current graph. Opening the selector provides a search field
 that filters by fiat code or crypto symbol, name, and canonical ID. The selected
 unit remains part of the graph's database-backed display state.
 
-The popup-unit selector uses the same searchable fiat-and-crypto catalog, supports ticking and
+The Right Y-Axis selector exposes that same complete unit catalog plus an Off option, which is the
+default. It provides a reference scale based on the latest overlapping conversion while popup
+values continue to use point-in-time conversions. Left Y-Axis, Right Y-Axis, and Popup units share
+one control row below the displayed-lines selector. Fiat and crypto unit selection also applies to
+candlestick OHLC values.
+
+The Popup units selector uses the same searchable fiat-and-crypto catalog, supports ticking and
 unticking multiple choices without closing, permits zero selections, and enforces a maximum of
 five. Popup-unit state is independent from the Y-axis unit.
 
 Every full chart also exposes a searchable multi-select for displayed series. Legend clicks update
-that source-chart selection, so it is included when the graph is saved. An optional right Y-axis is
-off by default and may independently scale one displayed line or candlestick series.
+that source-chart selection, so it is included when the graph is saved.
 
 USD is the internal reserve quote for crypto-unit conversion. If a direct
 primary-currency/crypto pair is unavailable for a portfolio timestamp, the graph
@@ -1166,7 +1171,7 @@ Market-performance graphs are also saveable. Saved graph configuration is databa
 includes its source type, selected assets where applicable, source/currency/timezone, range,
 granularity, chart mode, scale, normalized state, event state, volume state, and performance mode
 where applicable. It also retains its selected popup units, scale bounds, candlestick-wick choice,
-displayed-series selection, optional right-axis assignment, and exact plotted asset or series IDs.
+displayed-series selection, optional Right Y-Axis unit, and exact plotted asset or series IDs.
 A later watchlist disable stops new synchronization but does not filter a disabled asset out of an
 existing saved graph's cached series.
 

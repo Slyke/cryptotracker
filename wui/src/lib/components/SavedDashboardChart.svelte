@@ -90,6 +90,14 @@
       ? chartCurrency()
       : savedAxis;
   };
+  const chartRightYAxisUnit = () => {
+    const savedAxis = stringConfig('rightYAxisUnit', '');
+    if (!savedAxis) return '';
+    const savedPrimary = stringConfig('primaryCurrency', stringConfig('currency', 'CAD'));
+    return savedAxis.toUpperCase() === savedPrimary.toUpperCase()
+      ? chartCurrency()
+      : savedAxis;
+  };
   const savedTooltipUnits = () => isPerformanceChart()
     ? ['%']
     : normalizeTooltipUnits({
@@ -102,8 +110,13 @@
     if (isPerformanceChart()) return ['%'];
     return configuredCurrencies({
       primaryCurrency: chartCurrency(),
-      listedCurrencies: savedTooltipUnits()
-        .filter((unit) => /^[A-Z]{3}$/.test(unit))
+      listedCurrencies: [
+        ...(Array.isArray(graph.config.tooltipCurrencies)
+          ? graph.config.tooltipCurrencies.map(String)
+          : []),
+        ...savedTooltipUnits(),
+        chartRightYAxisUnit()
+      ].filter((unit) => /^[A-Z]{3}$/.test(unit))
     });
   };
   const rangeWindow = () => {
@@ -197,11 +210,15 @@
         const requestCurrencies = [...new Set([...currencies, 'USD'])];
         const yAxisUnit = stringConfig('yAxisUnit', currency);
         const yAxisIsFiat = currencies.includes(yAxisUnit.toUpperCase());
+        const rightYAxisUnit = chartRightYAxisUnit();
+        const rightYAxisIsFiat = !rightYAxisUnit
+          || currencies.includes(rightYAxisUnit.toUpperCase());
         const tooltipCryptoIds = savedTooltipUnits()
           .filter((unit) => unit !== '%' && !/^[A-Z]{3}$/.test(unit));
         const requestedAssetIds = [...new Set([
           ...assetIds,
           ...(yAxisIsFiat ? [] : [yAxisUnit]),
+          ...(rightYAxisIsFiat ? [] : [rightYAxisUnit]),
           ...tooltipCryptoIds
         ])];
         type MarketSeriesPayload = {
@@ -247,6 +264,7 @@
         ]));
         const denominationIds = [...new Set([
           ...(yAxisIsFiat ? [] : [yAxisUnit]),
+          ...(rightYAxisIsFiat ? [] : [rightYAxisUnit]),
           ...tooltipCryptoIds
         ])];
         denominationOptions = denominationIds.map((denominationId) => {
@@ -434,7 +452,7 @@
       'visibleSeriesIds',
       stringArrayConfig('seriesIds')
     )}
-    initialRightYAxisSeriesId={stringConfig('rightYAxisSeriesId', '')}
+    initialRightYAxisUnit={chartRightYAxisUnit()}
   />
 </article>
 
