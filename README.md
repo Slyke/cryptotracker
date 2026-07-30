@@ -81,6 +81,42 @@ docker build -f dockerfiles/cryptotracker.Dockerfile -t cryptotracker:local .
 
 See [configuration](docs/configuration.md), [architecture](docs/architecture.md), [operations](docs/operations.md), [testing](docs/testing.md), and [documented deviations](docs/spec-deviations.md).
 
+## Image publishing
+
+CryptoTracker is a monorepo with two production images: the main application and the MCP sidecar. The following script builds both from the same tagged commit and publishes `latest`, the release version, and the release version plus commit SHA to Docker Hub and a custom registry:
+
+```bash
+USERNAME=YOURUSERNAME
+DOMAIN=yourdomain.xyz
+VERSION=v0.1.0
+
+git tag -a "$VERSION" -m "$VERSION"
+# git tag -f -a "$VERSION" -m "$VERSION"
+# git push --force origin "$VERSION"
+
+SHA=$(git rev-parse --short=12 HEAD)
+
+docker build \
+  --build-arg BUILD_HASH="$SHA" \
+  -t cryptotracker:build \
+  -f ./dockerfiles/cryptotracker.Dockerfile \
+  .
+
+docker build \
+  --build-arg BUILD_HASH="$SHA" \
+  -t cryptotracker-mcp:build \
+  ./mcp
+
+for IMAGE in cryptotracker cryptotracker-mcp; do
+  for TAG in latest "$VERSION" "$VERSION-$SHA"; do
+    docker tag "$IMAGE:build" "$USERNAME/$IMAGE:$TAG"
+    docker tag "$IMAGE:build" "$DOMAIN/$USERNAME/$IMAGE:$TAG"
+    docker push "$USERNAME/$IMAGE:$TAG" # Docker Hub
+    docker push "$DOMAIN/$USERNAME/$IMAGE:$TAG" # Custom registry
+  done
+done
+```
+
 ## Quick copy/paste commands
 
 Development with `docker-compose.dev.yml` (live reload):
