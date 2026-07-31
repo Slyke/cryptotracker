@@ -8,6 +8,8 @@ import { AppError, asAppError } from '../errors.js';
 
 export type DatabaseValue = string | number | bigint | boolean | null;
 export type DatabaseParameters = DatabaseValue[];
+type DatabaseKind = 'sqlite' | 'postgres';
+type DatabaseOperation = 'query' | 'one' | 'run' | 'transaction' | 'migration' | 'open';
 
 export interface RunResult {
   changes: number;
@@ -49,6 +51,205 @@ export interface AppDatabase extends DatabaseExecutor {
 }
 
 const sqliteSafeTableName = /^[a-z][a-z0-9_]*$/;
+const maxLoggedSqlLength = 4_096;
+const maxLoggedDatabaseMessageLength = 512;
+const sensitiveSqlAssignmentPattern = /\b(password|secret|token|cookie|authorization|api[-_]?key|signature|private[-_]?key)\b\s*=\s*[^\s,;)]+/gi;
+
+const truncateLoggedValue = ({
+  value,
+  maximumLength
+}: {
+  value: string;
+  maximumLength: number;
+}) => (
+  value.length > maximumLength
+    ? `${value.slice(0, maximumLength)} … [truncated]`
+    : value
+);
+
+const sanitizeSqlForLogging = ({ sql }: { sql: string }) => {
+  let output = '';
+  let position = 0;
+
+  while (position < sql.length) {
+    const character = sql[position]!;
+    const next = sql[position + 1];
+
+    if (character === '-' && next === '-') {
+      output += '/* [REDACTED] */ ';
+      position += 2;
+      while (position < sql.length && sql[position] !== '\n') position += 1;
+      continue;
+    }
+
+    if (character === '/' && next === '*') {
+      output += '/* [REDACTED] */ ';
+      position += 2;
+      while (
+        position < sql.length
+        && !(sql[position] === '*' && sql[position + 1] === '/')
+      ) {
+        position += 1;
+      }
+      position = Math.min(position + 2, sql.length);
+      continue;
+    }
+
+    if (character === '"') {
+      const start = position;
+      position += 1;
+      while (position < sql.length) {
+        if (sql[position] !== '"') {
+          position += 1;
+          continue;
+        }
+        if (sql[position + 1] === '"') {
+          position += 2;
+          continue;
+        }
+        position += 1;
+        break;
+      }
+      output += sql.slice(start, position);
+      continue;
+    }
+
+    if (character === '`') {
+      const start = position;
+      position += 1;
+      while (position < sql.length) {
+        if (sql[position] !== '`') {
+          position += 1;
+          continue;
+        }
+        if (sql[position + 1] === '`') {
+          position += 2;
+          continue;
+        }
+        position += 1;
+        break;
+      }
+      output += sql.slice(start, position);
+      continue;
+    }
+
+    if (character === "'") {
+      output += "'[REDACTED]'";
+      position += 1;
+      while (position < sql.length) {
+        if (sql[position] === '\\') {
+          position += 2;
+          continue;
+        }
+        if (sql[position] !== "'") {
+          position += 1;
+          continue;
+        }
+        if (sql[position + 1] === "'") {
+          position += 2;
+          continue;
+        }
+        position += 1;
+        break;
+      }
+      continue;
+    }
+
+    if (character === '$') {
+      const delimiter = sql.slice(position).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0];
+      if (delimiter) {
+        const bodyStart = position + delimiter.length;
+        const bodyEnd = sql.indexOf(delimiter, bodyStart);
+        output += `${delimiter}[REDACTED]${delimiter}`;
+        position = bodyEnd === -1
+          ? sql.length
+          : bodyEnd + delimiter.length;
+        continue;
+      }
+    }
+
+    output += character;
+    position += 1;
+  }
+
+  const normalized = output
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(sensitiveSqlAssignmentPattern, '$1=[REDACTED]');
+
+  return truncateLoggedValue({
+    value: normalized,
+    maximumLength: maxLoggedSqlLength
+  });
+};
+
+const sanitizeDatabaseErrorMessage = ({ message }: { message: string }) => {
+  const redacted = message
+    .replace(/'(?:''|[^'])*'/g, "'[REDACTED]'")
+    .replace(/"(?:""|[^"])*"/g, '"[REDACTED]"')
+    .replace(/\(([^()]*)\)=\(([^()]*)\)/g, '($1)=([REDACTED])')
+    .replace(sensitiveSqlAssignmentPattern, '$1=[REDACTED]')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return truncateLoggedValue({
+    value: redacted,
+    maximumLength: maxLoggedDatabaseMessageLength
+  });
+};
+
+const databaseDriverError = ({ error }: { error: unknown }) => {
+  if (!(error instanceof Error)) {
+    return {
+      name: 'UnknownDatabaseError',
+      message: 'The database driver threw a non-Error value.'
+    };
+  }
+
+  const code = (error as Error & { code?: unknown }).code;
+  return {
+    name: error.name,
+    message: sanitizeDatabaseErrorMessage({ message: error.message }),
+    ...(typeof code === 'string' || typeof code === 'number'
+      ? { code: String(code) }
+      : {})
+  };
+};
+
+const executeDatabaseOperation = async <Result>({
+  kind,
+  operation,
+  sql,
+  parameters = [],
+  errorKey = 'DATABASE_QUERY_FAILED',
+  reason,
+  task
+}: {
+  kind: DatabaseKind;
+  operation: DatabaseOperation;
+  sql: string;
+  parameters?: DatabaseParameters;
+  errorKey?: string;
+  reason: string;
+  task: () => Result | Promise<Result>;
+}): Promise<Result> => {
+  try {
+    return await task();
+  } catch (error) {
+    throw asAppError({
+      error,
+      errorKey,
+      reason,
+      context: {
+        databaseKind: kind,
+        operation,
+        sql: sanitizeSqlForLogging({ sql }),
+        parameterCount: parameters.length,
+        databaseError: databaseDriverError({ error })
+      }
+    });
+  }
+};
 
 const resolveMigrationsDirectory = ({
   kind
@@ -141,7 +342,14 @@ class SqliteExecutor implements DatabaseExecutor {
     sql: string;
     parameters?: DatabaseParameters;
   }): Promise<Row[]> {
-    return this.connection.prepare(sql).all(...parameters) as Row[];
+    return executeDatabaseOperation({
+      kind: 'sqlite',
+      operation: 'query',
+      sql,
+      parameters,
+      reason: 'SQLite query failed.',
+      task: () => this.connection.prepare(sql).all(...parameters) as Row[]
+    });
   }
 
   async one<Row extends QueryResultRow = QueryResultRow>({
@@ -151,7 +359,17 @@ class SqliteExecutor implements DatabaseExecutor {
     sql: string;
     parameters?: DatabaseParameters;
   }): Promise<Row | null> {
-    return (this.connection.prepare(sql).get(...parameters) as Row | undefined) ?? null;
+    return executeDatabaseOperation({
+      kind: 'sqlite',
+      operation: 'one',
+      sql,
+      parameters,
+      reason: 'SQLite query failed.',
+      task: () => (
+        (this.connection.prepare(sql).get(...parameters) as Row | undefined)
+        ?? null
+      )
+    });
   }
 
   async run({
@@ -161,8 +379,17 @@ class SqliteExecutor implements DatabaseExecutor {
     sql: string;
     parameters?: DatabaseParameters;
   }): Promise<RunResult> {
-    const result = this.connection.prepare(sql).run(...parameters);
-    return { changes: result.changes };
+    return executeDatabaseOperation({
+      kind: 'sqlite',
+      operation: 'run',
+      sql,
+      parameters,
+      reason: 'SQLite statement failed.',
+      task: () => {
+        const result = this.connection.prepare(sql).run(...parameters);
+        return { changes: result.changes };
+      }
+    });
   }
 }
 
@@ -238,13 +465,36 @@ class SqliteDatabase extends SqliteExecutor implements AppDatabase {
   }): Promise<T> {
     return this.serialize({
       task: async () => {
-        this.connection.exec('BEGIN IMMEDIATE');
+        await executeDatabaseOperation({
+          kind: this.kind,
+          operation: 'transaction',
+          sql: 'BEGIN IMMEDIATE',
+          errorKey: 'DATABASE_TRANSACTION_FAILED',
+          reason: 'SQLite transaction failed.',
+          task: () => this.connection.exec('BEGIN IMMEDIATE')
+        });
         try {
           const result = await task(new SqliteExecutor(this.connection));
-          this.connection.exec('COMMIT');
+          await executeDatabaseOperation({
+            kind: this.kind,
+            operation: 'transaction',
+            sql: 'COMMIT',
+            errorKey: 'DATABASE_TRANSACTION_FAILED',
+            reason: 'SQLite transaction failed.',
+            task: () => this.connection.exec('COMMIT')
+          });
           return result;
         } catch (error) {
-          if (this.connection.inTransaction) this.connection.exec('ROLLBACK');
+          if (this.connection.inTransaction) {
+            await executeDatabaseOperation({
+              kind: this.kind,
+              operation: 'transaction',
+              sql: 'ROLLBACK',
+              errorKey: 'DATABASE_TRANSACTION_FAILED',
+              reason: 'SQLite transaction rollback failed.',
+              task: () => this.connection.exec('ROLLBACK')
+            }).catch(() => undefined);
+          }
           throw asAppError({
             error,
             errorKey: 'DATABASE_TRANSACTION_FAILED',
@@ -256,40 +506,99 @@ class SqliteDatabase extends SqliteExecutor implements AppDatabase {
   }
 
   async migrate() {
+    const migrationOperation = <Result>({
+      sql,
+      parameters = [],
+      task
+    }: {
+      sql: string;
+      parameters?: DatabaseParameters;
+      task: () => Result | Promise<Result>;
+    }) => executeDatabaseOperation({
+      kind: this.kind,
+      operation: 'migration',
+      sql,
+      parameters,
+      errorKey: 'DATABASE_MIGRATION_FAILED',
+      reason: 'SQLite migrations failed.',
+      task
+    });
+
     try {
-      this.connection.exec(`
+      const schemaMigrationsSql = `
         CREATE TABLE IF NOT EXISTS schema_migrations (
           version TEXT PRIMARY KEY,
           applied_at_ms INTEGER NOT NULL
         )
-      `);
+      `;
+      await migrationOperation({
+        sql: schemaMigrationsSql,
+        task: () => this.connection.exec(schemaMigrationsSql)
+      });
       const migrations = await loadMigrations({ kind: this.kind });
-      const appliedRows = this.connection.prepare('SELECT version FROM schema_migrations').all() as Array<{ version: string }>;
+      const appliedVersionsSql = 'SELECT version FROM schema_migrations';
+      const appliedRows = await migrationOperation({
+        sql: appliedVersionsSql,
+        task: () => this.connection.prepare(appliedVersionsSql).all() as Array<{ version: string }>
+      });
       const applied = new Set(appliedRows.map((row) => row.version));
 
       for (const migration of migrations) {
         if (applied.has(migration.version)) continue;
-        const foreignKeysEnabled = Number(this.connection.pragma('foreign_keys', { simple: true })) === 1;
-        if (foreignKeysEnabled) this.connection.pragma('foreign_keys = OFF');
+        const foreignKeysEnabled = Number(await migrationOperation({
+          sql: 'PRAGMA foreign_keys',
+          task: () => this.connection.pragma('foreign_keys', { simple: true })
+        })) === 1;
+        if (foreignKeysEnabled) {
+          await migrationOperation({
+            sql: 'PRAGMA foreign_keys = OFF',
+            task: () => this.connection.pragma('foreign_keys = OFF')
+          });
+        }
         try {
-          this.connection.exec('BEGIN IMMEDIATE');
+          await migrationOperation({
+            sql: 'BEGIN IMMEDIATE',
+            task: () => this.connection.exec('BEGIN IMMEDIATE')
+          });
           try {
-            this.connection.exec(migration.sql);
-            const foreignKeyViolations = this.connection.pragma('foreign_key_check') as unknown[];
+            await migrationOperation({
+              sql: migration.sql,
+              task: () => this.connection.exec(migration.sql)
+            });
+            const foreignKeyViolations = await migrationOperation({
+              sql: 'PRAGMA foreign_key_check',
+              task: () => this.connection.pragma('foreign_key_check') as unknown[]
+            });
             if (foreignKeyViolations.length > 0) {
               throw new Error(`Migration ${migration.version} introduced a foreign-key violation.`);
             }
-            this.connection.prepare('INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?, ?)').run(
-              migration.version,
-              Date.now()
-            );
-            this.connection.exec('COMMIT');
+            const recordMigrationSql = 'INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?, ?)';
+            const recordMigrationParameters = [migration.version, Date.now()];
+            await migrationOperation({
+              sql: recordMigrationSql,
+              parameters: recordMigrationParameters,
+              task: () => this.connection.prepare(recordMigrationSql).run(...recordMigrationParameters)
+            });
+            await migrationOperation({
+              sql: 'COMMIT',
+              task: () => this.connection.exec('COMMIT')
+            });
           } catch (error) {
-            if (this.connection.inTransaction) this.connection.exec('ROLLBACK');
+            if (this.connection.inTransaction) {
+              await migrationOperation({
+                sql: 'ROLLBACK',
+                task: () => this.connection.exec('ROLLBACK')
+              }).catch(() => undefined);
+            }
             throw error;
           }
         } finally {
-          if (foreignKeysEnabled) this.connection.pragma('foreign_keys = ON');
+          if (foreignKeysEnabled) {
+            await migrationOperation({
+              sql: 'PRAGMA foreign_keys = ON',
+              task: () => this.connection.pragma('foreign_keys = ON')
+            });
+          }
         }
       }
     } catch (error) {
@@ -302,8 +611,8 @@ class SqliteDatabase extends SqliteExecutor implements AppDatabase {
   }
 
   async ping() {
-    const result = this.connection.prepare('SELECT 1 AS ok').get() as { ok: number };
-    return result.ok === 1;
+    const result = await this.one<{ ok: number }>({ sql: 'SELECT 1 AS ok' });
+    return result?.ok === 1;
   }
 
   async close() {
@@ -356,8 +665,18 @@ class PostgresExecutor implements DatabaseExecutor {
     sql: string;
     parameters?: DatabaseParameters;
   }): Promise<Row[]> {
-    const result = await this.connection.query<Row>(postgresSql({ sql }), parameters);
-    return result.rows;
+    const preparedSql = postgresSql({ sql });
+    return executeDatabaseOperation({
+      kind: 'postgres',
+      operation: 'query',
+      sql: preparedSql,
+      parameters,
+      reason: 'Postgres query failed.',
+      task: async () => {
+        const result = await this.connection.query<Row>(preparedSql, parameters);
+        return result.rows;
+      }
+    });
   }
 
   async one<Row extends QueryResultRow = QueryResultRow>({
@@ -367,8 +686,18 @@ class PostgresExecutor implements DatabaseExecutor {
     sql: string;
     parameters?: DatabaseParameters;
   }): Promise<Row | null> {
-    const result = await this.connection.query<Row>(postgresSql({ sql }), parameters);
-    return result.rows[0] ?? null;
+    const preparedSql = postgresSql({ sql });
+    return executeDatabaseOperation({
+      kind: 'postgres',
+      operation: 'one',
+      sql: preparedSql,
+      parameters,
+      reason: 'Postgres query failed.',
+      task: async () => {
+        const result = await this.connection.query<Row>(preparedSql, parameters);
+        return result.rows[0] ?? null;
+      }
+    });
   }
 
   async run({
@@ -378,8 +707,18 @@ class PostgresExecutor implements DatabaseExecutor {
     sql: string;
     parameters?: DatabaseParameters;
   }): Promise<RunResult> {
-    const result = await this.connection.query(postgresSql({ sql }), parameters);
-    return { changes: result.rowCount ?? 0 };
+    const preparedSql = postgresSql({ sql });
+    return executeDatabaseOperation({
+      kind: 'postgres',
+      operation: 'run',
+      sql: preparedSql,
+      parameters,
+      reason: 'Postgres statement failed.',
+      task: async () => {
+        const result = await this.connection.query(preparedSql, parameters);
+        return { changes: result.rowCount ?? 0 };
+      }
+    });
   }
 }
 
@@ -396,13 +735,37 @@ class PostgresDatabase extends PostgresExecutor implements AppDatabase {
     task: (executor: DatabaseExecutor) => Promise<T>;
   }): Promise<T> {
     const client = await this.pool.connect();
+    const transactionOperation = <Result>({
+      sql,
+      task
+    }: {
+      sql: string;
+      task: () => Result | Promise<Result>;
+    }) => executeDatabaseOperation({
+      kind: this.kind,
+      operation: 'transaction',
+      sql,
+      errorKey: 'DATABASE_TRANSACTION_FAILED',
+      reason: 'Postgres transaction failed.',
+      task
+    });
+
     try {
-      await client.query('BEGIN');
+      await transactionOperation({
+        sql: 'BEGIN',
+        task: () => client.query('BEGIN')
+      });
       const result = await task(new PostgresExecutor(client));
-      await client.query('COMMIT');
+      await transactionOperation({
+        sql: 'COMMIT',
+        task: () => client.query('COMMIT')
+      });
       return result;
     } catch (error) {
-      await client.query('ROLLBACK');
+      await transactionOperation({
+        sql: 'ROLLBACK',
+        task: () => client.query('ROLLBACK')
+      }).catch(() => undefined);
       throw asAppError({
         error,
         errorKey: 'DATABASE_TRANSACTION_FAILED',
@@ -414,36 +777,85 @@ class PostgresDatabase extends PostgresExecutor implements AppDatabase {
   }
 
   async migrate() {
+    const migrationOperation = <Result>({
+      sql,
+      parameters = [],
+      task
+    }: {
+      sql: string;
+      parameters?: DatabaseParameters;
+      task: () => Result | Promise<Result>;
+    }) => executeDatabaseOperation({
+      kind: this.kind,
+      operation: 'migration',
+      sql,
+      parameters,
+      errorKey: 'DATABASE_MIGRATION_FAILED',
+      reason: 'Postgres migrations failed.',
+      task
+    });
+
     try {
-      await this.pool.query(`
+      const schemaMigrationsSql = `
         CREATE TABLE IF NOT EXISTS schema_migrations (
           version TEXT PRIMARY KEY,
           applied_at_ms BIGINT NOT NULL
         )
-      `);
+      `;
+      await migrationOperation({
+        sql: schemaMigrationsSql,
+        task: () => this.pool.query(schemaMigrationsSql)
+      });
       const migrations = await loadMigrations({ kind: this.kind });
       const client = await this.pool.connect();
       try {
-        await client.query('SELECT pg_advisory_lock(3088192)');
-        const result = await client.query<{ version: string }>('SELECT version FROM schema_migrations');
+        const advisoryLockSql = 'SELECT pg_advisory_lock(3088192)';
+        await migrationOperation({
+          sql: advisoryLockSql,
+          task: () => client.query(advisoryLockSql)
+        });
+        const appliedVersionsSql = 'SELECT version FROM schema_migrations';
+        const result = await migrationOperation({
+          sql: appliedVersionsSql,
+          task: () => client.query<{ version: string }>(appliedVersionsSql)
+        });
         const applied = new Set(result.rows.map((row) => row.version));
         for (const migration of migrations) {
           if (applied.has(migration.version)) continue;
-          await client.query('BEGIN');
+          await migrationOperation({
+            sql: 'BEGIN',
+            task: () => client.query('BEGIN')
+          });
           try {
-            await client.query(migration.sql);
-            await client.query(
-              'INSERT INTO schema_migrations(version, applied_at_ms) VALUES ($1, $2)',
-              [migration.version, Date.now()]
-            );
-            await client.query('COMMIT');
+            await migrationOperation({
+              sql: migration.sql,
+              task: () => client.query(migration.sql)
+            });
+            const recordMigrationSql = 'INSERT INTO schema_migrations(version, applied_at_ms) VALUES ($1, $2)';
+            const recordMigrationParameters = [migration.version, Date.now()];
+            await migrationOperation({
+              sql: recordMigrationSql,
+              parameters: recordMigrationParameters,
+              task: () => client.query(recordMigrationSql, recordMigrationParameters)
+            });
+            await migrationOperation({
+              sql: 'COMMIT',
+              task: () => client.query('COMMIT')
+            });
           } catch (error) {
-            await client.query('ROLLBACK');
+            await migrationOperation({
+              sql: 'ROLLBACK',
+              task: () => client.query('ROLLBACK')
+            }).catch(() => undefined);
             throw error;
           }
         }
       } finally {
-        await client.query('SELECT pg_advisory_unlock(3088192)').catch(() => undefined);
+        const advisoryUnlockSql = 'SELECT pg_advisory_unlock(3088192)';
+        await migrationOperation({
+          sql: advisoryUnlockSql,
+          task: () => client.query(advisoryUnlockSql)
+        }).catch(() => undefined);
         client.release();
       }
     } catch (error) {
@@ -456,8 +868,8 @@ class PostgresDatabase extends PostgresExecutor implements AppDatabase {
   }
 
   async ping() {
-    const result = await this.pool.query<{ ok: number }>('SELECT 1 AS ok');
-    return result.rows[0]?.ok === 1;
+    const result = await this.one<{ ok: number }>({ sql: 'SELECT 1 AS ok' });
+    return result?.ok === 1;
   }
 
   async close() {
@@ -465,28 +877,35 @@ class PostgresDatabase extends PostgresExecutor implements AppDatabase {
   }
 
   async estimateSizeBytes() {
-    const result = await this.pool.query<{ size: string }>('SELECT pg_database_size(current_database())::text AS size');
-    return Number(result.rows[0]?.size ?? 0);
+    const result = await this.one<{ size: string }>({
+      sql: 'SELECT pg_database_size(current_database())::text AS size'
+    });
+    return Number(result?.size ?? 0);
   }
 
   async listTables() {
-    const result = await this.pool.query<{ table_name: string }>(`
-      SELECT table_name
-      FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-      ORDER BY table_name
-    `);
-    return result.rows.map((row) => row.table_name);
+    const rows = await this.query<{ table_name: string }>({
+      sql: `
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+        ORDER BY table_name
+      `
+    });
+    return rows.map((row) => row.table_name);
   }
 
   async listColumns({ table }: { table: string }) {
-    const result = await this.pool.query<{ column_name: string }>(`
-      SELECT column_name
-      FROM information_schema.columns
-      WHERE table_schema = 'public' AND table_name = $1
-      ORDER BY ordinal_position
-    `, [table]);
-    return result.rows.map((row) => row.column_name);
+    const rows = await this.query<{ column_name: string }>({
+      sql: `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = ?
+        ORDER BY ordinal_position
+      `,
+      parameters: [table]
+    });
+    return rows.map((row) => row.column_name);
   }
 }
 
@@ -514,10 +933,38 @@ export const openDatabase = async ({
 
     await mkdir(dirname(resolve(runtime.sqlitePath)), { recursive: true });
     const connection = new BetterSqlite3(runtime.sqlitePath);
-    connection.pragma('journal_mode = WAL');
-    connection.pragma('foreign_keys = ON');
-    connection.pragma(`busy_timeout = ${runtime.config.database.sqlite.busyTimeoutMs}`);
-    connection.pragma(`synchronous = ${runtime.config.database.sqlite.synchronous}`);
+    const openOperation = <Result>({
+      sql,
+      task
+    }: {
+      sql: string;
+      task: () => Result | Promise<Result>;
+    }) => executeDatabaseOperation({
+      kind: 'sqlite',
+      operation: 'open',
+      sql,
+      errorKey: 'DATABASE_OPEN_FAILED',
+      reason: 'Unable to configure the sqlite database.',
+      task
+    });
+    await openOperation({
+      sql: 'PRAGMA journal_mode = WAL',
+      task: () => connection.pragma('journal_mode = WAL')
+    });
+    await openOperation({
+      sql: 'PRAGMA foreign_keys = ON',
+      task: () => connection.pragma('foreign_keys = ON')
+    });
+    const busyTimeoutSql = `PRAGMA busy_timeout = ${runtime.config.database.sqlite.busyTimeoutMs}`;
+    await openOperation({
+      sql: busyTimeoutSql,
+      task: () => connection.pragma(`busy_timeout = ${runtime.config.database.sqlite.busyTimeoutMs}`)
+    });
+    const synchronousSql = `PRAGMA synchronous = ${runtime.config.database.sqlite.synchronous}`;
+    await openOperation({
+      sql: synchronousSql,
+      task: () => connection.pragma(`synchronous = ${runtime.config.database.sqlite.synchronous}`)
+    });
     return new SqliteDatabase(connection, resolve(runtime.sqlitePath));
   } catch (error) {
     throw asAppError({
@@ -529,6 +976,9 @@ export const openDatabase = async ({
 };
 
 export const databaseInternals = {
+  databaseDriverError,
   loadMigrations,
-  postgresSql
+  postgresSql,
+  sanitizeDatabaseErrorMessage,
+  sanitizeSqlForLogging
 };

@@ -399,7 +399,7 @@ export class AddressService {
         WHERE tracked_addresses.network = ?
           AND tracked_addresses.normalized_address = ?
           AND tracked_addresses.deleted_at_ms IS NULL
-          AND (? IS NULL OR tracked_addresses.id <> ?)
+          AND (CAST(? AS TEXT) IS NULL OR tracked_addresses.id <> ?)
       `,
       parameters: [network, normalizedAddress, excludeAddressId, excludeAddressId]
     });
@@ -614,7 +614,7 @@ export class AddressService {
               WHERE address_id = ?
                 AND canonical_asset_id = ?
                 AND (
-                  (contract_or_mint IS NULL AND ? IS NULL)
+                  (contract_or_mint IS NULL AND CAST(? AS TEXT) IS NULL)
                   OR contract_or_mint = ?
                 )
             `,
