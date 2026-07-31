@@ -2834,7 +2834,7 @@
   }
 
   .axis-row + .axis-row,
-  .axis-row + .bounds-row {
+  .bounds-row {
     margin-top: 0.7rem;
   }
 
