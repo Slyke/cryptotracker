@@ -23,10 +23,21 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await page.getByRole('button', { name: /refresh catalog/i }).click();
   await expect(catalogFilter).toHaveValue('');
   await expect(page.getByRole('button', { name: /save table to dashboard/i })).toBeVisible();
+  const marketPerformance = page.locator('#market-performance-chart .performance-panel');
+  const marketPerformanceOptions = marketPerformance.locator('details.performance-options');
+  const marketPerformanceOptionsSummary = marketPerformance.getByText(
+    'Performance range, display, and dashboard options',
+    { exact: true }
+  );
   const performanceRange = page.locator('#market-performance-range');
+  await expect(marketPerformanceOptionsSummary).toBeVisible();
+  if (await marketPerformanceOptions.getAttribute('open') !== null) {
+    await marketPerformanceOptionsSummary.click();
+  }
+  await expect(performanceRange).toBeHidden();
+  await marketPerformanceOptionsSummary.click();
   await expect(performanceRange).toBeVisible();
   await expect(page.getByRole('button', { name: /save chart to dashboard/i })).toBeVisible();
-  const marketPerformance = page.locator('#market-performance-chart .performance-panel');
   for (const label of [
     'Left Y-Axis',
     'Left displayed lines',

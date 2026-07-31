@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import PortfolioChart from './PortfolioChart.svelte';
   import SearchableMultiSelect from './SearchableMultiSelect.svelte';
+  import { persistAccordionState } from '$lib/accordion-state';
   import type { ChartAxisOption } from '$lib/chart-axis-options';
   import {
     formatPercent,
@@ -476,7 +477,15 @@
       <h2>{title}</h2>
     </div>
   </div>
-  <div class="performance-controls">
+  <details
+    class="performance-options"
+    use:persistAccordionState={{
+      key: `${controlId('analytics')}:options`
+    }}
+  >
+    <summary>Performance range, display, and dashboard options</summary>
+    <div class="details-body performance-options-body">
+      <div class="performance-controls">
     <div class="field">
       <label for={controlId('mode')}>Graph</label>
       <select id={controlId('mode')} bind:value={mode}>
@@ -538,9 +547,9 @@
         {/each}
       </select>
     </div>
-  </div>
+      </div>
 
-  <div class="performance-axis-row">
+      <div class="performance-axis-row">
     <div class="field">
       <label for={controlId('left-y-axis-unit')}>Left Y-Axis</label>
       <select id={controlId('left-y-axis-unit')} disabled>
@@ -571,9 +580,9 @@
         <code>{leftYAxisLineColor}</code>
       </div>
     </div>
-  </div>
+      </div>
 
-  <div class="performance-axis-row">
+      <div class="performance-axis-row">
     <div class="field">
       <label for={controlId('right-y-axis-unit')}>Right Y-Axis</label>
       <select
@@ -610,9 +619,9 @@
         <code>{rightYAxisLineColor}</code>
       </div>
     </div>
-  </div>
+      </div>
 
-  <div class="performance-bounds-row">
+      <div class="performance-bounds-row">
     <div class="field">
       <label for={controlId('tooltip-units')}>Popup units</label>
       <SearchableMultiSelect
@@ -652,7 +661,20 @@
         <input id={controlId('maximum-value')} inputmode="decimal" bind:value={maximumValue} on:input={displayChanged} />
       </div>
     {/if}
-  </div>
+      </div>
+
+      {#if saveable}
+        <div class="save-performance">
+          <div class="field">
+            <label for={controlId('save-name')}>Dashboard chart name</label>
+            <input id={controlId('save-name')} maxlength="120" bind:value={saveGraphName} />
+          </div>
+          <button class="secondary" type="button" disabled={busy} on:click={saveGraph}>Save chart to dashboard</button>
+        </div>
+        {#if saveValidation}<div class="alert warning" role="status">{saveValidation}</div>{/if}
+      {/if}
+    </div>
+  </details>
 
   {#if selectedMetric}
     <dl class="metric-grid">
@@ -695,17 +717,6 @@
       : 'Returns use observed portfolio value. Deposits and withdrawals are not removed, so this is not a cash-flow-adjusted time-weighted return.'}
     Volatility is annualized from the median observation interval.
   </p>
-
-  {#if saveable}
-    <div class="save-performance">
-      <div class="field">
-        <label for={controlId('save-name')}>Dashboard chart name</label>
-        <input id={controlId('save-name')} maxlength="120" bind:value={saveGraphName} />
-      </div>
-      <button class="secondary" type="button" disabled={busy} on:click={saveGraph}>Save chart to dashboard</button>
-    </div>
-    {#if saveValidation}<div class="alert warning" role="status">{saveValidation}</div>{/if}
-  {/if}
 
   <PortfolioChart
     title={`${title} ${mode}`}
@@ -762,6 +773,11 @@
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
     align-items: end;
     gap: 0.8rem;
+  }
+
+  .performance-options-body {
+    display: grid;
+    gap: 1rem;
   }
 
   .performance-axis-row,
