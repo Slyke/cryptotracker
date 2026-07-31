@@ -190,8 +190,6 @@
   let defaultHoldingColumns = buildDefaultHoldingColumns('CAD');
   let selectedHoldingColumns = [...defaultHoldingColumns];
   let holdingGroups: Array<{ addressId: string; rows: Holding[] }> = [];
-  let selectedNewAssetIds = new Set<string>();
-  let addressAssetSelections: Record<string, string[]> = {};
   $: activeCurrencies = configuredCurrencies({
     primaryCurrency,
     listedCurrencies: tooltipCurrencies
@@ -296,30 +294,6 @@
       };
     });
   };
-  const selectableTokens = (networkId: string) => {
-    const mainnet = mainnetFor(networkId);
-    return mainnet?.enabledAssets.filter((asset) => (
-      asset.id !== mainnet.nativeAssetId && asset.contractOrMint
-    )) ?? [];
-  };
-
-  const toggleNewAsset = (assetId: string) => {
-    const next = new Set(selectedNewAssetIds);
-    if (next.has(assetId)) next.delete(assetId);
-    else next.add(assetId);
-    selectedNewAssetIds = next;
-  };
-
-  const toggleAddressAsset = ({ addressId, assetId }: { addressId: string; assetId: string }) => {
-    const selected = new Set(addressAssetSelections[addressId] ?? []);
-    if (selected.has(assetId)) selected.delete(assetId);
-    else selected.add(assetId);
-    addressAssetSelections = {
-      ...addressAssetSelections,
-      [addressId]: [...selected]
-    };
-  };
-
   const formatDate = (value: string | null) => (
     value
       ? formatDateTime({ value, timezone })
@@ -464,10 +438,6 @@
       ]);
       if (requestId !== loadRequestId) return;
       addresses = addressPayload.addresses;
-      addressAssetSelections = Object.fromEntries(addresses.map((item) => [
-        item.id,
-        item.assets.filter((asset) => asset.enabled).map((asset) => asset.canonicalAssetId)
-      ]));
       mainnets = networkPayload.mainnets;
       unmappedMainnetAssets = networkPayload.unmappedAssets;
       if (!mainnets.some((option) => option.id === network && option.supported)) {
@@ -502,22 +472,15 @@
       error = selectedMainnet?.reason ?? 'Choose a configured mainnet before adding an address.';
       return;
     }
-    const knownAssets = network === 'ethereum'
-      ? selectableTokens(network)
-      .filter((asset) => selectedNewAssetIds.has(asset.id))
-      .map((asset) => ({
-        canonicalAssetId: asset.id,
-        contractOrMint: asset.contractOrMint
-      }))
+    const assetId = optionalAssetId.trim();
+    const contract = contractOrMint.trim();
+    if (network === 'ethereum' && Boolean(assetId) !== Boolean(contract)) {
+      error = 'Enter both the ERC-20 canonical asset ID and contract, or leave both blank to track ETH.';
+      return;
+    }
+    const assets = network === 'ethereum' && assetId && contract
+      ? [{ canonicalAssetId: assetId, contractOrMint: contract }]
       : [];
-    const assets = [
-      ...knownAssets,
-      ...(network === 'ethereum' && optionalAssetId && contractOrMint && !knownAssets.some((asset) => (
-        asset.canonicalAssetId === optionalAssetId
-      ))
-        ? [{ canonicalAssetId: optionalAssetId, contractOrMint }]
-        : [])
-    ];
     try {
       await apiRequest({
         url: '/api/addresses',
@@ -527,6 +490,7 @@
           address,
           label,
           enabled: true,
+          includeNative: assets.length === 0,
           assets
         }
       });
@@ -534,7 +498,6 @@
       label = '';
       optionalAssetId = '';
       contractOrMint = '';
-      selectedNewAssetIds = new Set();
       await load();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : 'Address could not be added.';
@@ -562,34 +525,6 @@
       ? `${item.label} was not queued because its chain-history provider is not configured.`
       : `Refresh queued for ${item.label}. Settings shows its live progress and oldest point reached.`;
     await load();
-  };
-
-  const saveAddressAssets = async ({ item }: { item: TrackedAddress }) => {
-    const mainnet = mainnetFor(item.network);
-    const selected = new Set(addressAssetSelections[item.id] ?? []);
-    const assets = (mainnet?.enabledAssets ?? [])
-      .filter((asset) => (
-        asset.id !== mainnet?.nativeAssetId
-        && selected.has(asset.id)
-        && asset.contractOrMint
-      ))
-      .map((asset) => ({
-        canonicalAssetId: asset.id,
-        contractOrMint: asset.contractOrMint
-      }));
-    try {
-      const result = await apiRequest<{ refresh: { skipped?: boolean } }>({
-        url: `/api/addresses/${item.id}/assets`,
-        method: 'PUT',
-        body: { assets }
-      });
-      message = result.refresh.skipped
-        ? `Saved tracked assets for ${item.label}. History will remain unavailable until its chain provider is configured.`
-        : `Saved tracked assets for ${item.label}; a full read-only history replay was queued.`;
-      await load();
-    } catch (caught) {
-      error = caught instanceof Error ? caught.message : 'Tracked assets could not be saved.';
-    }
   };
 
   const remove = async ({ item }: { item: TrackedAddress }) => {
@@ -846,21 +781,11 @@
             </div>
             {#if network === 'ethereum'}
               <fieldset class="optional-token-options">
-                <legend>Additional Ethereum tokens (optional)</legend>
-                <p class="muted">ETH is tracked automatically. Choose any ERC-20 tokens you also want to track.</p>
+                <legend>Currency to track</legend>
+                <p class="muted">Leave these blank to track ETH. To create a separate entry for an ERC-20 currency, enter its canonical asset ID and contract.</p>
                 <div class="optional-token-fields">
-                  {#each selectableTokens(network) as asset (asset.id)}
-                    <label class="check token-choice">
-                      <input
-                        type="checkbox"
-                        checked={selectedNewAssetIds.has(asset.id)}
-                        on:change={() => toggleNewAsset(asset.id)}
-                      />
-                      Track {asset.symbol}
-                    </label>
-                  {/each}
                   <div class="field">
-                    <label for="optional-asset">Other canonical asset ID</label>
+                    <label for="optional-asset">ERC-20 canonical asset ID</label>
                     <input id="optional-asset" bind:value={optionalAssetId} placeholder="usd-coin-ethereum" />
                   </div>
                   <div class="field grow">
@@ -907,44 +832,14 @@
                 <code>{item.address}</code>
                 <p class="muted">Oldest reconstructed: {formatDate(item.history.oldestReconstructedAt)} · last successful check: {formatDate(item.history.lastSuccessfulSync)}</p>
                 <div class="asset-badges">
-                  {#each item.assets as asset}
-                    <span class="badge {asset.enabled ? 'start' : ''}">{asset.canonicalAssetId}</span>
+                  {#each item.assets.filter((asset) => asset.enabled) as asset}
+                    <span class="badge start">{asset.canonicalAssetId}</span>
                   {/each}
                 </div>
                 {#if mainnetFor(item.network) && !mainnetFor(item.network)?.supported}
                   <div class="alert warning provider-required">
                     <strong>{mainnetFor(item.network)?.label} synchronization is unavailable.</strong>
                     {mainnetFor(item.network)?.reason}
-                  </div>
-                {/if}
-                {#if selectableTokens(item.network).length > 0}
-                  <div class="tracked-assets">
-                    <span class="label">Assets tracked for this address</span>
-                    <div class="tracked-asset-options">
-                      <label class="check">
-                        <input type="checkbox" checked disabled />
-                        {mainnetFor(item.network)?.enabledAssets.find((asset) => (
-                          asset.id === mainnetFor(item.network)?.nativeAssetId
-                        ))?.symbol ?? mainnetFor(item.network)?.nativeAssetId}
-                        · native asset
-                      </label>
-                      {#each selectableTokens(item.network) as asset (asset.id)}
-                        <label class="check">
-                          <input
-                            type="checkbox"
-                            checked={(addressAssetSelections[item.id] ?? []).includes(asset.id)}
-                            on:change={() => toggleAddressAsset({
-                              addressId: item.id,
-                              assetId: asset.id
-                            })}
-                          />
-                          {asset.symbol}
-                        </label>
-                      {/each}
-                      <button class="secondary compact" type="button" on:click={() => saveAddressAssets({ item })}>
-                        Save tracked assets
-                      </button>
-                    </div>
                   </div>
                 {/if}
                 <div class="toolbar">
@@ -1161,11 +1056,6 @@
     margin-bottom: 0.8rem;
   }
 
-  .token-choice {
-    align-self: center;
-    min-height: 2.8rem;
-  }
-
   .optional-token-options {
     width: 100%;
     min-width: 0;
@@ -1200,22 +1090,6 @@
 
   .address-submit {
     margin-left: auto;
-  }
-
-  .tracked-assets {
-    margin-bottom: 0.8rem;
-    padding: 0.7rem;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-panel);
-  }
-
-  .tracked-asset-options {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.7rem;
-    margin-top: 0.5rem;
   }
 
   .provider-required {

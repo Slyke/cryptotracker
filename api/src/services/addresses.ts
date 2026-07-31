@@ -1,6 +1,6 @@
 import { Decimal } from 'decimal.js';
 import type { LoadedRuntime } from '../config/load.js';
-import type { AppDatabase } from '../db/index.js';
+import type { AppDatabase, DatabaseExecutor } from '../db/index.js';
 import { normalizeAddress, reconstructBalance, validateAddress, valueHoldings, type AddressNetwork } from '../domain/addresses.js';
 import {
   boundedOverviewGranularity,
@@ -40,6 +40,12 @@ interface SelectionRow {
   canonical_asset_id: string;
   contract_or_mint: string | null;
   enabled: number | string;
+}
+
+interface ExistingAddressSelectionRow {
+  address_id: string;
+  canonical_asset_id: string;
+  contract_or_mint: string | null;
 }
 
 interface EventRow {
@@ -108,6 +114,25 @@ const mainnetRegistry = [
     memberAssetIds: ['solana']
   }
 ] as const;
+
+const isUniqueConstraintError = (error: unknown) => {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current);
+    const code = (current as Error & { code?: unknown }).code;
+    if (
+      code === '23505'
+      || code === 'SQLITE_CONSTRAINT_UNIQUE'
+      || code === 'SQLITE_CONSTRAINT_PRIMARYKEY'
+      || /unique constraint|duplicate key/i.test(current.message)
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+};
 
 export class AddressService {
   constructor(
@@ -315,18 +340,128 @@ export class AddressService {
     }
   }
 
+  private entryAssets({
+    network,
+    assets,
+    includeNative
+  }: {
+    network: AddressNetwork;
+    assets: SelectedChainAsset[];
+    includeNative: boolean;
+  }) {
+    const native = nativeAsset({ network });
+    const uniqueAssets = new Map<string, SelectedChainAsset>();
+    for (const asset of [
+      ...(includeNative ? [{ canonicalAssetId: native, contractOrMint: null }] : []),
+      ...assets
+    ]) {
+      const contractKey = network === 'ethereum'
+        ? asset.contractOrMint?.toLowerCase() ?? ''
+        : asset.contractOrMint ?? '';
+      uniqueAssets.set(`${asset.canonicalAssetId}:${contractKey}`, asset);
+    }
+    const selectedAssets = [...uniqueAssets.values()];
+    if (selectedAssets.length === 0) {
+      throw new AppError({
+        errorKey: 'INPUT_INVALID',
+        reason: 'Choose at least one currency to track for this address entry.',
+        status: 400
+      });
+    }
+    this.validateSelectedAssets({ network, assets: selectedAssets });
+    return selectedAssets;
+  }
+
+  private async separateAddressAssets({
+    executor,
+    network,
+    normalizedAddress,
+    selectedAssets,
+    excludeAddressId = null,
+    splitMixedNative
+  }: {
+    executor: DatabaseExecutor;
+    network: AddressNetwork;
+    normalizedAddress: string;
+    selectedAssets: SelectedChainAsset[];
+    excludeAddressId?: string | null;
+    splitMixedNative: boolean;
+  }) {
+    const existingSelections = await executor.query<ExistingAddressSelectionRow>({
+      sql: `
+        SELECT tracked_addresses.id AS address_id,
+               address_asset_selections.canonical_asset_id,
+               address_asset_selections.contract_or_mint
+        FROM tracked_addresses
+        JOIN address_asset_selections
+          ON address_asset_selections.address_id = tracked_addresses.id
+         AND address_asset_selections.enabled = 1
+        WHERE tracked_addresses.network = ?
+          AND tracked_addresses.normalized_address = ?
+          AND tracked_addresses.deleted_at_ms IS NULL
+          AND (? IS NULL OR tracked_addresses.id <> ?)
+      `,
+      parameters: [network, normalizedAddress, excludeAddressId, excludeAddressId]
+    });
+    const selectedIds = new Set(selectedAssets.map((asset) => asset.canonicalAssetId));
+    const conflicts = existingSelections.filter((selection) => (
+      selectedIds.has(selection.canonical_asset_id)
+    ));
+    if (conflicts.length === 0) return;
+
+    const native = nativeAsset({ network });
+    const nativeOnly = selectedAssets.length === 1
+      && selectedAssets[0]?.canonicalAssetId === native
+      && selectedAssets[0]?.contractOrMint === null;
+    if (splitMixedNative && nativeOnly) {
+      const conflictingAddressIds = new Set(conflicts.map((selection) => selection.address_id));
+      const allConflictsCanSplit = [...conflictingAddressIds].every((addressId) => (
+        existingSelections.some((selection) => (
+          selection.address_id === addressId
+          && (
+            selection.canonical_asset_id !== native
+            || selection.contract_or_mint !== null
+          )
+        ))
+      ));
+      if (allConflictsCanSplit) {
+        for (const addressId of conflictingAddressIds) {
+          await executor.run({
+            sql: `
+              UPDATE address_asset_selections
+              SET enabled = 0, updated_at_ms = ?
+              WHERE address_id = ?
+                AND canonical_asset_id = ?
+                AND contract_or_mint IS NULL
+            `,
+            parameters: [Date.now(), addressId, native]
+          });
+        }
+        return;
+      }
+    }
+
+    throw new AppError({
+      errorKey: 'RESOURCE_CONFLICT',
+      reason: `${conflicts[0]!.canonical_asset_id} is already tracked for that ${network} address.`,
+      status: 409
+    });
+  }
+
   async add({
     network,
     address,
     label,
     enabled = true,
-    assets = []
+    assets = [],
+    includeNative = true
   }: {
     network: AddressNetwork;
     address: string;
     label: string;
     enabled?: boolean;
     assets?: SelectedChainAsset[];
+    includeNative?: boolean;
   }) {
     if (!await validateAddress({ network, address })) {
       throw new AppError({
@@ -336,16 +471,19 @@ export class AddressService {
       });
     }
     const normalized = normalizeAddress({ network, address });
-    const selectedAssets = [
-      { canonicalAssetId: nativeAsset({ network }), contractOrMint: null },
-      ...assets.filter((asset) => asset.canonicalAssetId !== nativeAsset({ network }) || asset.contractOrMint !== null)
-    ];
-    this.validateSelectedAssets({ network, assets: selectedAssets });
+    const selectedAssets = this.entryAssets({ network, assets, includeNative });
     const now = Date.now();
     const id = createId({ prefix: 'addr' });
     try {
       await this.db.transaction({
         task: async (executor) => {
+          await this.separateAddressAssets({
+            executor,
+            network,
+            normalizedAddress: normalized,
+            selectedAssets,
+            splitMixedNative: true
+          });
           await executor.run({
             sql: `
               INSERT INTO tracked_addresses(
@@ -382,7 +520,7 @@ export class AddressService {
         }
       });
     } catch (error) {
-      if (error instanceof Error && /unique/i.test(error.message)) {
+      if (isUniqueConstraintError(error)) {
         throw new AppError({
           errorKey: 'RESOURCE_CONFLICT',
           reason: 'That network address is already tracked.',
@@ -430,10 +568,12 @@ export class AddressService {
 
   async replaceAssets({
     id,
-    assets
+    assets,
+    includeNative = true
   }: {
     id: string;
     assets: SelectedChainAsset[];
+    includeNative?: boolean;
   }) {
     const address = await this.db.one<AddressRow>({
       sql: 'SELECT * FROM tracked_addresses WHERE id = ? AND deleted_at_ms IS NULL',
@@ -446,26 +586,52 @@ export class AddressService {
         status: 404
       });
     }
-    const selectedAssets = [
-      { canonicalAssetId: nativeAsset({ network: address.network }), contractOrMint: null },
-      ...assets.filter((asset) => asset.canonicalAssetId !== nativeAsset({ network: address.network }) || asset.contractOrMint !== null)
-    ];
-    this.validateSelectedAssets({ network: address.network, assets: selectedAssets });
+    const selectedAssets = this.entryAssets({
+      network: address.network,
+      assets,
+      includeNative
+    });
     const now = Date.now();
     await this.db.transaction({
       task: async (executor) => {
+        await this.separateAddressAssets({
+          executor,
+          network: address.network,
+          normalizedAddress: address.normalized_address,
+          selectedAssets,
+          excludeAddressId: id,
+          splitMixedNative: false
+        });
         await executor.run({
           sql: 'UPDATE address_asset_selections SET enabled = 0, updated_at_ms = ? WHERE address_id = ?',
           parameters: [now, id]
         });
         for (const asset of selectedAssets) {
+          const existingSelection = await executor.run({
+            sql: `
+              UPDATE address_asset_selections
+              SET enabled = 1, updated_at_ms = ?
+              WHERE address_id = ?
+                AND canonical_asset_id = ?
+                AND (
+                  (contract_or_mint IS NULL AND ? IS NULL)
+                  OR contract_or_mint = ?
+                )
+            `,
+            parameters: [
+              now,
+              id,
+              asset.canonicalAssetId,
+              asset.contractOrMint,
+              asset.contractOrMint
+            ]
+          });
+          if (existingSelection.changes > 0) continue;
           await executor.run({
             sql: `
               INSERT INTO address_asset_selections(
                 id, address_id, canonical_asset_id, contract_or_mint, enabled, created_at_ms, updated_at_ms
               ) VALUES (?, ?, ?, ?, 1, ?, ?)
-              ON CONFLICT(address_id, canonical_asset_id, contract_or_mint)
-              DO UPDATE SET enabled = 1, updated_at_ms = excluded.updated_at_ms
             `,
             parameters: [
               createId({ prefix: 'aas' }),

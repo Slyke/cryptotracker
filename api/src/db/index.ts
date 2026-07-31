@@ -269,17 +269,27 @@ class SqliteDatabase extends SqliteExecutor implements AppDatabase {
 
       for (const migration of migrations) {
         if (applied.has(migration.version)) continue;
-        this.connection.exec('BEGIN IMMEDIATE');
+        const foreignKeysEnabled = Number(this.connection.pragma('foreign_keys', { simple: true })) === 1;
+        if (foreignKeysEnabled) this.connection.pragma('foreign_keys = OFF');
         try {
-          this.connection.exec(migration.sql);
-          this.connection.prepare('INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?, ?)').run(
-            migration.version,
-            Date.now()
-          );
-          this.connection.exec('COMMIT');
-        } catch (error) {
-          this.connection.exec('ROLLBACK');
-          throw error;
+          this.connection.exec('BEGIN IMMEDIATE');
+          try {
+            this.connection.exec(migration.sql);
+            const foreignKeyViolations = this.connection.pragma('foreign_key_check') as unknown[];
+            if (foreignKeyViolations.length > 0) {
+              throw new Error(`Migration ${migration.version} introduced a foreign-key violation.`);
+            }
+            this.connection.prepare('INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?, ?)').run(
+              migration.version,
+              Date.now()
+            );
+            this.connection.exec('COMMIT');
+          } catch (error) {
+            if (this.connection.inTransaction) this.connection.exec('ROLLBACK');
+            throw error;
+          }
+        } finally {
+          if (foreignKeysEnabled) this.connection.pragma('foreign_keys = ON');
         }
       }
     } catch (error) {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import BetterSqlite3 from 'better-sqlite3';
 import { AppError } from '../src/errors.js';
 import { JobQueue } from '../src/jobs/queue.js';
-import { openDatabase } from '../src/db/index.js';
+import { databaseInternals, openDatabase } from '../src/db/index.js';
 import { AddressService } from '../src/services/addresses.js';
 import { createTestLogger, createTestRuntime, openMigratedTestDatabase } from './helpers.js';
 
@@ -21,6 +22,103 @@ const requiredTables = [
 ];
 
 describe('database migrations and persistent jobs', () => {
+  it('removes address uniqueness without losing existing address children', async () => {
+    const runtime = await createTestRuntime();
+    const migrations = await databaseInternals.loadMigrations({ kind: 'sqlite' });
+    const baseline = migrations.find((migration) => migration.version === '0001_beta_baseline')!;
+    const connection = new BetterSqlite3(runtime.sqlitePath);
+    connection.pragma('foreign_keys = ON');
+    connection.exec(baseline.sql);
+    connection.exec(`
+      INSERT INTO schema_migrations(version, applied_at_ms)
+      VALUES ('0001_beta_baseline', 1);
+      INSERT INTO tracked_addresses(
+        id, network, address, normalized_address, label,
+        enabled, created_at_ms, updated_at_ms
+      ) VALUES (
+        'address-before-separation', 'ethereum',
+        '0x0000000000000000000000000000000000000001',
+        '0x0000000000000000000000000000000000000001',
+        'Existing SHIB', 1, 1, 1
+      );
+      INSERT INTO address_asset_selections(
+        id, address_id, canonical_asset_id, contract_or_mint,
+        enabled, created_at_ms, updated_at_ms
+      ) VALUES (
+        'selection-before-separation', 'address-before-separation',
+        'shiba-inu', '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE',
+        1, 1, 1
+      );
+      INSERT INTO address_asset_selections(
+        id, address_id, canonical_asset_id, contract_or_mint,
+        enabled, created_at_ms, updated_at_ms
+      ) VALUES
+        (
+          'duplicate-native-disabled', 'address-before-separation',
+          'ethereum', NULL, 0, 1, 1
+        ),
+        (
+          'duplicate-native-enabled', 'address-before-separation',
+          'ethereum', NULL, 1, 2, 2
+        );
+      INSERT INTO address_sync_state(
+        address_id, status, cursor_json, provider_boundary_json,
+        warnings_json, updated_at_ms
+      ) VALUES (
+        'address-before-separation', 'complete', '{}', '{}', '[]', 1
+      );
+    `);
+    connection.close();
+
+    const db = await openDatabase({ runtime });
+    try {
+      await db.migrate();
+      expect(await db.one<{ canonical_asset_id: string }>({
+        sql: 'SELECT canonical_asset_id FROM address_asset_selections WHERE id = ?',
+        parameters: ['selection-before-separation']
+      })).toEqual({ canonical_asset_id: 'shiba-inu' });
+      expect(await db.one<{ status: string }>({
+        sql: 'SELECT status FROM address_sync_state WHERE address_id = ?',
+        parameters: ['address-before-separation']
+      })).toEqual({ status: 'complete' });
+      expect(await db.query<{ id: string; enabled: number }>({
+        sql: `
+          SELECT id, enabled
+          FROM address_asset_selections
+          WHERE address_id = ? AND canonical_asset_id = 'ethereum'
+        `,
+        parameters: ['address-before-separation']
+      })).toEqual([{
+        id: 'duplicate-native-enabled',
+        enabled: 1
+      }]);
+
+      await db.run({
+        sql: `
+          INSERT INTO tracked_addresses(
+            id, network, address, normalized_address, label,
+            enabled, created_at_ms, updated_at_ms
+          ) VALUES (?, 'ethereum', ?, ?, 'Separate ETH', 1, 2, 2)
+        `,
+        parameters: [
+          'separate-native-address',
+          '0x0000000000000000000000000000000000000001',
+          '0x0000000000000000000000000000000000000001'
+        ]
+      });
+      await db.run({
+        sql: 'DELETE FROM tracked_addresses WHERE id = ?',
+        parameters: ['address-before-separation']
+      });
+      expect(await db.one({
+        sql: 'SELECT id FROM address_asset_selections WHERE id = ?',
+        parameters: ['selection-before-separation']
+      })).toBeNull();
+    } finally {
+      await db.close();
+    }
+  });
+
   it('migrates SQLite, preserves exact text decimals, and retains old canonical rows', async () => {
     const { db } = await openMigratedTestDatabase();
     try {

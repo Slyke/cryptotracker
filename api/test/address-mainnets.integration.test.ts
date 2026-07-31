@@ -5,6 +5,94 @@ import { AddressService } from '../src/services/addresses.js';
 import { openMigratedTestDatabase } from './helpers.js';
 
 describe('enabled address mainnets', () => {
+  it('tracks ETH and an ERC-20 separately for the same address without double-counting native ETH', async () => {
+    const { db, runtime } = await openMigratedTestDatabase();
+    const jobs = {
+      register: vi.fn(),
+      enqueue: vi.fn()
+    } as unknown as JobQueue;
+    const service = new AddressService(db, runtime, new Map(), jobs);
+    const address = '0x0000000000000000000000000000000000000001';
+    try {
+      const shib = await service.add({
+        network: 'ethereum' as const,
+        address,
+        label: 'SHIB wallet',
+        includeNative: false,
+        assets: [{
+          canonicalAssetId: 'shiba-inu',
+          contractOrMint: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE'
+        }]
+      });
+      const now = Date.now();
+      await db.run({
+        sql: `
+          INSERT INTO address_asset_selections(
+            id, address_id, canonical_asset_id, contract_or_mint,
+            enabled, created_at_ms, updated_at_ms
+          ) VALUES (?, ?, 'ethereum', NULL, 1, ?, ?)
+        `,
+        parameters: ['legacy-native-selection', shib.id, now, now]
+      });
+
+      await service.add({
+        network: 'ethereum',
+        address,
+        label: 'ETH wallet',
+        assets: []
+      });
+
+      expect(await db.query<{
+        label: string;
+        canonical_asset_id: string;
+        contract_or_mint: string | null;
+        selection_enabled: number;
+      }>({
+        sql: `
+          SELECT tracked_addresses.label,
+                 address_asset_selections.canonical_asset_id,
+                 address_asset_selections.contract_or_mint,
+                 address_asset_selections.enabled AS selection_enabled
+          FROM tracked_addresses
+          JOIN address_asset_selections
+            ON address_asset_selections.address_id = tracked_addresses.id
+          ORDER BY tracked_addresses.label, address_asset_selections.canonical_asset_id
+        `
+      })).toEqual([
+        {
+          label: 'ETH wallet',
+          canonical_asset_id: 'ethereum',
+          contract_or_mint: null,
+          selection_enabled: 1
+        },
+        {
+          label: 'SHIB wallet',
+          canonical_asset_id: 'ethereum',
+          contract_or_mint: null,
+          selection_enabled: 0
+        },
+        {
+          label: 'SHIB wallet',
+          canonical_asset_id: 'shiba-inu',
+          contract_or_mint: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE',
+          selection_enabled: 1
+        }
+      ]);
+      await expect(service.add({
+        network: 'ethereum',
+        address,
+        label: 'Duplicate ETH wallet',
+        assets: []
+      })).rejects.toMatchObject({
+        errorKey: 'RESOURCE_CONFLICT',
+        status: 409,
+        message: 'ethereum is already tracked for that ethereum address.'
+      });
+    } finally {
+      await db.close();
+    }
+  });
+
   it('shows only networks represented by enabled assets and reports provider availability', async () => {
     const { db, runtime } = await openMigratedTestDatabase();
     const now = Date.now();
@@ -122,6 +210,13 @@ describe('enabled address mainnets', () => {
           contractOrMint: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE'
         }]
       });
+      await service.replaceAssets({
+        id: 'address-ethereum',
+        assets: [{
+          canonicalAssetId: 'shiba-inu',
+          contractOrMint: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE'
+        }]
+      });
 
       expect(result.refresh).toMatchObject({
         coalesced: false,
@@ -147,6 +242,14 @@ describe('enabled address mainnets', () => {
         cursor_json: '{}',
         oldest_reconstructed_at_ms: null
       });
+      expect(await db.one<{ selection_count: number }>({
+        sql: `
+          SELECT COUNT(*) AS selection_count
+          FROM address_asset_selections
+          WHERE address_id = ? AND canonical_asset_id = 'ethereum'
+        `,
+        parameters: ['address-ethereum']
+      })).toEqual({ selection_count: 1 });
       expect((await service.holdings({ quoteCurrency: 'CAD' })).map((holding) => ({
         assetId: holding.assetId,
         quantity: holding.quantity,

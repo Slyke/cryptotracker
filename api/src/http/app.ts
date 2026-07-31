@@ -708,6 +708,7 @@ const registerRoutes = ({
         address: z.string().min(1).max(200),
         label: z.string().min(1).max(200),
         enabled: z.boolean().default(true),
+        includeNative: z.boolean().default(true),
         assets: z.array(z.object({
           canonicalAssetId: z.string().min(1),
           contractOrMint: z.string().nullable()
@@ -766,6 +767,7 @@ const registerRoutes = ({
   app.put('/api/addresses/:id/assets', requireCsrf, asyncRoute(async (req, res) => {
     const input = parse({
       schema: z.object({
+        includeNative: z.boolean().default(true),
         assets: z.array(z.object({
           canonicalAssetId: z.string().min(1),
           contractOrMint: z.string().nullable()
@@ -775,7 +777,8 @@ const registerRoutes = ({
     });
     const result = await context.addresses.replaceAssets({
       id: String(req.params.id),
-      assets: input.assets
+      assets: input.assets,
+      includeNative: input.includeNative
     });
     await auditMutation({
       context,
