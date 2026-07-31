@@ -54,6 +54,17 @@
     supported: boolean;
     reason: string | null;
   };
+  type AddressCurrencyOption = {
+    id: string;
+    label: string;
+    network: Network;
+    assetId: string;
+    symbol: string;
+    contractOrMint: string | null;
+    native: boolean;
+    supported: boolean;
+    reason: string | null;
+  };
   type TrackedAddress = {
     id: string;
     network: Network;
@@ -150,6 +161,9 @@
   let events: ChartEvent[] = [];
   let denominationOptions: ChartDenominationOption[] = [];
   let network: Network = 'bitcoin';
+  let addressCurrencyOptions: AddressCurrencyOption[] = [];
+  let selectedAddressCurrencyId = '';
+  let selectedAddressCurrency: AddressCurrencyOption | null = null;
   let address = '';
   let label = '';
   let optionalAssetId = '';
@@ -194,6 +208,9 @@
     primaryCurrency,
     listedCurrencies: tooltipCurrencies
   });
+  $: selectedAddressCurrency = addressCurrencyOptions.find((option) => (
+    option.id === selectedAddressCurrencyId
+  )) ?? null;
   $: {
     const grouped = new Map<string, Holding[]>();
     for (const holding of holdings) {
@@ -208,6 +225,48 @@
   }
 
   const mainnetFor = (networkId: string) => mainnets.find((option) => option.id === networkId);
+  const buildAddressCurrencyOptions = (options: MainnetOption[]) => options.flatMap((mainnet) => {
+    const native = mainnet.enabledAssets.find((asset) => asset.id === mainnet.nativeAssetId) ?? {
+      id: mainnet.nativeAssetId,
+      symbol: nativeAssetSymbols[mainnet.id as Network] ?? mainnet.nativeAssetId.toUpperCase(),
+      contractOrMint: null
+    };
+    const assets = [
+      native,
+      ...mainnet.enabledAssets.filter((asset) => asset.id !== mainnet.nativeAssetId)
+    ];
+    return assets.map((asset) => {
+      const isNative = asset.id === mainnet.nativeAssetId;
+      const contractUnavailable = !isNative && !asset.contractOrMint;
+      return {
+        id: `${mainnet.id}:${asset.id}`,
+        label: `${asset.symbol} · ${mainnet.label}${contractUnavailable ? ' · contract unavailable' : ''}`,
+        network: mainnet.id as Network,
+        assetId: asset.id,
+        symbol: asset.symbol,
+        contractOrMint: asset.contractOrMint,
+        native: isNative,
+        supported: mainnet.supported && !contractUnavailable,
+        reason: contractUnavailable
+          ? `${asset.symbol} needs a configured contract address before it can be tracked.`
+          : mainnet.reason
+      };
+    });
+  });
+  const addressCurrencyChanged = () => {
+    const selected = addressCurrencyOptions.find((option) => (
+      option.id === selectedAddressCurrencyId
+    ));
+    if (!selected) return;
+    network = selected.network;
+    if (selected.native) {
+      optionalAssetId = '';
+      contractOrMint = '';
+      return;
+    }
+    optionalAssetId = selected.assetId;
+    contractOrMint = selected.contractOrMint ?? '';
+  };
   const configString = (key: string, fallback = '') => (
     typeof addressEditConfig[key] === 'string'
       ? String(addressEditConfig[key])
@@ -439,11 +498,14 @@
       if (requestId !== loadRequestId) return;
       addresses = addressPayload.addresses;
       mainnets = networkPayload.mainnets;
-      unmappedMainnetAssets = networkPayload.unmappedAssets;
-      if (!mainnets.some((option) => option.id === network && option.supported)) {
-        const firstSupported = mainnets.find((option) => option.supported);
-        if (firstSupported) network = firstSupported.id as Network;
+      addressCurrencyOptions = buildAddressCurrencyOptions(mainnets);
+      if (!addressCurrencyOptions.some((option) => (
+        option.id === selectedAddressCurrencyId && option.supported
+      ))) {
+        selectedAddressCurrencyId = addressCurrencyOptions.find((option) => option.supported)?.id ?? '';
+        addressCurrencyChanged();
       }
+      unmappedMainnetAssets = networkPayload.unmappedAssets;
       holdings = holdingPayload.holdings;
       overviewSeries = seriesPayload.data.series;
       series = overviewSeries;
@@ -467,6 +529,13 @@
 
   const addAddress = async () => {
     error = '';
+    const selectedCurrency = addressCurrencyOptions.find((option) => (
+      option.id === selectedAddressCurrencyId
+    ));
+    if (!selectedCurrency?.supported) {
+      error = selectedCurrency?.reason ?? 'Choose a configured currency before adding an address.';
+      return;
+    }
     const selectedMainnet = mainnets.find((option) => option.id === network);
     if (!selectedMainnet?.supported) {
       error = selectedMainnet?.reason ?? 'Choose a configured mainnet before adding an address.';
@@ -496,8 +565,10 @@
       });
       address = '';
       label = '';
-      optionalAssetId = '';
-      contractOrMint = '';
+      if (selectedCurrency.native) {
+        optionalAssetId = '';
+        contractOrMint = '';
+      }
       await load();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : 'Address could not be added.';
@@ -761,12 +832,16 @@
           >{strings['cryptotracker-address_privacy-label']}</DismissableNotice>
           <form class="address-form" on:submit|preventDefault={addAddress}>
             <div class="field">
-              <label for="network">Network</label>
-              <select id="network" bind:value={network}>
-                {#each mainnets as mainnet (mainnet.id)}
-                  <option value={mainnet.id} disabled={!mainnet.supported}>
-                    {mainnet.label} · {nativeAssetSymbols[mainnet.id as Network] ?? mainnet.nativeAssetId}
-                    {mainnet.supported ? '' : ' · provider required'}
+              <label for="address-currency">Currency</label>
+              <select
+                id="address-currency"
+                bind:value={selectedAddressCurrencyId}
+                on:change={addressCurrencyChanged}
+              >
+                {#each addressCurrencyOptions as currency (currency.id)}
+                  <option value={currency.id} disabled={!currency.supported}>
+                    {currency.label}
+                    {currency.supported ? '' : ' · unavailable'}
                   </option>
                 {/each}
               </select>
@@ -781,16 +856,29 @@
             </div>
             {#if network === 'ethereum'}
               <fieldset class="optional-token-options">
-                <legend>Currency to track</legend>
-                <p class="muted">Leave these blank to track ETH. To create a separate entry for an ERC-20 currency, enter its canonical asset ID and contract.</p>
+                <legend>Ethereum currency details</legend>
+                <p class="muted">
+                  {selectedAddressCurrency?.native
+                    ? 'ETH is selected. Enter both fields only to track a custom ERC-20 currency instead.'
+                    : `${selectedAddressCurrency?.symbol ?? 'The selected ERC-20'} is activated, so its canonical ID and contract are filled automatically.`}
+                </p>
                 <div class="optional-token-fields">
                   <div class="field">
                     <label for="optional-asset">ERC-20 canonical asset ID</label>
-                    <input id="optional-asset" bind:value={optionalAssetId} placeholder="usd-coin-ethereum" />
+                    <input
+                      id="optional-asset"
+                      bind:value={optionalAssetId}
+                      placeholder="usd-coin-ethereum"
+                      disabled={Boolean(selectedAddressCurrency && !selectedAddressCurrency.native)}
+                    />
                   </div>
                   <div class="field grow">
                     <label for="contract-mint">ERC-20 contract</label>
-                    <input id="contract-mint" bind:value={contractOrMint} />
+                    <input
+                      id="contract-mint"
+                      bind:value={contractOrMint}
+                      disabled={Boolean(selectedAddressCurrency && !selectedAddressCurrency.native)}
+                    />
                   </div>
                 </div>
               </fieldset>
@@ -798,7 +886,7 @@
             <button
               class="address-submit"
               type="submit"
-              disabled={!mainnets.some((option) => option.id === network && option.supported)}
+              disabled={!selectedAddressCurrency?.supported}
             >Add and synchronize</button>
           </form>
           {#each mainnets.filter((mainnet) => !mainnet.supported) as mainnet (mainnet.id)}
