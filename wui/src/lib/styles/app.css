@@ -165,6 +165,26 @@ a {
   background: var(--color-panel);
 }
 
+.topbar.minimal-topbar {
+  position: fixed;
+  right: 0;
+  left: 0;
+  width: 100%;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(calc(-100% - 1px));
+  transition:
+    opacity var(--transition),
+    transform var(--transition);
+}
+
+.topbar.minimal-topbar.revealed {
+  position: sticky;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
 .brand {
   margin-right: auto;
   color: var(--color-text);

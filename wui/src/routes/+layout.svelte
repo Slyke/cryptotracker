@@ -3,6 +3,7 @@
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import Login from '$lib/components/Login.svelte';
+  import { dashboardMinimalMode } from '$lib/dashboard-display';
   import strings from '$lib/i18n/en-CA.json';
   import {
     apiRequest,
@@ -28,6 +29,22 @@
     { href: '/calculations', label: 'Calculations' },
     { href: '/settings', label: 'Settings' }
   ];
+
+  let revealMinimalTopbar = false;
+  let topbarElement: HTMLElement;
+
+  const handleMouseMove = (event: MouseEvent) => {
+    if (!$dashboardMinimalMode) return;
+    const dashboardControls = document.querySelector<HTMLElement>('[data-dashboard-top-controls]');
+    const revealBoundary = (dashboardControls?.getBoundingClientRect().bottom ?? 0) + 100;
+    const pointerIsOverTopbar = event.target instanceof Node
+      && topbarElement?.contains(event.target);
+    revealMinimalTopbar = event.clientY <= revealBoundary || pointerIsOverTopbar;
+  };
+
+  $: if (!$dashboardMinimalMode && revealMinimalTopbar) {
+    revealMinimalTopbar = false;
+  }
 
   onMount(async () => {
     if (!await bootstrapSession()) return;
@@ -59,6 +76,8 @@
   <meta name="description" content="Read-only self-hosted cryptocurrency portfolio viewer" />
 </svelte:head>
 
+<svelte:window on:mousemove={handleMouseMove} />
+
 {#if $session.loading}
   <main class="login-shell">
     <section class="panel login-panel" aria-live="polite">
@@ -70,7 +89,14 @@
   <Login />
 {:else}
   <div class="app-shell">
-    <header class="topbar">
+    <header
+      bind:this={topbarElement}
+      class="topbar"
+      class:minimal-topbar={$dashboardMinimalMode}
+      class:revealed={$dashboardMinimalMode && revealMinimalTopbar}
+      aria-hidden={$dashboardMinimalMode && !revealMinimalTopbar}
+      inert={$dashboardMinimalMode && !revealMinimalTopbar}
+    >
       <a class="brand" href="/dashboard">CryptoTracker</a>
       <nav class="nav" aria-label="Primary">
         {#each navigation as item}

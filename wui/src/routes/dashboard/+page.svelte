@@ -8,6 +8,7 @@
   import { apiRequest, setDocumentPreferences } from '$lib/api';
   import { persistAccordionState } from '$lib/accordion-state';
   import { configuredCurrencies } from '$lib/currencies';
+  import { dashboardMinimalMode } from '$lib/dashboard-display';
   import strings from '$lib/i18n/en-CA.json';
   import {
     formatPercent,
@@ -72,6 +73,7 @@
   let pageOrder = [...defaultPageOrder];
   let showDashboardOptions = false;
   let hideFluff = false;
+  let minimalMode = false;
   let autoRefreshEnabled = false;
   let refreshIntervalSeconds = 60;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -102,12 +104,29 @@
     settings.graphDefaults = {
       ...settings.graphDefaults,
       dashboardHideFluff: hideFluff,
+      dashboardMinimalMode: minimalMode,
       dashboardAutoRefreshEnabled: autoRefreshEnabled,
       dashboardRefreshIntervalSeconds: refreshIntervalSeconds
     };
     settings = { ...settings };
     scheduleRefresh();
     await savePreferences({ graphDefaults: settings.graphDefaults });
+  };
+
+  const saveMinimalMode = async () => {
+    if (minimalMode) {
+      hideFluff = true;
+      showDashboardOptions = false;
+    }
+    dashboardMinimalMode.set(minimalMode);
+    await saveDashboardDisplay();
+  };
+
+  const handleDashboardKeydown = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || !minimalMode) return;
+    minimalMode = false;
+    dashboardMinimalMode.set(false);
+    void saveDashboardDisplay();
   };
 
   const load = async () => {
@@ -171,6 +190,12 @@
           settings.graphDefaults.dashboardHideFluff === undefined
           && settings.graphDefaults.dashboardRemoveFluff === true
         );
+      minimalMode = settings.graphDefaults.dashboardMinimalMode === true;
+      if (minimalMode) {
+        hideFluff = true;
+        showDashboardOptions = false;
+      }
+      dashboardMinimalMode.set(minimalMode);
       autoRefreshEnabled = settings.graphDefaults.dashboardAutoRefreshEnabled === true;
       const savedRefreshSeconds = Number(settings.graphDefaults.dashboardRefreshIntervalSeconds);
       refreshIntervalSeconds = refreshIntervals.some((option) => option.seconds === savedRefreshSeconds)
@@ -325,13 +350,26 @@
 
   onDestroy(() => {
     if (refreshTimer) clearInterval(refreshTimer);
+    dashboardMinimalMode.set(false);
   });
 </script>
 
-<main class="page">
-  <header class="dashboard-title-row">
+<svelte:window on:keydown={handleDashboardKeydown} />
+
+<main class="page" class:minimal={minimalMode}>
+  <header class="dashboard-title-row" data-dashboard-top-controls>
     <h1>{strings['cryptotracker-dashboard-title']}</h1>
     <div class="dashboard-refresh">
+      <label class="check dashboard-minimal-toggle">
+        <input
+          type="checkbox"
+          role="switch"
+          aria-label="Minimal mode"
+          bind:checked={minimalMode}
+          on:change={saveMinimalMode}
+        />
+        Minimal
+      </label>
       <label class="check dashboard-refresh-toggle">
         <input
           type="checkbox"
@@ -379,6 +417,7 @@
       {index}
       total={pageOrder.length}
       collapsed={settings.collapsedBlocks.dashboard?.includes(blockId) ?? false}
+      hideControls={minimalMode}
       on:move={moveBlock}
       on:toggle={toggleBlockCollapse}
     >
@@ -435,21 +474,23 @@
         </div>
       {/if}
       <div class="dashboard-heading-actions">
-        <button
-          class="ghost compact"
-          type="button"
-          aria-pressed={hideFluff}
-          on:click={() => {
-            hideFluff = !hideFluff;
-            void saveDashboardDisplay();
-          }}
-        >{hideFluff ? 'Show fluff' : 'Hide fluff'}</button>
-        <button
-          class="ghost compact"
-          type="button"
-          aria-pressed={showDashboardOptions}
-          on:click={() => (showDashboardOptions = !showDashboardOptions)}
-        >{showDashboardOptions ? 'Hide options' : 'Show options'}</button>
+        {#if !minimalMode}
+          <button
+            class="ghost compact"
+            type="button"
+            aria-pressed={hideFluff}
+            on:click={() => {
+              hideFluff = !hideFluff;
+              void saveDashboardDisplay();
+            }}
+          >{hideFluff ? 'Show fluff' : 'Hide fluff'}</button>
+          <button
+            class="ghost compact"
+            type="button"
+            aria-pressed={showDashboardOptions}
+            on:click={() => (showDashboardOptions = !showDashboardOptions)}
+          >{showDashboardOptions ? 'Hide options' : 'Show options'}</button>
+        {/if}
         {#if showDashboardOptions}
           <button class="secondary compact" type="button" aria-label="Add dashboard row" on:click={addDashboardRow}>Add row</button>
         {/if}
@@ -594,6 +635,14 @@
     margin-bottom: 1rem;
   }
 
+  .minimal {
+    padding-top: 0.75rem;
+  }
+
+  .minimal header {
+    margin-bottom: 0.35rem;
+  }
+
   .dashboard-title-row,
   .dashboard-refresh {
     display: flex;
@@ -625,6 +674,10 @@
   }
 
   .dashboard-refresh-toggle {
+    flex: 0 0 auto;
+  }
+
+  .dashboard-minimal-toggle {
     flex: 0 0 auto;
   }
 
@@ -711,6 +764,32 @@
 
   .dashboard-item-shell {
     min-width: 0;
+  }
+
+  .minimal .panel {
+    padding: 0.65rem;
+  }
+
+  .minimal .panel > .row + * {
+    margin-top: 0.5rem;
+  }
+
+  .minimal .card-grid,
+  .minimal .dashboard-row-grid {
+    gap: 0.5rem;
+  }
+
+  .minimal .card {
+    padding: 0.65rem;
+  }
+
+  .minimal .dashboard-rows {
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .minimal .dashboard-row {
+    padding: 0.5rem;
   }
 
   .item-row-selector {

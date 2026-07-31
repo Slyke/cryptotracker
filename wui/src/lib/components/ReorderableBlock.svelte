@@ -6,6 +6,7 @@
   export let index: number;
   export let total: number;
   export let collapsed = false;
+  export let hideControls = false;
 
   const dispatch = createEventDispatcher<{
     move: { id: string; direction: 'up' | 'down' };
@@ -17,35 +18,38 @@
   class="reorderable-block"
   class:collapsed
   class:separated={index > 0}
+  class:minimal={hideControls}
   data-block-id={blockId}
 >
-  <div class="block-order" aria-label={`Rearrange ${label}`}>
-    <span>{label}</span>
-    <button
-      class="ghost compact order-button"
-      type="button"
-      title={`Move ${label} up`}
-      aria-label={`Move ${label} up`}
-      disabled={index === 0}
-      on:click={() => dispatch('move', { id: blockId, direction: 'up' })}
-    >↑</button>
-    <button
-      class="ghost compact order-button"
-      type="button"
-      title={`Move ${label} down`}
-      aria-label={`Move ${label} down`}
-      disabled={index === total - 1}
-      on:click={() => dispatch('move', { id: blockId, direction: 'down' })}
-    >↓</button>
-    <button
-      class="ghost compact order-button collapse-button"
-      type="button"
-      title={`${collapsed ? 'Expand' : 'Collapse'} ${label}`}
-      aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${label}`}
-      aria-expanded={!collapsed}
-      on:click={() => dispatch('toggle', { id: blockId })}
-    >{collapsed ? '+' : '−'}</button>
-  </div>
+  {#if !hideControls}
+    <div class="block-order" aria-label={`Rearrange ${label}`}>
+      <span>{label}</span>
+      <button
+        class="ghost compact order-button"
+        type="button"
+        title={`Move ${label} up`}
+        aria-label={`Move ${label} up`}
+        disabled={index === 0}
+        on:click={() => dispatch('move', { id: blockId, direction: 'up' })}
+      >↑</button>
+      <button
+        class="ghost compact order-button"
+        type="button"
+        title={`Move ${label} down`}
+        aria-label={`Move ${label} down`}
+        disabled={index === total - 1}
+        on:click={() => dispatch('move', { id: blockId, direction: 'down' })}
+      >↓</button>
+      <button
+        class="ghost compact order-button collapse-button"
+        type="button"
+        title={`${collapsed ? 'Expand' : 'Collapse'} ${label}`}
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${label}`}
+        aria-expanded={!collapsed}
+        on:click={() => dispatch('toggle', { id: blockId })}
+      >{collapsed ? '+' : '−'}</button>
+    </div>
+  {/if}
   {#if !collapsed}
     <slot />
   {/if}
@@ -66,6 +70,19 @@
 
   .reorderable-block.collapsed:not(:last-child) {
     padding-bottom: 0.85rem;
+  }
+
+  .reorderable-block.minimal {
+    padding: 0.25rem 0;
+  }
+
+  .reorderable-block.minimal.separated {
+    margin-top: 0.25rem;
+    padding-top: 0.5rem;
+  }
+
+  .reorderable-block.minimal.collapsed:not(:last-child) {
+    padding-bottom: 0.25rem;
   }
 
   .block-order {
