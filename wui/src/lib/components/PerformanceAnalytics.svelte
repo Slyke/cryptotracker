@@ -2,8 +2,14 @@
   import { createEventDispatcher } from 'svelte';
   import PortfolioChart from './PortfolioChart.svelte';
   import SearchableMultiSelect from './SearchableMultiSelect.svelte';
+  import SeriesLineStyleControls from './SeriesLineStyleControls.svelte';
   import { persistAccordionState } from '$lib/accordion-state';
   import type { ChartAxisOption } from '$lib/chart-axis-options';
+  import {
+    normalizeChartSeriesLineStyles,
+    resolvedChartSeriesLineStyles,
+    type ChartSeriesLineStyles
+  } from '$lib/chart-line-styles';
   import {
     formatPercent,
     normalizeTooltipUnits,
@@ -35,6 +41,7 @@
   export let initialRightYAxisUnit = '';
   export let initialLeftYAxisLineColor = '#364255';
   export let initialRightYAxisLineColor = '#ffbc3a';
+  export let initialSeriesLineStyles: ChartSeriesLineStyles = {};
   export let initialTooltipUnits: string[] = ['%'];
   export let initialMinimumMode: 'auto' | 'absolute' | 'relative' = 'auto';
   export let initialMaximumMode: 'auto' | 'absolute' | 'relative' = 'auto';
@@ -57,6 +64,7 @@
       rightYAxisUnit: string;
       leftYAxisLineColor: string;
       rightYAxisLineColor: string;
+      seriesLineStyles: ChartSeriesLineStyles;
       tooltipUnits: string[];
       minimumMode: 'auto' | 'absolute' | 'relative';
       maximumMode: 'auto' | 'absolute' | 'relative';
@@ -78,6 +86,7 @@
       rightYAxisUnit: string;
       leftYAxisLineColor: string;
       rightYAxisLineColor: string;
+      seriesLineStyles: ChartSeriesLineStyles;
       tooltipUnits: string[];
       minimumMode: 'auto' | 'absolute' | 'relative';
       maximumMode: 'auto' | 'absolute' | 'relative';
@@ -113,6 +122,7 @@
   let rightYAxisUnit = initialRightYAxisUnit === '%' ? '%' : '';
   let leftYAxisLineColor = initialLeftYAxisLineColor;
   let rightYAxisLineColor = initialRightYAxisLineColor;
+  let seriesLineStyles = normalizeChartSeriesLineStyles(initialSeriesLineStyles);
   let selectedTooltipUnits = normalizeTooltipUnits({
     value: initialTooltipUnits,
     fallback: ['%']
@@ -150,6 +160,7 @@
   let appliedInitialRightYAxisUnit = initialRightYAxisUnit;
   let appliedInitialLeftYAxisLineColor = initialLeftYAxisLineColor;
   let appliedInitialRightYAxisLineColor = initialRightYAxisLineColor;
+  let appliedInitialSeriesLineStylesKey = JSON.stringify(initialSeriesLineStyles);
   let appliedInitialTooltipUnitsKey = initialTooltipUnits.join('\u0000');
   let appliedInitialBoundsKey = [
     initialMinimumMode,
@@ -278,6 +289,10 @@
   const resolveRightYAxisSeriesIds = () => series
     .filter((item) => rightYAxisSeriesIds.includes(item.id))
     .map((item) => item.id);
+  const effectiveSeriesLineStyles = () => resolvedChartSeriesLineStyles({
+    styles: seriesLineStyles,
+    series
+  });
   const displayChanged = () => {
     const leftIds = resolveLeftYAxisSeriesIds();
     const rightIds = resolveRightYAxisSeriesIds();
@@ -288,6 +303,7 @@
       rightYAxisUnit,
       leftYAxisLineColor,
       rightYAxisLineColor,
+      seriesLineStyles: effectiveSeriesLineStyles(),
       tooltipUnits: selectedTooltipUnits,
       minimumMode,
       maximumMode,
@@ -315,6 +331,10 @@
     useAllLeftSeriesByDefault = false;
     displayChanged();
   };
+  const seriesLineStylesChanged = (event: CustomEvent<ChartSeriesLineStyles>) => {
+    seriesLineStyles = normalizeChartSeriesLineStyles(event.detail);
+    displayChanged();
+  };
   const saveGraph = () => {
     const name = saveGraphName.trim();
     if (!name) {
@@ -339,6 +359,7 @@
       rightYAxisUnit,
       leftYAxisLineColor,
       rightYAxisLineColor,
+      seriesLineStyles: effectiveSeriesLineStyles(),
       tooltipUnits: selectedTooltipUnits,
       minimumMode,
       maximumMode,
@@ -407,6 +428,11 @@
     if (appliedInitialRightYAxisLineColor !== initialRightYAxisLineColor) {
       rightYAxisLineColor = initialRightYAxisLineColor;
       appliedInitialRightYAxisLineColor = initialRightYAxisLineColor;
+    }
+    const nextSeriesLineStylesKey = JSON.stringify(initialSeriesLineStyles);
+    if (appliedInitialSeriesLineStylesKey !== nextSeriesLineStylesKey) {
+      seriesLineStyles = normalizeChartSeriesLineStyles(initialSeriesLineStyles);
+      appliedInitialSeriesLineStylesKey = nextSeriesLineStylesKey;
     }
     const nextTooltipUnitsKey = initialTooltipUnits.join('\u0000');
     if (appliedInitialTooltipUnitsKey !== nextTooltipUnitsKey) {
@@ -621,6 +647,17 @@
     </div>
       </div>
 
+      <SeriesLineStyleControls
+        idPrefix={controlId('visible-line-style')}
+        {series}
+        visibleSeriesIds={[...new Set([
+          ...effectiveLeftYAxisSeriesIds,
+          ...effectiveRightYAxisSeriesIds
+        ])]}
+        value={seriesLineStyles}
+        on:change={seriesLineStylesChanged}
+      />
+
       <div class="performance-bounds-row">
     <div class="field">
       <label for={controlId('tooltip-units')}>Popup units</label>
@@ -743,6 +780,7 @@
     initialRightYAxisSeriesIds={effectiveRightYAxisSeriesIds}
     initialLeftYAxisLineColor={leftYAxisLineColor}
     initialRightYAxisLineColor={rightYAxisLineColor}
+    initialSeriesLineStyles={seriesLineStyles}
     initialTooltipUnits={selectedTooltipUnits}
     initialMinimumMode={minimumMode}
     initialMaximumMode={maximumMode}

@@ -15,6 +15,7 @@
   import { apiRequest } from '$lib/api';
   import { bucketChartSeries } from '$lib/chart-data';
   import { configuredCurrencies } from '$lib/currencies';
+  import { normalizeChartSeriesLineStyles } from '$lib/chart-line-styles';
   import {
     transformPerformanceSeries,
     type PerformanceMode
@@ -460,6 +461,7 @@
     initialRightYAxisSeriesIds={stringArrayConfig('rightYAxisSeriesIds', []) ?? []}
     initialLeftYAxisLineColor={stringConfig('leftYAxisLineColor', '#364255')}
     initialRightYAxisLineColor={stringConfig('rightYAxisLineColor', '#ffbc3a')}
+    initialSeriesLineStyles={normalizeChartSeriesLineStyles(graph.config.seriesLineStyles)}
   />
 </article>
 

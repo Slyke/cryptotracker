@@ -25,6 +25,7 @@ describe('performance series', () => {
       ]
     });
 
+    expect(transformed.map((item) => item.id)).toEqual(['ethereum', 'token']);
     expect(Number(transformed[0]?.points.at(-1)?.value)).toBeCloseTo(20);
     expect(transformed[1]?.points.at(-1)?.value).toBe('-50');
     expect(transformed[0]?.points.at(-1)?.provenance).toMatchObject({

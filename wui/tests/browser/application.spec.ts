@@ -17,7 +17,36 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
     if (await expand.isVisible()) await expand.click();
   }
   const catalogFilter = page.getByLabel(/filter catalog table/i);
+  const watchlistPanel = page.locator('#market-asset-catalog');
   await expect(catalogFilter).toBeVisible();
+  await expect(page.getByText('Visible chart assets', { exact: true })).toHaveCount(0);
+  const backfillButton = watchlistPanel.getByRole('button', {
+    name: 'Queue backfill',
+    exact: true
+  });
+  const sourceControl = watchlistPanel.getByLabel('Price source', { exact: true });
+  const refreshCatalogButton = watchlistPanel.getByRole('button', {
+    name: 'Refresh catalog',
+    exact: true
+  });
+  await expect(backfillButton).toBeVisible();
+  await expect(sourceControl).toBeVisible();
+  const [sourceBounds, backfillBounds, filterBounds, refreshBounds] = await Promise.all([
+    sourceControl.boundingBox(),
+    backfillButton.boundingBox(),
+    catalogFilter.boundingBox(),
+    refreshCatalogButton.boundingBox()
+  ]);
+  expect([sourceBounds, backfillBounds, filterBounds, refreshBounds].every(Boolean)).toBe(true);
+  expect(Math.abs(
+    sourceBounds!.y + sourceBounds!.height
+    - (backfillBounds!.y + backfillBounds!.height)
+  )).toBeLessThanOrEqual(1);
+  expect(sourceBounds!.y).toBeLessThan(filterBounds!.y);
+  expect(Math.abs(
+    filterBounds!.y + filterBounds!.height
+    - (refreshBounds!.y + refreshBounds!.height)
+  )).toBeLessThanOrEqual(1);
   await catalogFilter.fill('ethereum');
   await expect(page.getByRole('cell', { name: /ETH.*Ethereum/i })).toBeVisible();
   await page.getByRole('button', { name: /refresh catalog/i }).click();
@@ -69,6 +98,12 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await expect(page.locator('#market-performance-ago-value')).toBeVisible();
   await expect(page.locator('#market-performance-ago-unit')).toBeVisible();
   await performanceRange.selectOption('30d');
+  const marketPerformanceChart = marketPerformance.locator('.chart-panel');
+  await expect(marketPerformanceChart).toHaveAttribute(
+    'data-visible-series-count',
+    /^[1-9]\d*$/
+  );
+  await expect(marketPerformanceChart.locator('.chart-empty')).toHaveCount(0);
   const marketChart = page.locator('#market-price-chart .chart-panel');
   const marketChartOptions = marketChart.locator('details.chart-options');
   if (await marketChartOptions.getAttribute('open') === null) {
@@ -131,6 +166,17 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   ]) {
     await expect(marketChart.getByLabel(label, { exact: true })).toBeVisible();
   }
+  const visibleSeriesCount = await marketChart.getAttribute('data-visible-series-count');
+  expect(Number(visibleSeriesCount)).toBeGreaterThan(0);
+  const visibleLineStyles = marketChart.getByText(
+    `Visible line styles (${visibleSeriesCount})`,
+    { exact: true }
+  );
+  await expect(visibleLineStyles).toBeVisible();
+  await visibleLineStyles.click();
+  await expect(marketChart.getByLabel('Line type', { exact: true }).first()).toBeVisible();
+  await expect(marketChart.getByLabel('Color', { exact: true }).first()).toBeVisible();
+  await expect(marketChart.getByLabel('Thickness', { exact: true }).first()).toBeVisible();
 
   const inspector = marketChart.getByRole('button', { name: /keyboard chart inspector/i });
   await expect(inspector).toBeVisible();

@@ -78,6 +78,10 @@ describe('database-backed UI preferences', () => {
         rightYAxisSeriesIds: ['bitcoin'],
         leftYAxisLineColor: '#123456',
         rightYAxisLineColor: '#abcdef',
+        seriesLineStyles: {
+          combined: { type: 'dashed', color: '#FEDCBA', width: 3.4 },
+          invalid: { type: 'wavy', color: 'blue', width: 100 }
+        },
         tooltipUnits: ['CAD', 'USD', 'bitcoin', 'ethereum', 'dogecoin', 'solana']
       },
       fallback: defaultChartDisplayState('CAD')
@@ -93,7 +97,10 @@ describe('database-backed UI preferences', () => {
       leftYAxisSeriesIds: ['combined'],
       rightYAxisSeriesIds: ['bitcoin'],
       leftYAxisLineColor: '#123456',
-      rightYAxisLineColor: '#abcdef'
+      rightYAxisLineColor: '#abcdef',
+      seriesLineStyles: {
+        combined: { type: 'dashed', color: '#fedcba', width: 3.4 }
+      }
     });
     expect(performanceChartDisplayStateFromSetting({
       value: {
@@ -102,6 +109,9 @@ describe('database-backed UI preferences', () => {
         rightYAxisUnit: '%',
         leftYAxisLineColor: '#102030',
         rightYAxisLineColor: '#a0b0c0',
+        seriesLineStyles: {
+          portfolio: { type: 'dotted', color: '#112233', width: 20 }
+        },
         tooltipUnits: [],
         minimumMode: 'relative',
         maximumMode: 'absolute',
@@ -116,6 +126,9 @@ describe('database-backed UI preferences', () => {
       rightYAxisUnit: '%',
       leftYAxisLineColor: '#102030',
       rightYAxisLineColor: '#a0b0c0',
+      seriesLineStyles: {
+        portfolio: { type: 'dotted', color: '#112233', width: 8 }
+      },
       tooltipUnits: [],
       minimumMode: 'relative',
       maximumMode: 'absolute',

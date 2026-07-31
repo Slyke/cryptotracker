@@ -13,8 +13,16 @@
     closestCandidateWithinRadius,
     hasMinimumValuedObservations
   } from '$lib/chart-data';
+  import {
+    chartLineColors,
+    normalizeChartSeriesLineStyles,
+    resolvedChartSeriesLineStyle,
+    resolvedChartSeriesLineStyles,
+    type ChartSeriesLineStyles
+  } from '$lib/chart-line-styles';
   import SearchableSelect from './SearchableSelect.svelte';
   import SearchableMultiSelect from './SearchableMultiSelect.svelte';
+  import SeriesLineStyleControls from './SeriesLineStyleControls.svelte';
   import {
     formatDisplayNumber,
     formatPercent,
@@ -120,6 +128,7 @@
   export let initialRightYAxisSeriesIds: string[] = [];
   export let initialLeftYAxisLineColor = '#364255';
   export let initialRightYAxisLineColor = '#ffbc3a';
+  export let initialSeriesLineStyles: ChartSeriesLineStyles = {};
   export let initialSaveGraphName = title;
   export let preferenceKey = '';
 
@@ -147,6 +156,7 @@
       rightYAxisSeriesIds: string[];
       leftYAxisLineColor: string;
       rightYAxisLineColor: string;
+      seriesLineStyles: ChartSeriesLineStyles;
     };
     zoomRange: {
       fromMs: number;
@@ -169,6 +179,7 @@
       rightYAxisSeriesIds: string[];
       leftYAxisLineColor: string;
       rightYAxisLineColor: string;
+      seriesLineStyles: ChartSeriesLineStyles;
       minimumMode: 'auto' | 'absolute' | 'relative';
       maximumMode: 'auto' | 'absolute' | 'relative';
       minimumValue: string;
@@ -224,6 +235,7 @@
   let rightYAxisUnit = initialRightYAxisUnit;
   let leftYAxisLineColor = initialLeftYAxisLineColor;
   let rightYAxisLineColor = initialRightYAxisLineColor;
+  let seriesLineStyles = normalizeChartSeriesLineStyles(initialSeriesLineStyles);
   let appliedInitialLeftYAxisSeriesKey = (
     initialLeftYAxisSeriesIds ?? initialVisibleSeriesIds
   )?.join('\u0000') ?? '*';
@@ -231,6 +243,7 @@
   let appliedInitialRightYAxisUnit = initialRightYAxisUnit;
   let appliedInitialLeftYAxisLineColor = initialLeftYAxisLineColor;
   let appliedInitialRightYAxisLineColor = initialRightYAxisLineColor;
+  let appliedInitialSeriesLineStylesKey = JSON.stringify(initialSeriesLineStyles);
   let appliedInitialTooltipUnitsKey = (initialTooltipUnits ?? []).join('\u0000');
   let appliedInitialBoundsKey = [
     initialMinimumMode,
@@ -291,21 +304,12 @@
   let visibleSeriesCount = 0;
   let leftYAxisSeriesCount = 0;
   let rightYAxisSeriesCount = 0;
+  let visibleLineSeriesIds: string[] = [];
   let zoomWindow: { fromMs: number; toMs: number } | null = null;
   let lastDispatchedZoomKey = '';
   let zoomDispatchTimer: ReturnType<typeof setTimeout> | null = null;
   const eventPageSize = 25;
-  const chartColors = [
-    '#5070dd',
-    '#b6d634',
-    '#505372',
-    '#ff994d',
-    '#0bb4ff',
-    '#ffcc00',
-    '#ea5f94',
-    '#8d48e3',
-    '#be04a0'
-  ];
+  const chartColors = [...chartLineColors];
   const eventLegendPrefix = 'Event · ';
   const tooltipProximityRadius = 36;
   const eventLegendPinIcon = (
@@ -415,6 +419,10 @@
     || (rightYAxisUnit !== '' && rightSeriesIsSelected(id))
   );
   const visibleChartSeries = () => series.filter((item) => seriesIsVisible(item.id));
+  const effectiveSeriesLineStyles = () => resolvedChartSeriesLineStyles({
+    styles: seriesLineStyles,
+    series
+  });
   const seriesAxis = (id: string): 'left' | 'right' => (
     rightYAxisUnit !== '' && rightSeriesIsSelected(id) ? 'right' : 'left'
   );
@@ -889,6 +897,11 @@
         });
       } else {
         const pointsByTimestamp = new Map(item.points.map((point) => [point.timestampMs, point]));
+        const seriesLineStyle = resolvedChartSeriesLineStyle({
+          styles: seriesLineStyles,
+          seriesId: item.id,
+          index
+        });
         chartSeries.push({
           id: item.id,
           name: item.label,
@@ -899,14 +912,19 @@
           connectNulls: false,
           sampling: 'lttb',
           lineStyle: {
-            type: index % 3 === 1 ? 'dashed' : index % 3 === 2 ? 'dotted' : 'solid',
-            width: index === 0 ? 2.5 : 1.8
+            type: seriesLineStyle.type,
+            color: seriesLineStyle.color,
+            width: seriesLineStyle.width
+          },
+          itemStyle: {
+            color: seriesLineStyle.color
           },
           emphasis: {
             focus: 'series',
             scale: 1.8,
             lineStyle: {
-              width: 4
+              color: seriesLineStyle.color,
+              width: Math.min(8, seriesLineStyle.width + 1.5)
             }
           },
           blur: {
@@ -1286,6 +1304,7 @@
           )?.meta?.timestampMs
             ?? timestamps[Number(parameters[0]?.dataIndex ?? 0)];
           const tooltipPoints = sourceSeries.flatMap((item, seriesIndex) => {
+            if (!seriesIsVisible(item.id)) return [];
             const parameter = parameters.find((candidate) => String(candidate.seriesId) === item.id);
             const parameterPoint = (
               parameter?.data as { meta?: ChartPoint | null } | undefined
@@ -1320,7 +1339,11 @@
             return [{
               item,
               point,
-              color: chartColors[seriesIndex % chartColors.length]!,
+              color: resolvedChartSeriesLineStyle({
+                styles: seriesLineStyles,
+                seriesId: item.id,
+                index: seriesIndex
+              }).color,
               seriesIndex,
               dataIndex,
               distance
@@ -1864,8 +1887,14 @@
       rightYAxisUnit,
       rightYAxisSeriesIds: currentRightYAxisSeriesIds,
       leftYAxisLineColor,
-      rightYAxisLineColor
+      rightYAxisLineColor,
+      seriesLineStyles: effectiveSeriesLineStyles()
     });
+  };
+
+  const seriesLineStylesChanged = (event: CustomEvent<ChartSeriesLineStyles>) => {
+    seriesLineStyles = normalizeChartSeriesLineStyles(event.detail);
+    viewChanged();
   };
 
   const leftDisplayedSeriesChanged = () => {
@@ -1938,6 +1967,7 @@
       rightYAxisSeriesIds: currentRightYAxisSeriesIds,
       leftYAxisLineColor,
       rightYAxisLineColor,
+      seriesLineStyles: effectiveSeriesLineStyles(),
       minimumMode,
       maximumMode,
       minimumValue,
@@ -2068,6 +2098,7 @@
     rightYAxisSeriesIds;
     leftYAxisLineColor;
     rightYAxisLineColor;
+    seriesLineStyles;
     selectedTooltipUnits;
     minimumMode;
     maximumMode;
@@ -2098,6 +2129,9 @@
     leftYAxisSeriesCount = series.filter((item) => leftSeriesIsSelected(item.id)).length;
     rightYAxisSeriesCount = series.filter((item) => rightSeriesIsSelected(item.id)).length;
     visibleSeriesCount = series.filter((item) => seriesIsVisible(item.id)).length;
+    visibleLineSeriesIds = series
+      .filter((item) => seriesIsVisible(item.id))
+      .map((item) => item.id);
   }
   $: if (useAllLeftSeriesByDefault) {
     const allLeftSeriesIds = series
@@ -2143,6 +2177,11 @@
     if (appliedInitialRightYAxisLineColor !== initialRightYAxisLineColor) {
       rightYAxisLineColor = initialRightYAxisLineColor;
       appliedInitialRightYAxisLineColor = initialRightYAxisLineColor;
+    }
+    const nextSeriesLineStylesKey = JSON.stringify(initialSeriesLineStyles);
+    if (appliedInitialSeriesLineStylesKey !== nextSeriesLineStylesKey) {
+      seriesLineStyles = normalizeChartSeriesLineStyles(initialSeriesLineStyles);
+      appliedInitialSeriesLineStylesKey = nextSeriesLineStylesKey;
     }
     const nextTooltipUnitsKey = (initialTooltipUnits ?? []).join('\u0000');
     if (appliedInitialTooltipUnitsKey !== nextTooltipUnitsKey) {
@@ -2210,6 +2249,7 @@
   data-right-y-axis-unit={rightYAxisUnit}
   data-left-y-axis-line-color={leftYAxisLineColor}
   data-right-y-axis-line-color={rightYAxisLineColor}
+  data-series-line-style-count={Object.keys(effectiveSeriesLineStyles()).length}
   data-rendered-candlestick-series-count={renderedCandlestickSeriesCount}
   data-rendered-range-from-ms={renderedRangeFromMs ?? ''}
   data-rendered-range-to-ms={renderedRangeToMs ?? ''}
@@ -2423,6 +2463,15 @@
           </div>
         </div>
       </div>
+      {#if chartMode === 'line'}
+        <SeriesLineStyleControls
+          idPrefix={controlId('visible-line-style')}
+          {series}
+          visibleSeriesIds={visibleLineSeriesIds}
+          value={seriesLineStyles}
+          on:change={seriesLineStylesChanged}
+        />
+      {/if}
       <div class="toolbar bounds-row">
         <div class="field grow">
           <label for={controlId('tooltip-units')}>Popup units</label>

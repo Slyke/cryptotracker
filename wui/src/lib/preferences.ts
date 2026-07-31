@@ -1,4 +1,8 @@
 import { apiRequest } from '$lib/api';
+import {
+  normalizeChartSeriesLineStyles,
+  type ChartSeriesLineStyles
+} from '$lib/chart-line-styles';
 import { formatInTimezone } from '$lib/timezone';
 
 export type SavedGraphType = 'market' | 'kraken' | 'addresses' | 'portfolio';
@@ -59,6 +63,7 @@ export interface ChartDisplayState {
   rightYAxisSeriesIds: string[];
   leftYAxisLineColor: string;
   rightYAxisLineColor: string;
+  seriesLineStyles: ChartSeriesLineStyles;
 }
 
 export interface PerformanceChartDisplayState {
@@ -68,6 +73,7 @@ export interface PerformanceChartDisplayState {
   rightYAxisUnit: string;
   leftYAxisLineColor: string;
   rightYAxisLineColor: string;
+  seriesLineStyles: ChartSeriesLineStyles;
   tooltipUnits: string[];
   minimumMode: 'auto' | 'absolute' | 'relative';
   maximumMode: 'auto' | 'absolute' | 'relative';
@@ -121,7 +127,8 @@ export const defaultChartDisplayState = (
   rightYAxisUnit: '',
   rightYAxisSeriesIds: [],
   leftYAxisLineColor: '#364255',
-  rightYAxisLineColor: '#ffbc3a'
+  rightYAxisLineColor: '#ffbc3a',
+  seriesLineStyles: {}
 });
 
 export const defaultPerformanceChartDisplayState = (): PerformanceChartDisplayState => ({
@@ -131,6 +138,7 @@ export const defaultPerformanceChartDisplayState = (): PerformanceChartDisplaySt
   rightYAxisUnit: '',
   leftYAxisLineColor: '#364255',
   rightYAxisLineColor: '#ffbc3a',
+  seriesLineStyles: {},
   tooltipUnits: ['%'],
   minimumMode: 'auto',
   maximumMode: 'auto',
@@ -224,6 +232,10 @@ export const chartDisplayStateFromSetting = ({
     rightYAxisLineColor: axisLineColor(
       candidate.rightYAxisLineColor,
       fallback.rightYAxisLineColor
+    ),
+    seriesLineStyles: normalizeChartSeriesLineStyles(
+      candidate.seriesLineStyles,
+      fallback.seriesLineStyles
     )
   };
 };
@@ -268,6 +280,10 @@ export const performanceChartDisplayStateFromSetting = ({
     rightYAxisUnit: candidate.rightYAxisUnit === '%' ? '%' : '',
     leftYAxisLineColor: color(candidate.leftYAxisLineColor, fallback.leftYAxisLineColor),
     rightYAxisLineColor: color(candidate.rightYAxisLineColor, fallback.rightYAxisLineColor),
+    seriesLineStyles: normalizeChartSeriesLineStyles(
+      candidate.seriesLineStyles,
+      fallback.seriesLineStyles
+    ),
     tooltipUnits: normalizeTooltipUnits({
       value: candidate.tooltipUnits,
       fallback: ['%']

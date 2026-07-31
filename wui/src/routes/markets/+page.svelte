@@ -2,7 +2,6 @@
   import { onMount } from 'svelte';
   import PortfolioChart from '../../lib/components/PortfolioChart.svelte';
   import PerformanceAnalytics from '../../lib/components/PerformanceAnalytics.svelte';
-  import LargeToggleButton from '../../lib/components/LargeToggleButton.svelte';
   import ColumnConfigurator from '../../lib/components/ColumnConfigurator.svelte';
   import ReorderableBlock from '../../lib/components/ReorderableBlock.svelte';
   import type {
@@ -67,7 +66,7 @@
 
   let watchlist: WatchAsset[] = [];
   let catalog: CatalogAsset[] = [];
-  let selected = new Set<string>();
+  let enabledChartAssetIds = new Set<string>();
   let source: 'combined' | 'coingecko' | 'coinbase' | 'kraken' = 'combined';
   let chartMode: 'line' | 'candlestick' = 'line';
   let primaryCurrency = 'CAD';
@@ -122,7 +121,7 @@
   let pageLayouts: Record<string, string[]> = {};
   let collapsedBlocks: Record<string, string[]> = {};
   let tableColumns: Record<string, string[]> = {};
-  const defaultPageOrder = ['controls', 'portfolio', 'chart', 'performance', 'watchlist'];
+  const defaultPageOrder = ['portfolio', 'chart', 'performance', 'watchlist'];
   let pageOrder = [...defaultPageOrder];
   const watchlistColumnOptions = [
     { id: 'asset', label: 'Asset' },
@@ -200,7 +199,6 @@
   let enabledAssets: WatchAsset[] = [];
   let denominationOptions: ChartDenominationOption[] = [];
   let portfolioAxisDenominationOptions: ChartDenominationOption[] = [];
-  let onlyBitcoinEnabled = false;
   let filteredCatalogAssets: CatalogAsset[] = [];
   let watchedAssetsByCanonicalId = new Map<string, WatchAsset>();
   const uniqueByCanonicalId = <Asset extends { canonicalId: string }>(assets: Asset[]) => (
@@ -219,8 +217,6 @@
       ...portfolioDenominationOptions
     ].map((option) => [option.id, option])).values()
   ];
-  $: onlyBitcoinEnabled = enabledAssets.length === 1
-    && enabledAssets[0]?.canonicalId === 'bitcoin';
   $: watchedAssetsByCanonicalId = new Map(
     watchlist.map((asset) => [asset.canonicalId, asset])
   );
@@ -260,19 +256,10 @@
     ]);
     watchlist = uniqueByCanonicalId(watchPayload.assets);
     catalog = uniqueByCanonicalId(catalogPayload.assets);
-    const enabledIds = new Set(watchlist.filter((asset) => asset.enabled).map((asset) => asset.canonicalId));
-    const urlAssets = new URLSearchParams(location.search).get('assets')
-      ?.split(',')
-      .filter((id) => enabledIds.has(id)) ?? [];
-    const retained = [...selected].filter((id) => enabledIds.has(id));
-    const initialSelection = urlAssets.length > 0
-      ? urlAssets
-      : retained.length > 0
-        ? retained
-        : enabledIds.has('bitcoin')
-          ? ['bitcoin']
-          : [...enabledIds].slice(0, 1);
-    selected = new Set(initialSelection.slice(0, 10));
+    enabledChartAssetIds = new Set(watchlist
+      .filter((asset) => asset.enabled)
+      .map((asset) => asset.canonicalId)
+      .slice(0, 50));
     primaryCurrency = settingsPayload.settings.primaryCurrency;
     tooltipCurrencies = settingsPayload.settings.tooltipCurrencies;
     source = settingsPayload.settings.marketSource;
@@ -310,10 +297,6 @@
         const performanceWindow = chartWindow(performanceState);
         performanceFromMs = performanceWindow.from;
         performanceToMs = performanceWindow.to;
-        const savedAssetIds = Array.isArray(editGraph.config.assetIds)
-          ? editGraph.config.assetIds.map(String).filter(Boolean)
-          : [];
-        if (savedAssetIds.length > 0) selected = new Set(savedAssetIds.slice(0, 10));
         if (['combined', 'coingecko', 'coinbase', 'kraken'].includes(String(editGraph.config.source))) {
           source = String(editGraph.config.source) as typeof source;
         }
@@ -324,10 +307,6 @@
           ...collapsedBlocks,
           markets: (collapsedBlocks.markets ?? []).filter((id) => id !== 'chart')
         };
-        const savedAssetIds = Array.isArray(editGraph.config.assetIds)
-          ? editGraph.config.assetIds.map(String).filter(Boolean)
-          : [];
-        if (savedAssetIds.length > 0) selected = new Set(savedAssetIds.slice(0, 10));
         if (['combined', 'coingecko', 'coinbase', 'kraken'].includes(String(editGraph.config.source))) {
           source = String(editGraph.config.source) as typeof source;
         }
@@ -397,7 +376,7 @@
 
   const buildQuery = ({
     currency,
-    assetIds = [...selected],
+    assetIds = [...enabledChartAssetIds],
     fromMs,
     toMs,
     granularityOverride,
@@ -444,7 +423,7 @@
       listedCurrencies: [...tooltipCurrencies, 'USD']
     });
     const requestedAssetIds = [...new Set([
-      ...selected,
+      ...enabledChartAssetIds,
       ...enabledAssets.map((asset) => asset.canonicalId)
     ])].slice(0, 50);
     return Promise.all(currencies.map(async (currency): Promise<CurrencyMarketSeries> => {
@@ -476,7 +455,7 @@
       primary.currency,
       'USD'
     ].filter((currency, index, values) => values.indexOf(currency) === index);
-    return primary.data.series.filter((item) => selected.has(item.id)).map((item) => ({
+    return primary.data.series.filter((item) => enabledChartAssetIds.has(item.id)).map((item) => ({
         ...item,
         points: item.points.map((point) => {
           const quotes = Object.fromEntries(payloads.map((payload) => {
@@ -520,7 +499,7 @@
 
   const loadSeries = async () => {
     const requestId = ++seriesRequestId;
-    if (selected.size === 0) {
+    if (enabledChartAssetIds.size === 0) {
       series = [];
       overviewSeries = [];
       events = [];
@@ -552,7 +531,6 @@
       resolvedGranularity = primary.data.overviewGranularity;
       exportQuery = buildQuery({ currency: primaryCurrency }).toString();
       const urlState = new URLSearchParams({
-        assets: [...selected].join(','),
         source,
         mode: chartMode,
         range,
@@ -574,7 +552,7 @@
 
   const loadPerformanceSeries = async () => {
     const requestId = ++performanceRequestId;
-    if (selected.size === 0) {
+    if (enabledChartAssetIds.size === 0) {
       performanceSeries = [];
       performanceLoading = false;
       return;
@@ -735,15 +713,6 @@
     }
   };
 
-  const toggleAsset = ({ canonicalId }: { canonicalId: string }) => {
-    if (!watchState({ canonicalId })?.enabled) return;
-    const next = new Set(selected);
-    if (next.has(canonicalId)) next.delete(canonicalId);
-    else next.add(canonicalId);
-    selected = next;
-    void Promise.all([loadSeries(), loadPerformanceSeries()]);
-  };
-
   const setAssetEnabled = async ({
     canonicalId,
     enabled
@@ -769,18 +738,13 @@
         });
       }
       await loadShell();
-      if (enabled) {
-        selected.add(canonicalId);
-        selected = new Set(selected);
-      } else {
-        selected.delete(canonicalId);
-        selected = new Set(selected);
-      }
       if (enabled) await queueInitialAssetHistory(canonicalId);
       await Promise.all([loadSeries(), loadPerformanceSeries()]);
       const asset = catalog.find((candidate) => candidate.canonicalId === canonicalId);
       message = `${asset?.symbol ?? canonicalId} is ${enabled ? 'enabled' : 'disabled'}.`
-        + (enabled ? ' It is selected on the chart and its initial history is queued.' : ' Pending market synchronization for it was cancelled.');
+        + (enabled
+          ? ' It is available in the chart line selectors and its initial history is queued.'
+          : ' It was removed from the chart options and pending market synchronization for it was cancelled.');
     } catch (caught) {
       error = caught instanceof Error ? caught.message : 'The asset state could not be changed.';
     }
@@ -813,14 +777,6 @@
         }
       });
     }
-  };
-
-  const openCatalogFilter = () => {
-    focusCatalogFilter();
-    requestAnimationFrame(() => document.getElementById('market-asset-catalog')?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start'
-    }));
   };
 
   const refreshCatalog = async () => {
@@ -932,7 +888,7 @@
       name: event.detail.name,
       type: 'market',
       config: {
-        assetIds: [...selected],
+        assetIds: [...enabledChartAssetIds],
         source,
         primaryCurrency,
         tooltipCurrencies,
@@ -1056,7 +1012,7 @@
       type: 'market',
       config: {
         analytics: 'performance',
-        assetIds: [...selected],
+        assetIds: [...enabledChartAssetIds],
         source,
         primaryCurrency,
         tooltipCurrencies,
@@ -1082,7 +1038,7 @@
     const providers = source === 'combined' ? ['coingecko', 'coinbase', 'kraken'] : [source];
     let queued = 0;
     let skipped = 0;
-    for (const canonicalAssetId of selected) {
+    for (const canonicalAssetId of enabledChartAssetIds) {
       for (const provider of providers) {
         const result = await apiRequest<{ skipped?: boolean }>({
           url: '/api/market/backfill',
@@ -1193,66 +1149,20 @@
   {#each pageOrder as blockId, index}
     <ReorderableBlock
       {blockId}
-      label={blockId === 'controls'
-        ? 'Market controls'
-        : blockId === 'portfolio'
-          ? 'Combined portfolio chart'
-          : blockId === 'chart'
-            ? 'Market chart'
-            : blockId === 'performance'
-              ? 'Performance analytics'
-              : 'Watchlist'}
+      label={blockId === 'portfolio'
+        ? 'Combined portfolio chart'
+        : blockId === 'chart'
+          ? 'Market chart'
+          : blockId === 'performance'
+            ? 'Performance analytics'
+            : 'Watchlist'}
       {index}
       total={pageOrder.length}
       collapsed={collapsedBlocks.markets?.includes(blockId) ?? false}
       on:move={moveBlock}
       on:toggle={toggleBlockCollapse}
     >
-  {#if blockId === 'controls'}
-  <section class="panel">
-    <div class="toolbar">
-      <div class="field">
-        <label for="source">Price source</label>
-        <select id="source" bind:value={source} on:change={loadSeries}>
-          <option value="combined">Combined</option>
-          <option value="coingecko">CoinGecko</option>
-          <option value="coinbase">Coinbase</option>
-          <option value="kraken">Kraken</option>
-        </select>
-      </div>
-      <button class="secondary" type="button" on:click={queueBackfill}>Queue backfill</button>
-    </div>
-    <div class="series-heading">
-      <strong>Visible chart assets</strong>
-      <span class="muted">Click any enabled asset to add it to or remove it from the chart.</span>
-    </div>
-    {#if loading && watchlist.length === 0}
-      <p class="series-empty muted">Loading enabled assets…</p>
-    {:else if enabledAssets.length === 0}
-      <div class="series-empty alert warning">
-        No market assets are enabled.
-        <button class="link-button" type="button" on:click={openCatalogFilter}>Enable assets below</button>
-      </div>
-    {:else}
-      <div class="series-toggles" aria-label="Visible market series">
-        {#each enabledAssets as asset (asset.canonicalId)}
-          <LargeToggleButton
-            label={asset.symbol}
-            detail={asset.name}
-            pressed={selected.has(asset.canonicalId)}
-            ariaLabel={`Toggle ${asset.name} on the market chart`}
-            on:click={() => toggleAsset({ canonicalId: asset.canonicalId })}
-          />
-        {/each}
-      </div>
-    {/if}
-    {#if onlyBitcoinEnabled && catalog.length > 1}
-      <p class="enable-more">
-        Only BTC is enabled. <button class="link-button" type="button" on:click={openCatalogFilter}>Enable more assets</button>
-      </p>
-    {/if}
-  </section>
-  {:else if blockId === 'portfolio'}
+  {#if blockId === 'portfolio'}
 
   {#if chartPreferencesReady}
   <div id="combined-portfolio-chart">
@@ -1293,6 +1203,7 @@
     initialRightYAxisSeriesIds={portfolioDisplayState.rightYAxisSeriesIds}
     initialLeftYAxisLineColor={portfolioDisplayState.leftYAxisLineColor}
     initialRightYAxisLineColor={portfolioDisplayState.rightYAxisLineColor}
+    initialSeriesLineStyles={portfolioDisplayState.seriesLineStyles}
     initialMinimumMode={boundMode(portfolioEditConfig, 'minimumMode')}
     initialMaximumMode={boundMode(portfolioEditConfig, 'maximumMode')}
     initialMinimumValue={configString(portfolioEditConfig, 'minimumValue')}
@@ -1351,6 +1262,7 @@
     initialRightYAxisSeriesIds={watchedDisplayState.rightYAxisSeriesIds}
     initialLeftYAxisLineColor={watchedDisplayState.leftYAxisLineColor}
     initialRightYAxisLineColor={watchedDisplayState.rightYAxisLineColor}
+    initialSeriesLineStyles={watchedDisplayState.seriesLineStyles}
     initialMinimumMode={boundMode(watchedEditConfig, 'minimumMode')}
     initialMaximumMode={boundMode(watchedEditConfig, 'maximumMode')}
     initialMinimumValue={configString(watchedEditConfig, 'minimumValue')}
@@ -1359,7 +1271,7 @@
     initialSaveGraphName={watchedSaveName}
     preferenceKey="markets:watched-prices"
     partialMessage={partialMessage || strings['cryptotracker-data_partial-label']}
-    emptyMessage="No cached market prices are available for the selected assets and range. Use Queue backfill in Market controls, then follow progress in Settings → Synchronization."
+    emptyMessage="No cached market prices are available for the enabled assets and range. Use Queue backfill in Watchlist, then follow progress in Settings → Synchronization."
     on:stateChange={graphStateChanged}
     on:viewChange={graphViewChanged}
     on:zoomRange={graphZoomed}
@@ -1397,6 +1309,7 @@
     initialRightYAxisUnit={performanceDisplayState.rightYAxisUnit}
     initialLeftYAxisLineColor={performanceDisplayState.leftYAxisLineColor}
     initialRightYAxisLineColor={performanceDisplayState.rightYAxisLineColor}
+    initialSeriesLineStyles={performanceDisplayState.seriesLineStyles}
     initialTooltipUnits={performanceDisplayState.tooltipUnits}
     initialMinimumMode={performanceDisplayState.minimumMode}
     initialMaximumMode={performanceDisplayState.maximumMode}
@@ -1414,8 +1327,26 @@
     <p class="eyebrow">Watchlist</p>
     <h2>Enable assets from the top-100 catalog</h2>
     <p class="catalog-help muted">
-      BTC is the only asset enabled by default. Disabled assets do not appear in charts or market synchronization.
+      Every enabled asset is available in chart line selectors and market synchronization.
+      Disabled assets do not appear in either.
     </p>
+    <div class="catalog-backfill toolbar">
+      <div class="field">
+        <label for="source">Price source</label>
+        <select id="source" bind:value={source} on:change={loadSeries}>
+          <option value="combined">Combined</option>
+          <option value="coingecko">CoinGecko</option>
+          <option value="coinbase">Coinbase</option>
+          <option value="kraken">Kraken</option>
+        </select>
+      </div>
+      <button
+        class="secondary"
+        type="button"
+        disabled={enabledChartAssetIds.size === 0}
+        on:click={queueBackfill}
+      >Queue backfill</button>
+    </div>
     <div class="catalog-actions toolbar">
       <div class="field grow">
         <label for="catalog-filter">Filter catalog table</label>
@@ -1464,8 +1395,8 @@
                     {catalogAsset.canonicalId}
                   {:else if columnId === 'state'}
                     <span
-                      class="badge {watched?.enabled ? selected.has(catalogAsset.canonicalId) ? 'mid' : 'start' : 'danger'}"
-                    >{watched?.enabled ? selected.has(catalogAsset.canonicalId) ? 'active' : 'enabled' : 'disabled'}</span>
+                      class="badge {watched?.enabled ? 'mid' : 'danger'}"
+                    >{watched?.enabled ? 'enabled' : 'disabled'}</span>
                   {:else if columnId === 'source'}
                     {catalogAsset.source ?? 'cached'}
                   {:else if columnId === 'action'}
@@ -1492,26 +1423,6 @@
 </main>
 
 <style>
-  .series-heading {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.45rem 0.8rem;
-    margin-top: 1rem;
-  }
-
-  .series-empty {
-    margin-top: 0.75rem;
-  }
-
-  .series-toggles {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(10.5rem, 14rem));
-    justify-content: start;
-    gap: 0.65rem;
-    margin-top: 0.55rem;
-  }
-
   .catalog-help {
     margin-bottom: 1rem;
   }
@@ -1519,32 +1430,17 @@
   .catalog-actions {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-start;
+    align-items: flex-end;
     gap: 0.65rem;
     margin-bottom: 1rem;
   }
 
-  .enable-more {
-    margin: 0.8rem 0 0;
-    color: var(--color-muted);
-  }
-
-  .link-button {
-    min-height: auto;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-    color: var(--color-mid);
-    text-decoration: underline;
-  }
-
-  .link-button:hover,
-  .link-button:active {
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-    transform: none;
+  .catalog-backfill {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.65rem;
+    margin-bottom: 0.8rem;
   }
 
   .table-wrap {

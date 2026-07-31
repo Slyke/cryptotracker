@@ -19,6 +19,10 @@
     type ChartAxisAsset
   } from '$lib/chart-axis-catalog';
   import { configuredCurrencies } from '$lib/currencies';
+  import {
+    normalizeChartSeriesLineStyles,
+    type ChartSeriesLineStyles
+  } from '$lib/chart-line-styles';
   import strings from '$lib/i18n/en-CA.json';
   import {
     createSavedGraph,
@@ -308,6 +312,7 @@
     rightYAxisSeriesIds: string[];
     leftYAxisLineColor: string;
     rightYAxisLineColor: string;
+    seriesLineStyles: ChartSeriesLineStyles;
   };
   const defaultChartQueryState = (): ChartQueryState => ({
     range: '1y',
@@ -333,7 +338,8 @@
     rightYAxisUnit: '',
     rightYAxisSeriesIds: [],
     leftYAxisLineColor: '#364255',
-    rightYAxisLineColor: '#ffbc3a'
+    rightYAxisLineColor: '#ffbc3a',
+    seriesLineStyles: {}
   });
   let krakenChartState = defaultChartQueryState();
   let earnChartState = { ...defaultChartQueryState(), granularity: '86400' };
@@ -459,7 +465,11 @@
       rightYAxisLineColor: typeof candidate.rightYAxisLineColor === 'string'
         && /^#[0-9a-f]{6}$/i.test(candidate.rightYAxisLineColor)
         ? candidate.rightYAxisLineColor.toLowerCase()
-        : fallback.rightYAxisLineColor
+        : fallback.rightYAxisLineColor,
+      seriesLineStyles: normalizeChartSeriesLineStyles(
+        candidate.seriesLineStyles,
+        fallback.seriesLineStyles
+      )
     };
   };
   const chartWindow = (state: ChartQueryState) => {
@@ -1707,6 +1717,7 @@
         initialRightYAxisSeriesIds={earnDisplayState.rightYAxisSeriesIds}
         initialLeftYAxisLineColor={earnDisplayState.leftYAxisLineColor}
         initialRightYAxisLineColor={earnDisplayState.rightYAxisLineColor}
+        initialSeriesLineStyles={earnDisplayState.seriesLineStyles}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
         on:viewChange={(event) => void graphViewChanged({ target: 'earn', event })}
         on:zoomRange={earnGraphZoomed}
@@ -1750,6 +1761,7 @@
         initialRightYAxisSeriesIds={earnApyDisplayState.rightYAxisSeriesIds}
         initialLeftYAxisLineColor={earnApyDisplayState.leftYAxisLineColor}
         initialRightYAxisLineColor={earnApyDisplayState.rightYAxisLineColor}
+        initialSeriesLineStyles={earnApyDisplayState.seriesLineStyles}
         on:stateChange={(event) => void graphStateChanged({ target: 'earn', event })}
         on:viewChange={(event) => void graphViewChanged({ target: 'earnApy', event })}
         on:zoomRange={earnGraphZoomed}
@@ -1975,6 +1987,7 @@
     initialRightYAxisSeriesIds={krakenDisplayState.rightYAxisSeriesIds}
     initialLeftYAxisLineColor={krakenDisplayState.leftYAxisLineColor}
     initialRightYAxisLineColor={krakenDisplayState.rightYAxisLineColor}
+    initialSeriesLineStyles={krakenDisplayState.seriesLineStyles}
     initialMinimumMode={editBoundMode('minimumMode')}
     initialMaximumMode={editBoundMode('maximumMode')}
     initialMinimumValue={editConfigString('minimumValue')}
@@ -2001,6 +2014,7 @@
     initialRightYAxisUnit={krakenPerformanceDisplayState.rightYAxisUnit}
     initialLeftYAxisLineColor={krakenPerformanceDisplayState.leftYAxisLineColor}
     initialRightYAxisLineColor={krakenPerformanceDisplayState.rightYAxisLineColor}
+    initialSeriesLineStyles={krakenPerformanceDisplayState.seriesLineStyles}
     initialTooltipUnits={krakenPerformanceDisplayState.tooltipUnits}
     initialMinimumMode={krakenPerformanceDisplayState.minimumMode}
     initialMaximumMode={krakenPerformanceDisplayState.maximumMode}

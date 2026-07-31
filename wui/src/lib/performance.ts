@@ -24,7 +24,9 @@ export const transformPerformanceSeries = ({
   const first = points.find((point) => point.numericValue !== 0);
   let peak: number | null = null;
   return {
-    id: `${item.id}:${mode}`,
+    // Keep the source ID stable so saved visibility, axis, and line-style
+    // preferences still address the transformed performance line.
+    id: item.id,
     label: `${item.label} · ${mode === 'return' ? 'return' : 'drawdown'}`,
     points: points.map((point) => {
       peak = peak === null ? point.numericValue : Math.max(peak, point.numericValue);

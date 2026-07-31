@@ -977,6 +977,7 @@
           initialRightYAxisSeriesIds={addressDisplayState.rightYAxisSeriesIds}
           initialLeftYAxisLineColor={addressDisplayState.leftYAxisLineColor}
           initialRightYAxisLineColor={addressDisplayState.rightYAxisLineColor}
+          initialSeriesLineStyles={addressDisplayState.seriesLineStyles}
           initialMinimumMode={boundMode('minimumMode')}
           initialMaximumMode={boundMode('maximumMode')}
           initialMinimumValue={configString('minimumValue')}
@@ -1006,6 +1007,7 @@
           initialRightYAxisUnit={addressPerformanceDisplayState.rightYAxisUnit}
           initialLeftYAxisLineColor={addressPerformanceDisplayState.leftYAxisLineColor}
           initialRightYAxisLineColor={addressPerformanceDisplayState.rightYAxisLineColor}
+          initialSeriesLineStyles={addressPerformanceDisplayState.seriesLineStyles}
           initialTooltipUnits={addressPerformanceDisplayState.tooltipUnits}
           initialMinimumMode={addressPerformanceDisplayState.minimumMode}
           initialMaximumMode={addressPerformanceDisplayState.maximumMode}
