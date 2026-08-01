@@ -23,9 +23,11 @@
 
   export let graph: SavedGraph;
   export let minimalChrome = false;
+  export let hideActions = false;
 
   const dispatch = createEventDispatcher<{
     hide: { id: string };
+    remove: { id: string };
   }>();
   let series: ChartSeries[] = [];
   let events: ChartEvent[] = [];
@@ -73,8 +75,9 @@
   };
   const requestRemove = () => {
     if (!confirm(`Remove the dashboard graph “${graph.name}”?`)) return;
-    dispatch('hide', { id: graph.id });
+    dispatch('remove', { id: graph.id });
   };
+  const hide = () => dispatch('hide', { id: graph.id });
   const isPerformanceChart = () => (
     graph.type === 'market' && graph.config.analytics === 'performance'
   );
@@ -388,16 +391,21 @@
 </script>
 
 <article class:minimal-chrome={minimalChrome} class="saved-chart">
-  {#if !minimalChrome}
-    <div class="saved-chart-header">
-      <div>
-        <span class="badge start">{graph.type}</span>
-        <h3>{graph.name}</h3>
-      </div>
+  {#if !minimalChrome || !hideActions}
+    <div class:actions-only={minimalChrome} class="saved-chart-header">
+      {#if !minimalChrome}
+        <div>
+          <span class="badge start">{graph.type}</span>
+          <h3>{graph.name}</h3>
+        </div>
+      {/if}
+      {#if !hideActions}
       <div class="saved-chart-actions">
         <a class="button ghost compact" href={editHref()}>Edit</a>
+        <button class="ghost compact" type="button" on:click={hide}>Hide</button>
         <button class="ghost compact" type="button" on:click={requestRemove}>Remove</button>
       </div>
+      {/if}
     </div>
   {/if}
   {#if error}<div class="alert danger">{error}</div>{/if}
@@ -483,6 +491,11 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 0.7rem;
+  }
+
+  .saved-chart-header.actions-only {
+    justify-content: flex-end;
+    margin-bottom: 0.35rem;
   }
 
   .saved-chart-actions {

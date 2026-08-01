@@ -5,6 +5,7 @@
   export let currency = 'CAD';
   export let locale = 'en-CA';
   export let label = 'Value';
+  export let showCurrencyCode = false;
 
   $: normalizedCurrency = currency.toUpperCase();
   $: currencies = [...new Set(Object.keys(values).map((item) => item.toUpperCase()))];
@@ -19,7 +20,7 @@
         ? 'unavailable'
         : formatDisplayNumber({
             value,
-            currency: requestedCurrency,
+            currency: showCurrencyCode ? undefined : requestedCurrency,
             locale
           })
     ];
@@ -34,7 +35,10 @@
   tabindex="0"
   aria-label={`${label}: ${formattedValues[normalizedCurrency]} ${normalizedCurrency}. Focus or hover for all configured currencies.`}
 >
-  <strong class="stat">{formattedValues[normalizedCurrency]}</strong>
+  <span class="currency-value-line">
+    <strong class="stat">{formattedValues[normalizedCurrency]}</strong>
+    {#if showCurrencyCode}<small>{normalizedCurrency}</small>{/if}
+  </span>
   <div class="currency-popup" role="tooltip">
     <strong>All configured currencies</strong>
     {#each orderedCurrencies as requestedCurrency (requestedCurrency)}
@@ -73,6 +77,19 @@
   .currency-value:focus-visible {
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-focus);
+  }
+
+  .currency-value-line {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+  }
+
+  .currency-value-line small {
+    color: var(--color-muted);
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
   }
 
   .currency-popup {

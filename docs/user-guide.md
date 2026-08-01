@@ -18,39 +18,55 @@ provider-secret screen.
 
 ## Dashboard
 
-The Dashboard is the authenticated home page. Its summary cards show:
+The Dashboard is the authenticated home page. It shows one movable/collapsible summary-card section
+for every configured display currency. Each section contains:
 
 - known portfolio value, calculated as the sum of priced tracked-address and Kraken value;
-- tracked-address value and provider-history completeness;
-- Kraken known value and the percentage of non-zero balances that are priced;
-- active, queued, and retrying synchronization-job count.
+- tracked-address value;
+- Kraken known value.
 
 Unpriced balances are excluded from known-value subtotals rather than treated as zero. Focusing a
 currency value opens a selectable popup containing the primary and configured display currencies.
-Partial address history and unpriced holdings produce visible warnings.
+The small currency code remains on the same line as each value. Partial address history and unpriced
+holdings produce visible warnings. The active synchronization-job count is part of Upstream
+diagnostics.
 
 Dashboard automatic refresh is off by default. It can be enabled at 30 seconds, 1, 2, 5, 10, or 30
 minutes, or 1 hour. The enabled state and interval are saved in database-backed preferences. This
 refresh reloads cached application data; it does not replace the independent provider polling
 schedule configured in Settings.
 
-Charts and tables saved from Markets, Addresses, or Kraken appear in named Dashboard rows. Each row:
+Numbered dashboards appear in the top controls and the active number is stored in the
+`?dashboard=X` query parameter. The plus button creates a dashboard; the left/right controls reorder
+the active dashboard while keeping the displayed numbers sequential; and Remove dashboard asks for
+confirmation before moving its items to dashboard 1. These management controls are hidden in Minimal
+mode.
+
+Cycle can automatically advance through the numbered dashboards at the selected interval. Physical
+mouse movement postpones an imminent change until the pointer has been still for 10 seconds. The
+Cycle checkbox remains available in Minimal mode, while its interval selector is hidden.
+
+Charts and tables saved from Markets, Addresses, or Kraken are initially placed on dashboard 1 and
+appear in named rows. Each row:
 
 - has a user-editable name;
 - displays one to four items per row;
 - accepts any mixture of saved charts and tables;
 - can be added or removed; removing a row moves its items to the first remaining row;
-- lets each item be moved to another row.
+- lets each item be moved to a row on any dashboard.
 
-“Remove” on a saved item asks for confirmation, then hides it without deleting its configuration.
-Settings can show it again or delete it permanently. With fluff shown, saved charts also provide an
-“Edit” link that opens the source page with the chart controls restored. “Hide fluff” switches saved
-items to a compact presentation, and “Show options” reveals row and placement controls. The
-Dashboard also summarizes enabled market assets, the Kraken surfaces in use, and raw
-provider/cache health.
+“Hide” removes a saved item from the dashboards while retaining its configuration, and Settings can
+show it again. “Remove” asks for confirmation and deletes it. Saved charts also provide an “Edit”
+link that opens the source page with the chart controls restored; Edit, Hide, and Remove remain
+available when fluff is hidden, but disappear in Minimal mode. “Show options” reveals row and
+cross-dashboard placement controls plus a link to the saved-item visibility section in Settings. The
+Dashboard also summarizes enabled market assets, the Kraken surfaces in use, and raw provider/cache
+health.
 
 Dashboard, Markets, Addresses, Kraken, and Settings blocks have Up, Down, and expand/collapse
-controls. Their order and collapsed state persist in the application database.
+controls. Their order and collapsed state persist in the application database. Dashboard section
+layouts are saved independently for each numbered dashboard, so the same section can occupy a
+different position on dashboards 1, 2, 3, and so on.
 
 ## Markets
 

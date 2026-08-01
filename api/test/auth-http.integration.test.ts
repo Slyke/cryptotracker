@@ -454,6 +454,15 @@ describe('HTTP ingress', () => {
           accordionStates: {
             'settings:market-coverage': false
           },
+          dashboards: [{
+            id: 'fixture-dashboard',
+            rows: [{
+              id: 'fixture-dashboard-row',
+              name: 'Fixture dashboard row',
+              columns: 2,
+              itemIds: ['fixture-chart']
+            }]
+          }],
           dashboardRows: [{
             id: 'fixture-row',
             name: 'Fixture row',
@@ -469,6 +478,14 @@ describe('HTTP ingress', () => {
           accordionStates: {
             'settings:market-coverage': false
           },
+          dashboards: [{
+            id: 'fixture-dashboard',
+            rows: [{
+              id: 'fixture-dashboard-row',
+              columns: 2,
+              itemIds: ['fixture-chart']
+            }]
+          }],
           dashboardRows: [{
             id: 'fixture-row',
             columns: 3,
@@ -558,7 +575,11 @@ describe('HTTP ingress', () => {
             { id: 'legacy-visible', name: 'BTC Price' },
             { id: 'legacy-hidden', name: 'BTC PRICE' },
             { id: 'new-market-chart', name: 'ETH Price' }
-          ]
+          ],
+          dashboards: [{
+            id: 'fixture-dashboard',
+            rows: [{ itemIds: ['legacy-visible', 'new-market-chart'] }]
+          }]
         }
       });
       const proxied = await fetch(`${baseUrl}/some-wui-route`);

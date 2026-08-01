@@ -11,11 +11,13 @@
   import { dashboardMinimalMode } from '$lib/dashboard-display';
   import strings from '$lib/i18n/en-CA.json';
   import {
-    formatPercent,
+    dashboardNumberFromSearch,
     moveInOrder,
+    normalizeDashboards,
     normalizeOrder,
     savePreferences,
     toggleCollapsed,
+    type Dashboard,
     type DashboardRow,
     type SavedGraph
   } from '$lib/preferences';
@@ -64,19 +66,30 @@
     pageLayouts: {} as Record<string, string[]>,
     collapsedBlocks: {} as Record<string, string[]>,
     savedGraphs: [] as SavedGraph[],
+    dashboards: [] as Dashboard[],
     dashboardRows: [] as DashboardRow[],
     dashboardGraphColumns: 2 as 1 | 2 | 3 | 4,
     dismissedNotices: [] as string[]
   };
   let jobs: Array<{ status: string }> = [];
-  const defaultPageOrder = ['summary', 'graphs', 'watchlist', 'kraken', 'diagnostics'];
-  let pageOrder = [...defaultPageOrder];
+  const defaultContentOrder = ['graphs', 'watchlist', 'kraken', 'diagnostics'];
+  let pageOrder = [...defaultContentOrder];
+  let dashboardPageDefaults = [...defaultContentOrder];
+  let activeCollapsedBlocks: string[] = [];
+  let activeDashboardId = '';
+  let activeDashboard: Dashboard | null = null;
+  let activeDashboardIndex = 0;
   let showDashboardOptions = false;
   let hideFluff = false;
   let minimalMode = false;
   let autoRefreshEnabled = false;
   let refreshIntervalSeconds = 60;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  let cycleEnabled = false;
+  let cycleIntervalSeconds = 60;
+  let cycleTimer: ReturnType<typeof setTimeout> | null = null;
+  let nextCycleAt = 0;
+  let lastMouseMovementAt = 0;
   let addressValues = { CAD: '0' } as Record<string, string | null>;
   let krakenValues = { CAD: '0' } as Record<string, string | null>;
   let knownValues = { CAD: '0' } as Record<string, string | null>;
@@ -90,6 +103,83 @@
     { seconds: 1_800, label: 'Every 30 minutes' },
     { seconds: 3_600, label: 'Every hour' }
   ];
+
+  const cycleIntervals = [
+    { seconds: 10, label: 'Every 10 seconds' },
+    { seconds: 30, label: 'Every 30 seconds' },
+    { seconds: 60, label: 'Every minute' },
+    { seconds: 120, label: 'Every 2 minutes' },
+    { seconds: 300, label: 'Every 5 minutes' },
+    { seconds: 600, label: 'Every 10 minutes' }
+  ];
+
+  $: activeDashboard = settings.dashboards.find((dashboard) => (
+    dashboard.id === activeDashboardId
+  )) ?? settings.dashboards[0] ?? null;
+  $: activeDashboardIndex = Math.max(0, settings.dashboards.findIndex((dashboard) => (
+    dashboard.id === activeDashboard?.id
+  )));
+
+  const dashboardLayoutKey = (dashboardId: string) => `dashboard:${dashboardId}`;
+
+  const restoreDashboardLayout = (dashboardId: string) => {
+    const savedOrder = (
+      settings.pageLayouts[dashboardLayoutKey(dashboardId)]
+      ?? settings.pageLayouts.dashboard
+      ?? []
+    ).flatMap((id) => (
+      id === 'summary'
+        ? dashboardPageDefaults.filter((blockId) => blockId.startsWith('summary:'))
+        : [id]
+    ));
+    pageOrder = normalizeOrder({ saved: savedOrder, defaults: dashboardPageDefaults });
+    activeCollapsedBlocks = [...(
+      settings.collapsedBlocks[dashboardLayoutKey(dashboardId)]
+      ?? settings.collapsedBlocks.dashboard
+      ?? []
+    )];
+  };
+
+  const updateDashboardQuery = (index: number) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('dashboard', String(index + 1));
+    window.history.replaceState(window.history.state, '', url);
+  };
+
+  const scheduleCycle = () => {
+    if (cycleTimer) clearTimeout(cycleTimer);
+    cycleTimer = null;
+    if (!cycleEnabled || settings.dashboards.length < 2) return;
+    if (nextCycleAt <= 0) nextCycleAt = Date.now() + (cycleIntervalSeconds * 1_000);
+    const dueAt = Math.max(nextCycleAt, lastMouseMovementAt + 10_000);
+    cycleTimer = setTimeout(() => {
+      const nextIndex = (activeDashboardIndex + 1) % settings.dashboards.length;
+      activeDashboardId = settings.dashboards[nextIndex]!.id;
+      restoreDashboardLayout(activeDashboardId);
+      updateDashboardQuery(nextIndex);
+      nextCycleAt = Date.now() + (cycleIntervalSeconds * 1_000);
+      scheduleCycle();
+    }, Math.max(100, dueAt - Date.now()));
+  };
+
+  const resetCycle = () => {
+    nextCycleAt = Date.now() + (cycleIntervalSeconds * 1_000);
+    scheduleCycle();
+  };
+
+  const selectDashboard = (index: number) => {
+    const selected = settings.dashboards[index];
+    if (!selected) return;
+    activeDashboardId = selected.id;
+    restoreDashboardLayout(activeDashboardId);
+    updateDashboardQuery(index);
+    resetCycle();
+  };
+
+  const handleMouseMovement = () => {
+    lastMouseMovementAt = Date.now();
+    if (cycleEnabled && nextCycleAt < lastMouseMovementAt + 10_000) scheduleCycle();
+  };
 
   const scheduleRefresh = () => {
     if (refreshTimer) clearInterval(refreshTimer);
@@ -106,10 +196,13 @@
       dashboardHideFluff: hideFluff,
       dashboardMinimalMode: minimalMode,
       dashboardAutoRefreshEnabled: autoRefreshEnabled,
-      dashboardRefreshIntervalSeconds: refreshIntervalSeconds
+      dashboardRefreshIntervalSeconds: refreshIntervalSeconds,
+      dashboardCycleEnabled: cycleEnabled,
+      dashboardCycleIntervalSeconds: cycleIntervalSeconds
     };
     settings = { ...settings };
     scheduleRefresh();
+    resetCycle();
     await savePreferences({ graphDefaults: settings.graphDefaults });
   };
 
@@ -183,8 +276,28 @@
       }));
       providers = providerPayload.providers;
       jobs = jobsPayload.progress.jobs;
-      pageOrder = normalizeOrder({ saved: settings.pageLayouts.dashboard, defaults: defaultPageOrder });
-      settings.dashboardRows = normalizeDashboardRows(settings.dashboardRows ?? []);
+      const summaryBlockIds = currencies.map((currency) => `summary:${currency}`);
+      dashboardPageDefaults = [...summaryBlockIds, ...defaultContentOrder];
+      settings.dashboards = normalizeDashboards({
+        dashboards: settings.dashboards,
+        legacyRows: settings.dashboardRows ?? [],
+        savedGraphs: settings.savedGraphs,
+        defaultColumns: settings.dashboardGraphColumns
+      });
+      const requestedDashboard = dashboardNumberFromSearch({
+        search: window.location.search,
+        count: settings.dashboards.length
+      });
+      const currentDashboardStillExists = settings.dashboards.some((dashboard) => (
+        dashboard.id === activeDashboardId
+      ));
+      activeDashboardId = currentDashboardStillExists
+        ? activeDashboardId
+        : settings.dashboards[requestedDashboard - 1]!.id;
+      restoreDashboardLayout(activeDashboardId);
+      updateDashboardQuery(settings.dashboards.findIndex((dashboard) => (
+        dashboard.id === activeDashboardId
+      )));
       hideFluff = settings.graphDefaults.dashboardHideFluff === true
         || (
           settings.graphDefaults.dashboardHideFluff === undefined
@@ -201,7 +314,13 @@
       refreshIntervalSeconds = refreshIntervals.some((option) => option.seconds === savedRefreshSeconds)
         ? savedRefreshSeconds
         : 60;
+      cycleEnabled = settings.graphDefaults.dashboardCycleEnabled === true;
+      const savedCycleSeconds = Number(settings.graphDefaults.dashboardCycleIntervalSeconds);
+      cycleIntervalSeconds = cycleIntervals.some((option) => option.seconds === savedCycleSeconds)
+        ? savedCycleSeconds
+        : 60;
       scheduleRefresh();
+      resetCycle();
       settings = { ...settings };
       setDocumentPreferences(settings);
     } catch (caught) {
@@ -231,53 +350,42 @@
     return `Partial address history: ${labels.join(', ') || `${affected.length} holding rows`}. Settings → Synchronization shows active work and the oldest point reached.`;
   };
 
-  const normalizeDashboardRows = (savedRows: DashboardRow[]) => {
-    const visibleIds = settings.savedGraphs.filter((item) => !item.hidden).map((item) => item.id);
-    const known = new Set(visibleIds);
-    const used = new Set<string>();
-    const normalized = savedRows.map((row, index) => ({
-      id: row.id || `dashboard-row-${index + 1}`,
-      name: row.name || `Row ${index + 1}`,
-      columns: ([1, 2, 3, 4].includes(Number(row.columns)) ? Number(row.columns) : 2) as 1 | 2 | 3 | 4,
-      itemIds: row.itemIds.filter((id) => {
-        if (!known.has(id) || used.has(id)) return false;
-        used.add(id);
-        return true;
-      })
-    }));
-    const unplaced = visibleIds.filter((id) => !used.has(id));
-    if (normalized.length === 0) {
-      normalized.push({
-        id: crypto.randomUUID(),
-        name: 'Row 1',
-        columns: settings.dashboardGraphColumns,
-        itemIds: unplaced
-      });
-    } else {
-      normalized[0]!.itemIds.push(...unplaced);
-    }
-    return normalized;
+  const itemForId = (id: string) => settings.savedGraphs.find((item) => item.id === id) ?? null;
+  const saveDashboards = async () => {
+    settings = {
+      ...settings,
+      dashboards: [...settings.dashboards],
+      dashboardRows: [...(settings.dashboards[0]?.rows ?? [])]
+    };
+    await savePreferences({
+      dashboards: settings.dashboards,
+      dashboardRows: settings.dashboardRows
+    });
   };
 
-  const itemForId = (id: string) => settings.savedGraphs.find((item) => item.id === id) ?? null;
-  const saveDashboardRows = async () => {
-    settings = { ...settings, dashboardRows: [...settings.dashboardRows] };
-    await savePreferences({ dashboardRows: settings.dashboardRows });
-  };
+  const blockLabel = (blockId: string) => blockId.startsWith('summary:')
+    ? `${blockId.slice('summary:'.length)} portfolio values`
+    : blockId;
 
   const moveBlock = async (event: CustomEvent<{ id: string; direction: 'up' | 'down' }>) => {
     pageOrder = moveInOrder({ order: pageOrder, id: event.detail.id, direction: event.detail.direction });
-    settings.pageLayouts = { ...settings.pageLayouts, dashboard: pageOrder };
+    settings.pageLayouts = {
+      ...settings.pageLayouts,
+      [dashboardLayoutKey(activeDashboardId)]: pageOrder
+    };
     settings = { ...settings };
     await savePreferences({ pageLayouts: settings.pageLayouts });
   };
 
   const toggleBlockCollapse = async (event: CustomEvent<{ id: string }>) => {
-    const collapsed = toggleCollapsed({
-      collapsed: settings.collapsedBlocks.dashboard ?? [],
+    activeCollapsedBlocks = toggleCollapsed({
+      collapsed: activeCollapsedBlocks,
       id: event.detail.id
     });
-    settings.collapsedBlocks = { ...settings.collapsedBlocks, dashboard: collapsed };
+    settings.collapsedBlocks = {
+      ...settings.collapsedBlocks,
+      [dashboardLayoutKey(activeDashboardId)]: activeCollapsedBlocks
+    };
     settings = { ...settings };
     await savePreferences({ collapsedBlocks: settings.collapsedBlocks });
   };
@@ -286,13 +394,36 @@
     settings.savedGraphs = settings.savedGraphs.map((graph) => (
       graph.id === event.detail.id ? { ...graph, hidden: true } : graph
     ));
-    settings.dashboardRows = settings.dashboardRows.map((row) => ({
-      ...row,
-      itemIds: row.itemIds.filter((id) => id !== event.detail.id)
+    settings.dashboards = settings.dashboards.map((dashboard) => ({
+      ...dashboard,
+      rows: dashboard.rows.map((row) => ({
+        ...row,
+        itemIds: row.itemIds.filter((id) => id !== event.detail.id)
+      }))
     }));
+    settings.dashboardRows = settings.dashboards[0]?.rows ?? [];
     settings = { ...settings };
     await savePreferences({
       savedGraphs: settings.savedGraphs,
+      dashboards: settings.dashboards,
+      dashboardRows: settings.dashboardRows
+    });
+  };
+
+  const removeGraph = async (event: CustomEvent<{ id: string }>) => {
+    settings.savedGraphs = settings.savedGraphs.filter((graph) => graph.id !== event.detail.id);
+    settings.dashboards = settings.dashboards.map((dashboard) => ({
+      ...dashboard,
+      rows: dashboard.rows.map((row) => ({
+        ...row,
+        itemIds: row.itemIds.filter((id) => id !== event.detail.id)
+      }))
+    }));
+    settings.dashboardRows = settings.dashboards[0]?.rows ?? [];
+    settings = { ...settings };
+    await savePreferences({
+      savedGraphs: settings.savedGraphs,
+      dashboards: settings.dashboards,
       dashboardRows: settings.dashboardRows
     });
   };
@@ -307,41 +438,112 @@
   };
 
   const addDashboardRow = async () => {
-    settings.dashboardRows = [
-      ...settings.dashboardRows,
+    if (!activeDashboard) return;
+    const rows = [
+      ...activeDashboard.rows,
       {
         id: crypto.randomUUID(),
-        name: `Row ${settings.dashboardRows.length + 1}`,
-        columns: 2,
+        name: `Row ${activeDashboard.rows.length + 1}`,
+        columns: 2 as const,
         itemIds: []
       }
     ];
-    await saveDashboardRows();
+    settings.dashboards = settings.dashboards.map((dashboard) => (
+      dashboard.id === activeDashboard?.id ? { ...dashboard, rows } : dashboard
+    ));
+    await saveDashboards();
   };
 
   const removeDashboardRow = async (id: string) => {
-    if (settings.dashboardRows.length <= 1) return;
-    const removed = settings.dashboardRows.find((row) => row.id === id);
-    const remaining = settings.dashboardRows.filter((row) => row.id !== id);
+    if (!activeDashboard || activeDashboard.rows.length <= 1) return;
+    const removed = activeDashboard.rows.find((row) => row.id === id);
+    const remaining = activeDashboard.rows.filter((row) => row.id !== id);
     if (removed && remaining[0]) {
       remaining[0] = {
         ...remaining[0],
         itemIds: [...remaining[0].itemIds, ...removed.itemIds]
       };
     }
-    settings.dashboardRows = remaining;
-    await saveDashboardRows();
+    settings.dashboards = settings.dashboards.map((dashboard) => (
+      dashboard.id === activeDashboard?.id ? { ...dashboard, rows: remaining } : dashboard
+    ));
+    await saveDashboards();
   };
 
-  const moveItemToRow = async ({ itemId, rowId }: { itemId: string; rowId: string }) => {
-    settings.dashboardRows = settings.dashboardRows.map((row) => ({
-      ...row,
-      itemIds: [
-        ...row.itemIds.filter((id) => id !== itemId),
-        ...(row.id === rowId ? [itemId] : [])
-      ]
+  const moveItem = async ({
+    itemId,
+    dashboardId,
+    rowId
+  }: {
+    itemId: string;
+    dashboardId: string;
+    rowId: string;
+  }) => {
+    settings.dashboards = settings.dashboards.map((dashboard) => ({
+      ...dashboard,
+      rows: dashboard.rows.map((row) => ({
+        ...row,
+        itemIds: [
+          ...row.itemIds.filter((id) => id !== itemId),
+          ...(dashboard.id === dashboardId && row.id === rowId ? [itemId] : [])
+        ]
+      }))
     }));
-    await saveDashboardRows();
+    await saveDashboards();
+  };
+
+  const addDashboard = async () => {
+    const dashboard: Dashboard = {
+      id: crypto.randomUUID(),
+      rows: [{
+        id: crypto.randomUUID(),
+        name: 'Row 1',
+        columns: settings.dashboardGraphColumns,
+        itemIds: []
+      }]
+    };
+    settings.dashboards = [...settings.dashboards, dashboard];
+    activeDashboardId = dashboard.id;
+    restoreDashboardLayout(activeDashboardId);
+    await saveDashboards();
+    updateDashboardQuery(settings.dashboards.length - 1);
+    resetCycle();
+  };
+
+  const removeDashboard = async () => {
+    if (!activeDashboard || settings.dashboards.length <= 1) return;
+    if (!confirm(`Remove dashboard ${activeDashboardIndex + 1}? Its items will move to dashboard 1.`)) return;
+    const removedItemIds = activeDashboard.rows.flatMap((row) => row.itemIds);
+    const remaining = settings.dashboards.filter((dashboard) => dashboard.id !== activeDashboard?.id);
+    if (remaining[0]?.rows[0]) {
+      remaining[0].rows[0].itemIds = [
+        ...remaining[0].rows[0].itemIds,
+        ...removedItemIds.filter((id) => !remaining[0]!.rows.some((row) => row.itemIds.includes(id)))
+      ];
+    }
+    settings.dashboards = remaining;
+    const nextIndex = Math.min(activeDashboardIndex, remaining.length - 1);
+    activeDashboardId = remaining[nextIndex]!.id;
+    restoreDashboardLayout(activeDashboardId);
+    await saveDashboards();
+    updateDashboardQuery(nextIndex);
+    resetCycle();
+  };
+
+  const moveDashboard = async (direction: 'left' | 'right') => {
+    const destination = direction === 'left'
+      ? activeDashboardIndex - 1
+      : activeDashboardIndex + 1;
+    if (destination < 0 || destination >= settings.dashboards.length) return;
+    const dashboards = [...settings.dashboards];
+    [dashboards[activeDashboardIndex], dashboards[destination]] = [
+      dashboards[destination]!,
+      dashboards[activeDashboardIndex]!
+    ];
+    settings.dashboards = dashboards;
+    await saveDashboards();
+    updateDashboardQuery(destination);
+    resetCycle();
   };
 
   onMount(() => {
@@ -350,16 +552,36 @@
 
   onDestroy(() => {
     if (refreshTimer) clearInterval(refreshTimer);
+    if (cycleTimer) clearTimeout(cycleTimer);
     dashboardMinimalMode.set(false);
   });
 </script>
 
-<svelte:window on:keydown={handleDashboardKeydown} />
+<svelte:window on:keydown={handleDashboardKeydown} on:mousemove={handleMouseMovement} />
 
 <main class="page" class:minimal={minimalMode}>
   <header class="dashboard-title-row" data-dashboard-top-controls>
     <h1>{strings['cryptotracker-dashboard-title']}</h1>
     <div class="dashboard-refresh">
+      <nav class="dashboard-switcher" aria-label="Dashboards">
+        {#each settings.dashboards as dashboard, dashboardIndex (dashboard.id)}
+          <button
+            class:secondary={dashboard.id === activeDashboard?.id}
+            class:ghost={dashboard.id !== activeDashboard?.id}
+            class="compact dashboard-number"
+            type="button"
+            aria-label={`Open dashboard ${dashboardIndex + 1}`}
+            aria-pressed={dashboard.id === activeDashboard?.id}
+            on:click={() => selectDashboard(dashboardIndex)}
+          >{dashboardIndex + 1}</button>
+        {/each}
+        {#if !minimalMode}
+          <button class="ghost compact dashboard-number" type="button" aria-label="Add dashboard" title="Add dashboard" on:click={addDashboard}>+</button>
+          <button class="ghost compact dashboard-number" type="button" aria-label="Move dashboard left" title="Move dashboard left" disabled={activeDashboardIndex === 0} on:click={() => moveDashboard('left')}>&lt;</button>
+          <button class="ghost compact dashboard-number" type="button" aria-label="Move dashboard right" title="Move dashboard right" disabled={activeDashboardIndex === settings.dashboards.length - 1} on:click={() => moveDashboard('right')}>&gt;</button>
+          <button class="danger compact" type="button" disabled={settings.dashboards.length <= 1} on:click={removeDashboard}>Remove dashboard</button>
+        {/if}
+      </nav>
       <label class="check dashboard-minimal-toggle">
         <input
           type="checkbox"
@@ -370,6 +592,30 @@
         />
         Minimal
       </label>
+      <label class="check dashboard-cycle-toggle">
+        <input
+          type="checkbox"
+          role="switch"
+          bind:checked={cycleEnabled}
+          on:change={saveDashboardDisplay}
+        />
+        Cycle
+      </label>
+      {#if !minimalMode}
+        <div class="field">
+          <label for="dashboard-cycle-interval">Cycle interval</label>
+          <select
+            id="dashboard-cycle-interval"
+            bind:value={cycleIntervalSeconds}
+            disabled={!cycleEnabled}
+            on:change={saveDashboardDisplay}
+          >
+            {#each cycleIntervals as option (option.seconds)}
+              <option value={option.seconds}>{option.label}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
       <label class="check dashboard-refresh-toggle">
         <input
           type="checkbox"
@@ -379,19 +625,21 @@
         />
         Enable refresh
       </label>
-      <div class="field">
-        <label for="dashboard-refresh-interval">Refresh interval</label>
-        <select
-          id="dashboard-refresh-interval"
-          bind:value={refreshIntervalSeconds}
-          disabled={!autoRefreshEnabled}
-          on:change={saveDashboardDisplay}
-        >
-          {#each refreshIntervals as option (option.seconds)}
-            <option value={option.seconds}>{option.label}</option>
-          {/each}
-        </select>
-      </div>
+      {#if !minimalMode}
+        <div class="field">
+          <label for="dashboard-refresh-interval">Refresh interval</label>
+          <select
+            id="dashboard-refresh-interval"
+            bind:value={refreshIntervalSeconds}
+            disabled={!autoRefreshEnabled}
+            on:change={saveDashboardDisplay}
+          >
+            {#each refreshIntervals as option (option.seconds)}
+              <option value={option.seconds}>{option.label}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
     </div>
   </header>
 
@@ -413,53 +661,46 @@
   {#each pageOrder as blockId, index}
     <ReorderableBlock
       {blockId}
-      label={blockId}
+      label={blockLabel(blockId)}
       {index}
       total={pageOrder.length}
-      collapsed={settings.collapsedBlocks.dashboard?.includes(blockId) ?? false}
+      collapsed={activeCollapsedBlocks.includes(blockId)}
       hideControls={minimalMode}
       on:move={moveBlock}
       on:toggle={toggleBlockCollapse}
     >
-  {#if blockId === 'summary'}
+  {#if blockId.startsWith('summary:')}
+  {@const summaryCurrency = blockId.slice('summary:'.length)}
   <section class="card-grid" aria-busy={loading}>
     <article class="card">
       <span class="label">Known portfolio</span>
       <CurrencyValue
         values={knownValues}
-        currency={settings.primaryCurrency}
+        currency={summaryCurrency}
         locale={settings.locale}
         label="Known portfolio"
+        showCurrencyCode
       />
-      <span class="portfolio-value-status">
-        <span class="badge mid">priced known value</span>
-        <span class="portfolio-currency-code">{settings.primaryCurrency.toUpperCase()}</span>
-      </span>
     </article>
     <article class="card">
       <span class="label">Tracked addresses</span>
       <CurrencyValue
         values={addressValues}
-        currency={settings.primaryCurrency}
+        currency={summaryCurrency}
         locale={settings.locale}
         label="Tracked addresses"
+        showCurrencyCode
       />
-      <span class="badge {hasPartialHoldings ? 'warning' : 'mid'}">{hasPartialHoldings ? 'partial history' : 'complete according to providers'}</span>
     </article>
     <article class="card">
       <span class="label">Kraken</span>
       <CurrencyValue
         values={krakenValues}
-        currency={settings.primaryCurrency}
+        currency={summaryCurrency}
         locale={settings.locale}
         label="Kraken"
+        showCurrencyCode
       />
-      <span class="badge {Number(kraken.pricedValueCoveragePercent) < 100 ? 'warning' : 'mid'}">{formatPercent(kraken.pricedValueCoveragePercent)}% priced</span>
-    </article>
-    <article class="card">
-      <span class="label">Synchronization</span>
-      <strong class="stat">{activeJobCount}</strong>
-      <span class="badge {activeJobCount > 0 ? 'start' : 'mid'}">active / pending jobs</span>
     </article>
   </section>
 
@@ -469,7 +710,7 @@
       {#if !hideFluff}
         <div>
           <p class="eyebrow">Saved dashboard items</p>
-          <h2>{settings.savedGraphs.filter((item) => !item.hidden).length} visible charts and tables</h2>
+          <h2>{activeDashboard?.rows.flatMap((row) => row.itemIds).length ?? 0} charts and tables on dashboard {activeDashboardIndex + 1}</h2>
           <p class="muted">Each row has its own one-to-four-column layout. Save charts or tables from Markets, Addresses, or Kraken.</p>
         </div>
       {/if}
@@ -493,12 +734,13 @@
         {/if}
         {#if showDashboardOptions}
           <button class="secondary compact" type="button" aria-label="Add dashboard row" on:click={addDashboardRow}>Add row</button>
+          <a class="button secondary compact" href="/settings#dashboard-items">Go to hidden dashboards</a>
         {/if}
       </div>
     </div>
-    {#if settings.savedGraphs.some((graph) => !graph.hidden)}
+    {#if activeDashboard && activeDashboard.rows.some((row) => row.itemIds.length > 0)}
       <div class="dashboard-rows">
-        {#each settings.dashboardRows as dashboardRow, rowIndex (dashboardRow.id)}
+        {#each activeDashboard.rows as dashboardRow, rowIndex (dashboardRow.id)}
           <section class="dashboard-row">
             {#if showDashboardOptions}
               <div class="dashboard-row-controls">
@@ -508,7 +750,7 @@
                     id={`dashboard-row-name-${dashboardRow.id}`}
                     maxlength="120"
                     bind:value={dashboardRow.name}
-                    on:change={saveDashboardRows}
+                    on:change={saveDashboards}
                   />
                 </div>
                 <div class="field">
@@ -516,7 +758,7 @@
                   <select
                     id={`dashboard-row-columns-${dashboardRow.id}`}
                     bind:value={dashboardRow.columns}
-                    on:change={saveDashboardRows}
+                    on:change={saveDashboards}
                   >
                     <option value={1}>1</option>
                     <option value={2}>2</option>
@@ -524,7 +766,7 @@
                     <option value={4}>4</option>
                   </select>
                 </div>
-                <button class="danger compact" type="button" disabled={settings.dashboardRows.length <= 1} on:click={() => removeDashboardRow(dashboardRow.id)}>Remove row</button>
+                <button class="danger compact" type="button" disabled={activeDashboard.rows.length <= 1} on:click={() => removeDashboardRow(dashboardRow.id)}>Remove row</button>
               </div>
             {/if}
             {#if dashboardRow.itemIds.length > 0}
@@ -535,28 +777,32 @@
                     <div class="dashboard-item-shell">
                       {#if showDashboardOptions}
                         <div class="item-row-selector field">
-                          <label for={`item-row-${item.id}`}>Dashboard row</label>
+                          <label for={`item-row-${item.id}`}>Dashboard and row</label>
                           <select
                             id={`item-row-${item.id}`}
-                            value={dashboardRow.id}
-                            on:change={(event) => moveItemToRow({
-                              itemId: item.id,
-                              rowId: event.currentTarget.value
-                            })}
+                            value={`${activeDashboard.id}::${dashboardRow.id}`}
+                            on:change={(event) => {
+                              const [dashboardId, rowId] = event.currentTarget.value.split('::');
+                              if (dashboardId && rowId) void moveItem({ itemId: item.id, dashboardId, rowId });
+                            }}
                           >
-                            {#each settings.dashboardRows as candidate, candidateIndex}
-                              <option value={candidate.id}>{candidate.name || `Row ${candidateIndex + 1}`}</option>
+                            {#each settings.dashboards as candidateDashboard, candidateDashboardIndex (candidateDashboard.id)}
+                              {#each candidateDashboard.rows as candidate, candidateIndex (candidate.id)}
+                                <option value={`${candidateDashboard.id}::${candidate.id}`}>Dashboard {candidateDashboardIndex + 1} — {candidate.name || `Row ${candidateIndex + 1}`}</option>
+                              {/each}
                             {/each}
                           </select>
                         </div>
                       {/if}
                       {#if item.config.dashboardView === 'table'}
-                        <SavedDashboardTable {item} minimalChrome={hideFluff} on:hide={hideGraph} />
+                        <SavedDashboardTable {item} minimalChrome={hideFluff} on:hide={hideGraph} on:remove={removeGraph} />
                       {:else}
                         <SavedDashboardChart
                           graph={item}
                           minimalChrome={hideFluff}
+                          hideActions={minimalMode}
                           on:hide={hideGraph}
+                          on:remove={removeGraph}
                         />
                       {/if}
                     </div>
@@ -570,7 +816,7 @@
         {/each}
       </div>
     {:else}
-      <p class="muted">Configure a chart or table on Markets, Addresses, or Kraken, then choose “Save to dashboard”.</p>
+      <p class="muted">This dashboard is empty. Configure a chart or table on Markets, Addresses, or Kraken, or move an item here from another dashboard.</p>
     {/if}
   </section>
 
@@ -620,6 +866,13 @@
       </div>
       <a class="button secondary compact" href="/settings">Inspect diagnostics</a>
     </div>
+    <div class="card-grid diagnostics-summary">
+      <article class="card">
+        <span class="label">Synchronization</span>
+        <strong class="stat">{activeJobCount}</strong>
+        <span class="badge {activeJobCount > 0 ? 'start' : 'mid'}">active / pending jobs</span>
+      </article>
+    </div>
     <details use:persistAccordionState={{ key: 'dashboard:row-layout-help' }}>
       <summary>Provider state</summary>
       <div class="details-body"><pre>{JSON.stringify(providers, null, 2)}</pre></div>
@@ -657,8 +910,22 @@
   }
 
   .dashboard-refresh {
+    flex-wrap: wrap;
     justify-content: flex-end;
     min-width: 0;
+  }
+
+  .dashboard-switcher {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .dashboard-number {
+    width: 2rem;
+    min-height: 2rem;
+    padding: 0.15rem;
   }
 
   .dashboard-refresh .field {
@@ -695,19 +962,6 @@
     cursor: not-allowed;
   }
 
-  .portfolio-value-status {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-  }
-
-  .portfolio-currency-code {
-    color: var(--color-muted);
-    font-size: 0.76rem;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-  }
-
   .row > div:first-child {
     flex: 1 1 15rem;
   }
@@ -716,6 +970,10 @@
     max-height: 24rem;
     overflow: auto;
     white-space: pre-wrap;
+  }
+
+  .diagnostics-summary {
+    margin: 1rem 0;
   }
 
   .dashboard-heading {

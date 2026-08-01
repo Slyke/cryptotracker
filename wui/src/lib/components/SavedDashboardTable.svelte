@@ -7,7 +7,10 @@
   export let minimalChrome = false;
 
   type Cell = string | number | null;
-  const dispatch = createEventDispatcher<{ hide: { id: string } }>();
+  const dispatch = createEventDispatcher<{
+    hide: { id: string };
+    remove: { id: string };
+  }>();
   type DashboardRow = Record<string, Cell>;
   let loading = true;
   let error = '';
@@ -36,8 +39,9 @@
   };
   const requestRemove = () => {
     if (!confirm(`Remove the dashboard table “${item.name}”?`)) return;
-    dispatch('hide', { id: item.id });
+    dispatch('remove', { id: item.id });
   };
+  const hide = () => dispatch('hide', { id: item.id });
 
   const loadMarkets = async () => {
     const [catalogPayload, watchlistPayload] = await Promise.all([
@@ -324,6 +328,7 @@
     <div class="table-actions">
       {#if !minimalChrome}
         <a class="button ghost compact" href={`/${item.type === 'market' ? 'markets' : item.type}`}>Open source</a>
+        <button class="ghost compact" type="button" on:click={hide}>Hide</button>
         <button class="ghost compact" type="button" on:click={requestRemove}>Remove</button>
       {/if}
     </div>

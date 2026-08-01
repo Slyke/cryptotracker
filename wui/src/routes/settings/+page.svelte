@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import ReorderableBlock from '../../lib/components/ReorderableBlock.svelte';
   import { apiBinaryRequest, apiRequest, setDocumentPreferences } from '$lib/api';
   import { persistAccordionState } from '$lib/accordion-state';
@@ -7,10 +7,12 @@
     formatDateTime,
     historyDepthRetentionWarning,
     moveInOrder,
+    normalizeDashboards,
     normalizeOrder,
     savePreferences,
     savedGraphNameExists,
     toggleCollapsed,
+    type Dashboard,
     type DashboardRow,
     type SavedGraph
   } from '$lib/preferences';
@@ -33,6 +35,7 @@
     tableColumns: Record<string, string[]>;
     tableRows: Record<string, string[]>;
     savedGraphs: SavedGraph[];
+    dashboards: Dashboard[];
     dashboardRows: DashboardRow[];
     dashboardGraphColumns: 1 | 2 | 3 | 4;
     dismissedNotices: string[];
@@ -134,6 +137,7 @@
     tableColumns: {},
     tableRows: {},
     savedGraphs: [],
+    dashboards: [],
     dashboardRows: [],
     dashboardGraphColumns: 2,
     dismissedNotices: [],
@@ -327,6 +331,13 @@
         apiRequest<{ progress: SyncProgress }>({ url: '/api/sync/progress' })
       ]);
       settings = settingsPayload.settings;
+      settings.dashboards = normalizeDashboards({
+        dashboards: settings.dashboards,
+        legacyRows: settings.dashboardRows,
+        savedGraphs: settings.savedGraphs,
+        defaultColumns: settings.dashboardGraphColumns
+      });
+      settings.dashboardRows = settings.dashboards[0]?.rows ?? [];
       tooltipCurrencyText = settings.tooltipCurrencies.join(', ');
       originalRetentionDays = settings.retentionDays;
       retentionMode = settings.retentionDays === null ? 'forever' : 'limited';
@@ -341,6 +352,12 @@
       providers = providerPayload.providers;
       syncProgress = progressPayload.progress;
       pageOrder = normalizeOrder({ saved: settings.pageLayouts.settings, defaults: defaultPageOrder });
+      if (window.location.hash === '#dashboard-items') {
+        settings.collapsedBlocks = {
+          ...settings.collapsedBlocks,
+          settings: (settings.collapsedBlocks.settings ?? []).filter((id) => id !== 'graphs')
+        };
+      }
       setDocumentPreferences(settings);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : 'Settings failed to load.';
@@ -477,8 +494,16 @@
       return;
     }
     try {
+      settings.dashboards = normalizeDashboards({
+        dashboards: settings.dashboards,
+        legacyRows: settings.dashboardRows,
+        savedGraphs: settings.savedGraphs,
+        defaultColumns: settings.dashboardGraphColumns
+      });
+      settings.dashboardRows = settings.dashboards[0]?.rows ?? [];
       await savePreferences({
         savedGraphs: settings.savedGraphs,
+        dashboards: settings.dashboards,
         dashboardRows: settings.dashboardRows
       });
       settings = { ...settings };
@@ -500,10 +525,14 @@
   const deleteGraph = (graph: SavedGraph) => {
     if (!confirm(`Delete the saved dashboard item “${graph.name}”?`)) return;
     settings.savedGraphs = settings.savedGraphs.filter((item) => item.id !== graph.id);
-    settings.dashboardRows = settings.dashboardRows.map((row) => ({
-      ...row,
-      itemIds: row.itemIds.filter((id) => id !== graph.id)
+    settings.dashboards = settings.dashboards.map((dashboard) => ({
+      ...dashboard,
+      rows: dashboard.rows.map((row) => ({
+        ...row,
+        itemIds: row.itemIds.filter((id) => id !== graph.id)
+      }))
     }));
+    settings.dashboardRows = settings.dashboards[0]?.rows ?? [];
     settings = { ...settings };
   };
 
@@ -610,7 +639,13 @@
   };
 
   onMount(() => {
-    void load();
+    void (async () => {
+      await load();
+      if (window.location.hash === '#dashboard-items') {
+        await tick();
+        document.getElementById('dashboard-items')?.scrollIntoView({ block: 'start' });
+      }
+    })();
     syncTimer = setInterval(() => void pollSync(), 3_000);
     return () => {
       if (exportTimer) clearInterval(exportTimer);
@@ -1143,7 +1178,7 @@
         </section>
 
       {:else if blockId === 'graphs'}
-        <section class="panel">
+        <section class="panel" id="dashboard-items">
           <p class="eyebrow">Dashboard items</p>
           <h2>Saved chart and table visibility</h2>
           <p class="muted">Row placement and each row’s one-to-four-column layout are configured directly on the Dashboard.</p>

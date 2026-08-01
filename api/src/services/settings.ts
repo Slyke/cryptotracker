@@ -16,6 +16,11 @@ export interface DashboardRowSettings {
   itemIds: string[];
 }
 
+export interface DashboardSettings {
+  id: string;
+  rows: DashboardRowSettings[];
+}
+
 export interface SavedCalculationSettings {
   id: string;
   name: string;
@@ -50,6 +55,7 @@ export interface UserSettings {
   tableRows: Record<string, string[]>;
   savedGraphs: SavedGraphSettings[];
   savedCalculations: SavedCalculationSettings[];
+  dashboards: DashboardSettings[];
   dashboardRows: DashboardRowSettings[];
   dashboardGraphColumns: 1 | 2 | 3 | 4;
   dismissedNotices: string[];
@@ -103,6 +109,7 @@ export class SettingsService {
       tableRows: {},
       savedGraphs: [],
       savedCalculations: [],
+      dashboards: [],
       dashboardRows: [],
       dashboardGraphColumns: 2,
       dismissedNotices: [],

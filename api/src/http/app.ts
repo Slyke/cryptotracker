@@ -407,6 +407,15 @@ const registerRoutes = ({
             names.add(normalized);
           });
         }).optional(),
+        dashboards: z.array(z.object({
+          id: z.string().min(1).max(200),
+          rows: z.array(z.object({
+            id: z.string().min(1).max(200),
+            name: z.string().min(1).max(120),
+            columns: z.number().int().min(1).max(4).transform((value) => value as 1 | 2 | 3 | 4),
+            itemIds: z.array(z.string().min(1).max(200)).max(200)
+          })).min(1).max(100)
+        })).min(1).max(50).optional(),
         dashboardRows: z.array(z.object({
           id: z.string().min(1).max(200),
           name: z.string().min(1).max(120),
@@ -432,10 +441,47 @@ const registerRoutes = ({
       value: req.body
     }) as Partial<UserSettings>;
     if (changes.savedGraphs) {
+      const currentSettings = await context.settings.get();
       validateSavedGraphNames({
-        current: (await context.settings.get()).savedGraphs,
+        current: currentSettings.savedGraphs,
         next: changes.savedGraphs
       });
+      const nextGraphIds = new Set(changes.savedGraphs.map((graph) => graph.id));
+      const visibleGraphIds = changes.savedGraphs
+        .filter((graph) => !graph.hidden)
+        .map((graph) => graph.id);
+      const dashboards = structuredClone(
+        changes.dashboards
+        ?? currentSettings.dashboards
+        ?? []
+      );
+      if (dashboards.length === 0) {
+        dashboards.push({
+          id: 'dashboard-1',
+          rows: currentSettings.dashboardRows.length > 0
+            ? structuredClone(currentSettings.dashboardRows)
+            : [{
+                id: 'dashboard-row-1',
+                name: 'Row 1',
+                columns: currentSettings.dashboardGraphColumns,
+                itemIds: []
+              }]
+        });
+      }
+      for (const dashboard of dashboards) {
+        for (const row of dashboard.rows) {
+          row.itemIds = row.itemIds.filter((id) => nextGraphIds.has(id));
+        }
+      }
+      const firstRow = dashboards[0]?.rows[0];
+      if (firstRow) {
+        const placedIds = new Set(dashboards.flatMap((dashboard) => (
+          dashboard.rows.flatMap((row) => row.itemIds)
+        )));
+        firstRow.itemIds.push(...visibleGraphIds.filter((id) => !placedIds.has(id)));
+      }
+      changes.dashboards = dashboards;
+      changes.dashboardRows = structuredClone(dashboards[0]?.rows ?? []);
     }
     const settings = await context.settings.patch({ changes });
     const retention = Object.hasOwn(changes, 'retentionDays')

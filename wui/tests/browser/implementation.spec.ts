@@ -9,7 +9,7 @@ const signIn = async (page: Page) => {
     await page.getByLabel('Password').fill(process.env.PLAYWRIGHT_PASSWORD ?? 'test-password');
     await page.getByRole('button', { name: 'Sign in' }).click();
   }
-  await expect(page.getByRole('navigation')).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
 };
 
 test('chart warnings and selector edge styling render above the chart controls', async ({ page }) => {
@@ -85,7 +85,7 @@ test('currency popup, refresh state, SHIB holdings, and Earn coverage work on re
     ...settings.tooltipCurrencies.map((currency) => currency.toUpperCase())
   ])];
 
-  const knownValue = page.getByRole('group', { name: /known portfolio:/i });
+  const knownValue = page.getByRole('group', { name: /known portfolio:/i }).first();
   await expect(knownValue).toBeVisible();
   await expect(page.getByRole('button', { name: /known portfolio:/i })).toHaveCount(0);
   await knownValue.focus();
@@ -96,11 +96,12 @@ test('currency popup, refresh state, SHIB holdings, and Earn coverage work on re
   expect(await knownValue.evaluate((element) => getComputedStyle(element).userSelect)).toBe('text');
   expect(await popup.evaluate((element) => getComputedStyle(element).userSelect)).toBe('text');
 
-  const knownCard = page.locator('article.card').filter({ hasText: 'Known portfolio' });
-  const statusLine = knownCard.locator('.portfolio-value-status');
-  await expect(statusLine).toContainText('priced known value');
-  await expect(statusLine).toContainText(settings.primaryCurrency.toUpperCase());
-  expect(await statusLine.evaluate((element) => getComputedStyle(element).display)).toBe('flex');
+  const knownCards = page.locator('article.card').filter({ hasText: 'Known portfolio' });
+  await expect(knownCards).toHaveCount(expectedCurrencies.length);
+  await expect(knownCards.locator('.currency-value-line small')).toHaveText(expectedCurrencies);
+  await expect(page.getByText('priced known value', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('complete according to providers', { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/% priced$/)).toHaveCount(0);
 
   const refreshToggle = page.getByLabel(/enable refresh/i);
   const refreshInterval = page.getByLabel(/refresh interval/i);

@@ -88,7 +88,7 @@ CryptoTracker is a monorepo with two production images: the main application and
 ```bash
 USERNAME=YOURUSERNAME
 DOMAIN=yourdomain.xyz
-VERSION=v0.1.3
+VERSION=v0.1.5
 
 git tag -a "$VERSION" -m "$VERSION"
 # git tag -f -a "$VERSION" -m "$VERSION"

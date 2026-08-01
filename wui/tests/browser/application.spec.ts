@@ -7,7 +7,7 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   await page.getByLabel('Username').fill(process.env.PLAYWRIGHT_USERNAME ?? 'admin');
   await page.getByLabel('Password').fill(process.env.PLAYWRIGHT_PASSWORD ?? 'test-password');
   await page.getByRole('button', { name: /sign in/i }).click();
-  await expect(page.getByRole('navigation')).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
 
   await page.getByRole('link', { name: 'Markets', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Markets', exact: true })).toBeVisible();
@@ -205,11 +205,33 @@ test('local login, navigation, theme, chart controls, and keyboard inspection', 
   const minimalToggle = page.getByLabel(/minimal mode/i);
   await expect(minimalToggle).toBeVisible();
   if (await minimalToggle.isChecked()) await minimalToggle.uncheck();
+  const cycleToggle = page.getByLabel('Cycle', { exact: true });
+  const cycleInterval = page.getByLabel(/cycle interval/i);
+  await expect(cycleToggle).toBeVisible();
+  await expect(cycleInterval).toBeVisible();
+  const dashboardButtons = page.getByRole('button', { name: /open dashboard \d+/i });
+  const originalDashboardCount = await dashboardButtons.count();
+  await page.getByRole('button', { name: 'Add dashboard', exact: true }).click();
+  await expect(dashboardButtons).toHaveCount(originalDashboardCount + 1);
+  await expect(page).toHaveURL(new RegExp(`[?&]dashboard=${originalDashboardCount + 1}(?:&|$)`));
+  if (originalDashboardCount > 0) {
+    await page.getByRole('button', { name: 'Move dashboard left', exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`[?&]dashboard=${originalDashboardCount}(?:&|$)`));
+    await page.getByRole('button', { name: 'Move dashboard right', exact: true }).click();
+  }
+  page.once('dialog', (dialog) => void dialog.accept());
+  await page.getByRole('button', { name: 'Remove dashboard', exact: true }).click();
+  await expect(dashboardButtons).toHaveCount(originalDashboardCount);
+  await dashboardButtons.first().click();
+  await expect(page).toHaveURL(/[?&]dashboard=1(?:&|$)/);
   const fluffToggle = page.getByRole('button', { name: /hide fluff|show fluff/i });
   if (await fluffToggle.getAttribute('aria-pressed') === 'true') await fluffToggle.click();
   const optionsToggle = page.getByRole('button', { name: /show options|hide options/i });
   if (await optionsToggle.getAttribute('aria-pressed') === 'false') await optionsToggle.click();
   await minimalToggle.check();
+  await expect(cycleToggle).toBeVisible();
+  await expect(cycleInterval).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add dashboard', exact: true })).toHaveCount(0);
   await expect(page.getByText(/each row has its own one-to-four-column layout/i)).toHaveCount(0);
   await expect(fluffToggle).toHaveCount(0);
   await expect(optionsToggle).toHaveCount(0);

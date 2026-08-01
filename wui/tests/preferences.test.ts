@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   chartDisplayStateFromSetting,
   chartQueryStateFromSetting,
+  dashboardNumberFromSearch,
   defaultChartDisplayState,
   defaultChartQueryState,
   defaultPerformanceChartDisplayState,
@@ -10,6 +11,7 @@ import {
   formatPercent,
   historyDepthRetentionWarning,
   moveInOrder,
+  normalizeDashboards,
   normalizeOrder,
   performanceChartDisplayStateFromSetting,
   replaceSavedGraph,
@@ -43,6 +45,53 @@ describe('database-backed UI preferences', () => {
   it('toggles a block in the persisted collapsed list', () => {
     expect(toggleCollapsed({ collapsed: ['sync'], id: 'storage' })).toEqual(['sync', 'storage']);
     expect(toggleCollapsed({ collapsed: ['sync', 'storage'], id: 'sync' })).toEqual(['storage']);
+  });
+
+  it('migrates legacy rows into dashboard 1 and places unassigned visible items there', () => {
+    let id = 0;
+    expect(normalizeDashboards({
+      dashboards: [],
+      legacyRows: [{
+        id: 'legacy-row',
+        name: 'Legacy row',
+        columns: 3,
+        itemIds: ['placed', 'hidden']
+      }],
+      savedGraphs: [
+        { id: 'placed', name: 'Placed', type: 'market', hidden: false, config: {} },
+        { id: 'unplaced', name: 'Unplaced', type: 'kraken', hidden: false, config: {} },
+        { id: 'hidden', name: 'Hidden', type: 'addresses', hidden: true, config: {} }
+      ],
+      createId: () => `generated-${++id}`
+    })).toEqual([{
+      id: 'generated-1',
+      rows: [{
+        id: 'legacy-row',
+        name: 'Legacy row',
+        columns: 3,
+        itemIds: ['placed', 'unplaced']
+      }]
+    }]);
+  });
+
+  it('keeps dashboard item placement unique and resolves dashboard query numbers safely', () => {
+    const savedGraphs = [
+      { id: 'one', name: 'One', type: 'market' as const, hidden: false, config: {} },
+      { id: 'two', name: 'Two', type: 'market' as const, hidden: false, config: {} }
+    ];
+    const dashboards = normalizeDashboards({
+      dashboards: [
+        { id: 'first', rows: [{ id: 'a', name: 'A', columns: 2, itemIds: ['one'] }] },
+        { id: 'second', rows: [{ id: 'b', name: 'B', columns: 2, itemIds: ['one', 'two'] }] }
+      ],
+      legacyRows: [],
+      savedGraphs
+    });
+    expect(dashboards[0]?.rows[0]?.itemIds).toEqual(['one']);
+    expect(dashboards[1]?.rows[0]?.itemIds).toEqual(['two']);
+    expect(dashboardNumberFromSearch({ search: '?dashboard=2', count: 2 })).toBe(2);
+    expect(dashboardNumberFromSearch({ search: '?dashboard=3', count: 2 })).toBe(1);
+    expect(dashboardNumberFromSearch({ search: '?dashboard=nope', count: 2 })).toBe(1);
   });
 
   it('restores persisted chart query and display controls with safe fallbacks', () => {

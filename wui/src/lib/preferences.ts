@@ -22,6 +22,11 @@ export interface DashboardRow {
   itemIds: string[];
 }
 
+export interface Dashboard {
+  id: string;
+  rows: DashboardRow[];
+}
+
 export interface PersonalizationSettings {
   graphDefaults: Record<string, unknown>;
   pageLayouts: Record<string, string[]>;
@@ -30,6 +35,7 @@ export interface PersonalizationSettings {
   tableColumns: Record<string, string[]>;
   tableRows: Record<string, string[]>;
   savedGraphs: SavedGraph[];
+  dashboards: Dashboard[];
   dashboardRows: DashboardRow[];
   dashboardGraphColumns: 1 | 2 | 3 | 4;
   dismissedNotices: string[];
@@ -337,6 +343,69 @@ export const toggleCollapsed = ({
     ? collapsed.filter((blockId) => blockId !== id)
     : [...collapsed, id]
 );
+
+export const normalizeDashboards = ({
+  dashboards,
+  legacyRows,
+  savedGraphs,
+  defaultColumns = 2,
+  createId = () => crypto.randomUUID()
+}: {
+  dashboards: Dashboard[] | undefined;
+  legacyRows: DashboardRow[] | undefined;
+  savedGraphs: SavedGraph[];
+  defaultColumns?: 1 | 2 | 3 | 4;
+  createId?: () => string;
+}): Dashboard[] => {
+  const visibleIds = savedGraphs.filter((item) => !item.hidden).map((item) => item.id);
+  const known = new Set(visibleIds);
+  const used = new Set<string>();
+  const source = dashboards && dashboards.length > 0
+    ? dashboards
+    : [{ id: createId(), rows: legacyRows ?? [] }];
+  const normalized = source.map((dashboard) => {
+    const rows = (dashboard.rows ?? []).map((row, rowIndex) => ({
+      id: row.id || createId(),
+      name: row.name || `Row ${rowIndex + 1}`,
+      columns: ([1, 2, 3, 4].includes(Number(row.columns))
+        ? Number(row.columns)
+        : defaultColumns) as 1 | 2 | 3 | 4,
+      itemIds: (row.itemIds ?? []).filter((id) => {
+        if (!known.has(id) || used.has(id)) return false;
+        used.add(id);
+        return true;
+      })
+    }));
+    if (rows.length === 0) {
+      rows.push({
+        id: createId(),
+        name: 'Row 1',
+        columns: defaultColumns,
+        itemIds: []
+      });
+    }
+    return {
+      id: dashboard.id || createId(),
+      rows
+    };
+  });
+  const unplaced = visibleIds.filter((id) => !used.has(id));
+  normalized[0]!.rows[0]!.itemIds.push(...unplaced);
+  return normalized;
+};
+
+export const dashboardNumberFromSearch = ({
+  search,
+  count
+}: {
+  search: string;
+  count: number;
+}) => {
+  const requested = Number(new URLSearchParams(search).get('dashboard'));
+  return Number.isInteger(requested) && requested >= 1 && requested <= count
+    ? requested
+    : 1;
+};
 
 export const historyDepthRetentionWarning = ({
   retentionDays,
