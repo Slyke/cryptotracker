@@ -26,6 +26,7 @@
   export let hideActions = false;
   export let primaryCurrency = '';
   export let tooltipCurrencies: string[] = [];
+  export let rangeEndMs: number | null = null;
 
   const dispatch = createEventDispatcher<{
     hide: { id: string };
@@ -126,7 +127,7 @@
     });
   };
   const rangeWindow = () => {
-    const now = Date.now();
+    const now = rangeEndMs ?? Date.now();
     const range = stringConfig('range', '30d');
     if (
       range === 'custom'

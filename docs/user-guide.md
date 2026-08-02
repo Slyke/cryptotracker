@@ -53,13 +53,15 @@ appear in named rows. Each row:
 - displays one to four items per row;
 - accepts any mixture of saved charts and tables;
 - can be added or removed; removing a row moves its items to the first remaining row;
-- lets each item be moved to a row on any dashboard.
+- lets each item be moved to a row on any dashboard;
+- provides `<` and `>` controls to move an item within its current row.
 
 “Hide” removes a saved item from the dashboards while retaining its configuration, and Settings can
 show it again. “Remove” asks for confirmation and deletes it. Saved charts also provide an “Edit”
 link that opens the source page with the chart controls restored; Edit, Hide, and Remove remain
-available when fluff is hidden, but disappear in Minimal mode. “Show options” reveals row and
-cross-dashboard placement controls plus a link to the saved-item visibility section in Settings. The
+available when fluff is hidden, but disappear in Minimal mode. “Show options” reveals row,
+within-row ordering, and cross-dashboard placement controls plus a link to the saved-item visibility
+section in Settings. The
 Dashboard also summarizes enabled market assets, the Kraken surfaces in use, and raw provider/cache
 health.
 

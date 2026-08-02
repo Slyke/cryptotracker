@@ -24,7 +24,7 @@ export const session = writable<SessionState>({
   user: null,
   csrfToken: null,
   build: {
-    version: '0.1.3',
+    version: '0.1.6',
     buildHash: 'unknown'
   },
   error: null
@@ -162,7 +162,7 @@ export const bootstrapSession = async () => {
       user: null,
       csrfToken: null,
       build: {
-        version: '0.1.3',
+        version: '0.1.6',
         buildHash: 'unknown'
       },
       error: error instanceof ApiError && error.status !== 401 ? error.message : null
@@ -199,7 +199,7 @@ export const signOut = async () => {
     user: null,
     csrfToken: null,
     build: {
-      version: '0.1.3',
+      version: '0.1.6',
       buildHash: 'unknown'
     },
     error: null

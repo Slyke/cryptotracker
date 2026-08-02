@@ -1179,7 +1179,7 @@ Right Y-Axis unit, and exact plotted asset or series IDs.
 A later watchlist disable stops new synchronization but does not filter a disabled asset out of an
 existing saved graph's cached series.
 
-The Dashboard supports one, two, three, or four graphs per row and unlimited rows subject to normal page performance. Dashboard graphs use a compact presentation without duplicating the full configuration toolbar.
+The Dashboard supports one, two, three, or four graphs per row and unlimited rows subject to normal page performance. When dashboard options are visible, each item has left/right controls that persist its order within the current row. Dashboard graphs use a compact presentation without duplicating the full configuration toolbar.
 
 A saved graph may be edited at its source, hidden from the Dashboard, restored, renamed, removed
 from the Dashboard, or permanently deleted in Settings. “Remove” on the Dashboard asks for
@@ -1889,7 +1889,7 @@ Dashboard:
 
 Markets, Addresses, and Kraken expose “Save table to dashboard” beside each configured table, while chart options expose “Save to dashboard”. The saved table retains its selected columns and source context. Saved charts expose an Edit action while dashboard fluff is shown; it returns to the source chart and restores the saved controls. Duplicate names prompt for replacement instead of being rejected, and replacement preserves the existing dashboard item identity and row placement.
 
-The Dashboard stores an ordered set of named rows. Every row independently selects one, two, three, or four columns and may contain any mix of saved charts and tables. Items can move between rows, rows can be added or removed, and hiding an item does not delete its configuration.
+The Dashboard stores an ordered set of named rows. Every row independently selects one, two, three, or four columns and may contain any mix of saved charts and tables. Items can move left or right within a row, move between rows, rows can be added or removed, and hiding an item does not delete its configuration.
 
 Every primary page is composed of reorderable content blocks with compact Up/Down controls and a `+`/`−` expand-collapse control beside them. Block order and collapsed state are stored independently in database-backed settings for Dashboard, Markets, Addresses, Kraken, and Settings. Every non-first block has a separator above its controls; the first block does not.
 
@@ -2130,7 +2130,7 @@ Health responses include:
 ```json
 {
   "ok": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "buildHash": "abc1234def56"
 }
 ```

@@ -32,7 +32,7 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: cryptotracker-certgen
-          image: your-registry/cryptotracker-mcp:v0.1.5-commit
+          image: your-registry/cryptotracker-mcp:v0.1.6-commit
           command: ["node", "scripts/generate-certificate.mjs"]
           volumeMounts:
             - name: data
@@ -44,7 +44,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: cryptotracker
-          image: your-registry/cryptotracker:v0.1.5-commit
+          image: your-registry/cryptotracker:v0.1.6-commit
           ports:
             - name: http
               containerPort: 8192
@@ -100,7 +100,7 @@ spec:
             capabilities:
               drop: ["ALL"]
         - name: cryptotracker-mcp
-          image: your-registry/cryptotracker-mcp:v0.1.5-commit
+          image: your-registry/cryptotracker-mcp:v0.1.6-commit
           ports:
             - name: mcp-https
               containerPort: 8193

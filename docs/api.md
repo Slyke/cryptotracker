@@ -98,6 +98,11 @@ granularity values are seconds.
 `provider` is `coingecko`, `coinbase`, or `kraken`. A market source is `combined` or one of those
 providers. `chartMode` is `line` or `candlestick`.
 
+The market, portfolio, address, Kraken, and Kraken Earn series routes retain successful identical
+reads for five seconds in a bounded per-API-process cache and coalesce matching in-flight reads.
+Each replica owns its cache independently and reads the database through its normal service on a
+miss.
+
 ## Addresses
 
 | Method and path | Input | Result |

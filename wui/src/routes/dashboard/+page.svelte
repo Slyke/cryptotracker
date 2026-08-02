@@ -93,6 +93,7 @@
   let addressValues = { CAD: '0' } as Record<string, string | null>;
   let krakenValues = { CAD: '0' } as Record<string, string | null>;
   let knownValues = { CAD: '0' } as Record<string, string | null>;
+  let graphRangeEndMs = 0;
 
   const refreshIntervals = [
     { seconds: 30, label: 'Every 30 seconds' },
@@ -154,6 +155,7 @@
     const dueAt = Math.max(nextCycleAt, lastMouseMovementAt + 10_000);
     cycleTimer = setTimeout(() => {
       const nextIndex = (activeDashboardIndex + 1) % settings.dashboards.length;
+      graphRangeEndMs = Date.now();
       activeDashboardId = settings.dashboards[nextIndex]!.id;
       restoreDashboardLayout(activeDashboardId);
       updateDashboardQuery(nextIndex);
@@ -170,6 +172,7 @@
   const selectDashboard = (index: number) => {
     const selected = settings.dashboards[index];
     if (!selected) return;
+    graphRangeEndMs = Date.now();
     activeDashboardId = selected.id;
     restoreDashboardLayout(activeDashboardId);
     updateDashboardQuery(index);
@@ -321,6 +324,7 @@
         : 60;
       scheduleRefresh();
       resetCycle();
+      graphRangeEndMs = Date.now();
       settings = { ...settings };
       setDocumentPreferences(settings);
     } catch (caught) {
@@ -489,6 +493,43 @@
         ]
       }))
     }));
+    await saveDashboards();
+  };
+
+  const moveItemWithinRow = async ({
+    itemId,
+    rowId,
+    direction
+  }: {
+    itemId: string;
+    rowId: string;
+    direction: 'left' | 'right';
+  }) => {
+    if (!activeDashboard) return;
+    const row = activeDashboard.rows.find((candidate) => candidate.id === rowId);
+    if (!row) return;
+    const itemIndex = row.itemIds.indexOf(itemId);
+    const destination = direction === 'left' ? itemIndex - 1 : itemIndex + 1;
+    if (itemIndex < 0 || destination < 0 || destination >= row.itemIds.length) return;
+    settings.dashboards = settings.dashboards.map((dashboard) => (
+      dashboard.id !== activeDashboard?.id
+        ? dashboard
+        : {
+            ...dashboard,
+            rows: dashboard.rows.map((candidate) => (
+              candidate.id !== rowId
+                ? candidate
+                : {
+                    ...candidate,
+                    itemIds: moveInOrder({
+                      order: candidate.itemIds,
+                      id: itemId,
+                      direction: direction === 'left' ? 'up' : 'down'
+                    })
+                  }
+            ))
+          }
+    ));
     await saveDashboards();
   };
 
@@ -771,41 +812,64 @@
             {/if}
             {#if dashboardRow.itemIds.length > 0}
               <div class="dashboard-row-grid" style={`--dashboard-columns:${dashboardRow.columns}`}>
-                {#each dashboardRow.itemIds as itemId (itemId)}
+                {#each dashboardRow.itemIds as itemId, itemIndex (itemId)}
                   {@const item = itemForId(itemId)}
                   {#if item}
                     <div class="dashboard-item-shell">
                       {#if showDashboardOptions}
-                        <div class="item-row-selector field">
-                          <label for={`item-row-${item.id}`}>Dashboard and row</label>
-                          <select
-                            id={`item-row-${item.id}`}
-                            value={`${activeDashboard.id}::${dashboardRow.id}`}
-                            on:change={(event) => {
-                              const [dashboardId, rowId] = event.currentTarget.value.split('::');
-                              if (dashboardId && rowId) void moveItem({ itemId: item.id, dashboardId, rowId });
-                            }}
-                          >
-                            {#each settings.dashboards as candidateDashboard, candidateDashboardIndex (candidateDashboard.id)}
-                              {#each candidateDashboard.rows as candidate, candidateIndex (candidate.id)}
-                                <option value={`${candidateDashboard.id}::${candidate.id}`}>Dashboard {candidateDashboardIndex + 1} — {candidate.name || `Row ${candidateIndex + 1}`}</option>
+                        <div class="item-placement-controls">
+                          <div class="item-row-selector field">
+                            <label for={`item-row-${item.id}`}>Dashboard and row</label>
+                            <select
+                              id={`item-row-${item.id}`}
+                              value={`${activeDashboard.id}::${dashboardRow.id}`}
+                              on:change={(event) => {
+                                const [dashboardId, rowId] = event.currentTarget.value.split('::');
+                                if (dashboardId && rowId) void moveItem({ itemId: item.id, dashboardId, rowId });
+                              }}
+                            >
+                              {#each settings.dashboards as candidateDashboard, candidateDashboardIndex (candidateDashboard.id)}
+                                {#each candidateDashboard.rows as candidate, candidateIndex (candidate.id)}
+                                  <option value={`${candidateDashboard.id}::${candidate.id}`}>Dashboard {candidateDashboardIndex + 1} — {candidate.name || `Row ${candidateIndex + 1}`}</option>
+                                {/each}
                               {/each}
-                            {/each}
-                          </select>
+                            </select>
+                          </div>
+                          <div class="item-order-actions" role="group" aria-label={`Order ${item.name} within row`}>
+                            <button
+                              class="ghost compact"
+                              type="button"
+                              aria-label={`Move ${item.name} left within row`}
+                              title="Move left within row"
+                              disabled={itemIndex === 0}
+                              on:click={() => moveItemWithinRow({ itemId: item.id, rowId: dashboardRow.id, direction: 'left' })}
+                            >&lt;</button>
+                            <button
+                              class="ghost compact"
+                              type="button"
+                              aria-label={`Move ${item.name} right within row`}
+                              title="Move right within row"
+                              disabled={itemIndex === dashboardRow.itemIds.length - 1}
+                              on:click={() => moveItemWithinRow({ itemId: item.id, rowId: dashboardRow.id, direction: 'right' })}
+                            >&gt;</button>
+                          </div>
                         </div>
                       {/if}
                       {#if item.config.dashboardView === 'table'}
                         <SavedDashboardTable {item} minimalChrome={hideFluff} on:hide={hideGraph} on:remove={removeGraph} />
-                      {:else}
-                        <SavedDashboardChart
-                          graph={item}
-                          minimalChrome={hideFluff}
-                          hideActions={minimalMode}
-                          primaryCurrency={settings.primaryCurrency}
-                          tooltipCurrencies={settings.tooltipCurrencies}
-                          on:hide={hideGraph}
-                          on:remove={removeGraph}
-                        />
+                      {:else if graphRangeEndMs > 0}
+                        {#key graphRangeEndMs}
+                          <SavedDashboardChart
+                            graph={item}
+                            minimalChrome={hideFluff}
+                            hideActions={minimalMode}
+                            primaryCurrency={settings.primaryCurrency}
+                            tooltipCurrencies={settings.tooltipCurrencies}
+                            rangeEndMs={graphRangeEndMs}
+                            on:hide={hideGraph}
+                            on:remove={removeGraph}
+                          />
+                        {/key}
                       {/if}
                     </div>
                   {/if}
@@ -1053,11 +1117,29 @@
   }
 
   .item-row-selector {
+    min-width: 0;
+  }
+
+  .item-placement-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 0.55rem;
     margin-bottom: 0.45rem;
     padding: 0.55rem;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: var(--color-panel);
+  }
+
+  .item-order-actions {
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  .item-order-actions button {
+    width: 2rem;
+    padding-inline: 0.25rem;
   }
 
   @media (max-width: 72rem) {

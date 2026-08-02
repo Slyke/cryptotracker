@@ -33,6 +33,7 @@ import type { PortfolioService } from '../services/portfolio.js';
 import type { RetentionService } from '../services/retention.js';
 import type { SettingsService, UserSettings } from '../services/settings.js';
 import type { TransferService } from '../services/transfers.js';
+import { ReadThroughCache } from '../utils/read-through-cache.js';
 import { loadHttpsCertificates } from './certificates.js';
 
 export interface AppContext {
@@ -261,6 +262,32 @@ const registerRoutes = ({
   app: express.Express;
   context: AppContext;
 }) => {
+  // This cache intentionally lives in one API process. Each replica reads from
+  // its normal database-backed service on a miss and keeps only a brief result.
+  const graphSeriesCache = new ReadThroughCache({
+    ttlMs: 5_000,
+    maxEntries: 256,
+    maxSize: 64 * 1_024 * 1_024,
+    sizeOf: (value) => Buffer.byteLength(String(value))
+  });
+  const sendCachedGraphSeries = async <T>({
+    res,
+    scope,
+    input,
+    load
+  }: {
+    res: Response;
+    scope: string;
+    input: unknown;
+    load: () => Promise<T>;
+  }) => {
+    const body = await graphSeriesCache.get({
+      key: `${scope}:${JSON.stringify(input)}`,
+      load: async () => JSON.stringify({ ok: true, data: await load() })
+    });
+    res.type('application/json').send(body);
+  };
+
   app.get(['/health', '/healthz'], (_req, res) => res.json(healthPayload({ context })));
   app.get('/readyz', asyncRoute(async (_req, res) => {
     const [database, wui] = await Promise.all([
@@ -651,9 +678,12 @@ const registerRoutes = ({
     res.json({ ok: true, settings });
   }));
   app.get('/api/market/series', asyncRoute(async (req, res) => {
-    res.json({
-      ok: true,
-      data: await context.market.getSeries(makeSeriesRequest({ req }))
+    const input = makeSeriesRequest({ req });
+    await sendCachedGraphSeries({
+      res,
+      scope: 'market',
+      input,
+      load: () => context.market.getSeries(input)
     });
   }));
   app.get('/api/market/metrics', asyncRoute(async (req, res) => {
@@ -696,19 +726,22 @@ const registerRoutes = ({
         status: 400
       });
     }
-    res.json({
-      ok: true,
-      data: await context.portfolio.series({
-        fromMs: query.from,
-        toMs: query.to,
-        granularitySeconds: query.granularitySeconds,
-        ...(query.quoteCurrencies ? {
-          quoteCurrencies: query.quoteCurrencies.split(',')
-            .map((currency) => currency.trim().toUpperCase())
-            .filter((currency) => /^[A-Z]{3}$/.test(currency))
-            .slice(0, 6)
-        } : {})
-      })
+    const input = {
+      fromMs: query.from,
+      toMs: query.to,
+      granularitySeconds: query.granularitySeconds,
+      ...(query.quoteCurrencies ? {
+        quoteCurrencies: query.quoteCurrencies.split(',')
+          .map((currency) => currency.trim().toUpperCase())
+          .filter((currency) => /^[A-Z]{3}$/.test(currency))
+          .slice(0, 6)
+      } : {})
+    };
+    await sendCachedGraphSeries({
+      res,
+      scope: 'portfolio',
+      input,
+      load: () => context.portfolio.series(input)
     });
   }));
   const marketJob = async (req: Request, res: Response, repair: boolean) => {
@@ -891,23 +924,26 @@ const registerRoutes = ({
       }),
       value: req.query
     });
-    res.json({
-      ok: true,
-      data: await context.addresses.series({
-        quoteCurrency: query.quoteCurrency.toUpperCase(),
-        ...(query.quoteCurrencies === undefined
-          ? {}
-          : {
-              quoteCurrencies: query.quoteCurrencies
-                .split(',')
-                .map((currency) => currency.trim().toUpperCase())
-                .filter((currency) => /^[A-Z]{3}$/.test(currency))
-                .slice(0, 6)
-            }),
-        fromMs: query.from,
-        toMs: query.to,
-        granularitySeconds: query.granularitySeconds
-      })
+    const input = {
+      quoteCurrency: query.quoteCurrency.toUpperCase(),
+      ...(query.quoteCurrencies === undefined
+        ? {}
+        : {
+            quoteCurrencies: query.quoteCurrencies
+              .split(',')
+              .map((currency) => currency.trim().toUpperCase())
+              .filter((currency) => /^[A-Z]{3}$/.test(currency))
+              .slice(0, 6)
+          }),
+      fromMs: query.from,
+      toMs: query.to,
+      granularitySeconds: query.granularitySeconds
+    };
+    await sendCachedGraphSeries({
+      res,
+      scope: 'addresses',
+      input,
+      load: () => context.addresses.series(input)
     });
   }));
 
@@ -955,19 +991,22 @@ const registerRoutes = ({
       }),
       value: req.query
     });
-    res.json({
-      ok: true,
-      data: await context.kraken.earnOverview({
-        fromMs: query.from,
-        toMs: query.to,
-        granularitySeconds: query.granularitySeconds,
-        ...(query.quoteCurrencies ? {
-          quoteCurrencies: query.quoteCurrencies.split(',')
-            .map((currency) => currency.trim().toUpperCase())
-            .filter((currency) => /^[A-Z]{3}$/.test(currency))
-            .slice(0, 6)
-        } : {})
-      })
+    const input = {
+      fromMs: query.from,
+      toMs: query.to,
+      granularitySeconds: query.granularitySeconds,
+      ...(query.quoteCurrencies ? {
+        quoteCurrencies: query.quoteCurrencies.split(',')
+          .map((currency) => currency.trim().toUpperCase())
+          .filter((currency) => /^[A-Z]{3}$/.test(currency))
+          .slice(0, 6)
+      } : {})
+    };
+    await sendCachedGraphSeries({
+      res,
+      scope: 'kraken-earn',
+      input,
+      load: () => context.kraken.earnOverview(input)
     });
   }));
   app.get('/api/kraken/activity', asyncRoute(async (req, res) => {
@@ -991,19 +1030,22 @@ const registerRoutes = ({
       }),
       value: req.query
     });
-    res.json({
-      ok: true,
-      data: await context.kraken.series({
-        fromMs: query.from,
-        toMs: query.to,
-        granularitySeconds: query.granularitySeconds,
-        ...(query.quoteCurrencies ? {
-          quoteCurrencies: query.quoteCurrencies.split(',')
-            .map((currency) => currency.trim().toUpperCase())
-            .filter((currency) => /^[A-Z]{3}$/.test(currency))
-            .slice(0, 6)
-        } : {})
-      })
+    const input = {
+      fromMs: query.from,
+      toMs: query.to,
+      granularitySeconds: query.granularitySeconds,
+      ...(query.quoteCurrencies ? {
+        quoteCurrencies: query.quoteCurrencies.split(',')
+          .map((currency) => currency.trim().toUpperCase())
+          .filter((currency) => /^[A-Z]{3}$/.test(currency))
+          .slice(0, 6)
+      } : {})
+    };
+    await sendCachedGraphSeries({
+      res,
+      scope: 'kraken',
+      input,
+      load: () => context.kraken.series(input)
     });
   }));
 

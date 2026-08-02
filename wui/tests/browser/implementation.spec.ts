@@ -452,6 +452,17 @@ test('dashboard graph editing restores display state and replacement keeps its i
       has: page.getByRole('heading', { name: fixture.name, exact: true })
     });
     await expect(card).toBeVisible();
+    const showOptions = page.getByRole('button', { name: 'Show options', exact: true });
+    if (await showOptions.isVisible()) await showOptions.click();
+    const itemShell = card.locator('xpath=ancestor::div[contains(@class,"dashboard-item-shell")]');
+    await expect(itemShell.getByRole('button', {
+      name: `Move ${fixture.name} left within row`,
+      exact: true
+    })).toBeVisible();
+    await expect(itemShell.getByRole('button', {
+      name: `Move ${fixture.name} right within row`,
+      exact: true
+    })).toBeVisible();
     await expect(card.getByRole('link', { name: 'Edit', exact: true })).toBeVisible();
     await card.getByRole('link', { name: 'Edit', exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/markets\\?[^#]*editGraph=${fixture.id}#market-price-chart`));
