@@ -7,6 +7,8 @@
 
 The Compose health check uses `/readyz`. Kubernetes uses `/readyz` for readiness and `/healthz` for liveness.
 
+At process startup, the API logs its version/build, runtime, sanitized HTTP targets, database mode and non-secret connection target, optional Redis state, authentication modes, enabled providers, provider credential presence, scheduler settings, logging sinks, and Kubernetes metadata. It then logs database-open, migration, ingress, and scheduler milestones. If startup fails, the final JSON record includes the active startup phase and sanitized application/driver error context. Credential values and URL credentials/query strings are never included.
+
 The production example runs two containers. The application serves the browser and API over HTTP on port 8192 and API HTTPS on port 8194. The MCP sidecar serves HTTPS on port 8193 by default and optionally plaintext HTTP on port 8195. Both containers mount the `cryptotracker-certs` volume. Replace its self-signed material with a trusted certificate for non-local clients.
 
 ## REST API and MCP

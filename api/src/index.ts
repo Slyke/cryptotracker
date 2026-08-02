@@ -20,6 +20,13 @@ import { PortfolioService } from './services/portfolio.js';
 import { RetentionService } from './services/retention.js';
 import { SettingsService } from './services/settings.js';
 import { TransferService } from './services/transfers.js';
+import {
+  buildStartupDiagnostics,
+  startupFailureEntry,
+  startupSummary
+} from './startup-diagnostics.js';
+
+let startupPhase = 'loading configuration and build metadata';
 
 const main = async () => {
   const [runtime, buildInfo] = await Promise.all([
@@ -27,8 +34,31 @@ const main = async () => {
     getBuildInfo()
   ]);
   const logger = new Logger(runtime.config.logging);
+  const startupDiagnostics = buildStartupDiagnostics({ runtime, buildInfo });
+  logger.info({
+    caller: 'index::startup',
+    loggerKey: 'SERVICE_BOOT_DIAGNOSTICS',
+    message: startupSummary({ diagnostics: startupDiagnostics }),
+    context: startupDiagnostics
+  });
+
+  startupPhase = `opening ${runtime.databaseKind} database`;
   const db = await openDatabase({ runtime });
+  logger.info({
+    caller: 'index::startup',
+    loggerKey: 'SERVICE_BOOT_DIAGNOSTICS',
+    message: `${runtime.databaseKind} database connection opened.`
+  });
+
+  startupPhase = `applying ${runtime.databaseKind} database migrations`;
   await db.migrate();
+  logger.info({
+    caller: 'index::startup',
+    loggerKey: 'SERVICE_BOOT_DIAGNOSTICS',
+    message: `${runtime.databaseKind} database migrations completed.`
+  });
+
+  startupPhase = 'synchronizing authentication and application data';
   const auth = new AuthService(runtime, db, logger);
   await auth.synchronizeLocalUser();
   const { userId } = await bootstrapApplicationData({ db, runtime });
@@ -119,7 +149,9 @@ const main = async () => {
     scheduler,
     graphCache
   };
+  startupPhase = 'initializing optional Redis graph cache';
   await graphCache.initialize();
+  startupPhase = 'starting HTTP ingress';
   const { server, secureServer } = createHttpServer({ context });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -136,31 +168,21 @@ const main = async () => {
     });
   }
   logger.info({
-    caller: 'index::main',
+    caller: 'index::startup',
     loggerKey: 'SERVICE_BOOT_DIAGNOSTICS',
-    message: 'CryptoTracker API ingress started.',
+    message: `CryptoTracker HTTP ingress is listening on ${runtime.config.api.host}:${runtime.config.api.port}.`,
     context: {
-      version: buildInfo.version,
-      buildHash: buildInfo.buildHash,
-      nodeVersion: process.version,
-      platform: process.platform,
-      arch: process.arch,
-      pid: process.pid,
-      host: runtime.config.api.host,
-      port: runtime.config.api.port,
-      protocol: 'http',
-      httpsEnabled: runtime.config.api.https.enabled,
-      httpsPort: runtime.config.api.https.enabled
-        ? runtime.config.api.https.port
-        : null,
-      databaseKind: runtime.databaseKind,
-      configPath: runtime.configPath,
-      secretsPathConfigured: Boolean(runtime.secretsPath),
-      apiKeyAuthEnabled: runtime.config.auth.apiKey.enabled,
-      apiKeyIdentityCount: runtime.secrets.apiKeys.length,
-      krakenConfigured: krakenClient.isConfigured()
+      http: {
+        host: runtime.config.api.host,
+        port: runtime.config.api.port
+      },
+      https: {
+        enabled: runtime.config.api.https.enabled,
+        port: runtime.config.api.https.enabled ? runtime.config.api.https.port : null
+      }
     }
   });
+  startupPhase = 'initializing Kraken integration';
   await kraken.initialize().catch((error) => {
     logger.error({
       caller: 'index::krakenInitialize',
@@ -168,8 +190,23 @@ const main = async () => {
       error
     });
   });
+  startupPhase = 'starting persistent jobs and scheduler';
   await jobs.start();
   scheduler.start();
+  logger.info({
+    caller: 'index::startup',
+    loggerKey: 'SERVICE_BOOT_DIAGNOSTICS',
+    message: 'CryptoTracker startup completed; jobs and scheduler are active.',
+    context: {
+      version: buildInfo.version,
+      buildHash: buildInfo.buildHash,
+      databaseKind: runtime.databaseKind,
+      redisEnabled: graphCache.enabled,
+      krakenPrivateApiConfigured: krakenClient.isConfigured(),
+      pollMinutes: runtime.config.sync.pollMinutes,
+      maxConcurrentJobs: runtime.config.sync.maxConcurrentJobs
+    }
+  });
   const maintenance = setInterval(() => void auth.purgeExpiredSessions(), 15 * 60_000);
   maintenance.unref();
 
@@ -211,13 +248,6 @@ const main = async () => {
 };
 
 void main().catch((error) => {
-  const fallback = {
-    timestamp: new Date().toISOString(),
-    level: 'error',
-    caller: 'index::main',
-    errorKey: error instanceof Error && 'errorKey' in error ? error.errorKey : 'STARTUP_FAILED',
-    message: error instanceof Error ? error.message : 'CryptoTracker startup failed.'
-  };
-  console.error(JSON.stringify(fallback));
+  console.error(JSON.stringify(startupFailureEntry({ error, phase: startupPhase })));
   process.exit(1);
 });
