@@ -31,7 +31,10 @@ flowchart LR
 The database is the canonical cache and job store. There is no Redis dependency. Successful graph-
 series reads also use a bounded five-second, per-process read-through cache that coalesces identical
 in-flight requests. The memory cache is not shared between replicas: a miss on any replica follows
-the normal database-backed service path.
+the normal database-backed service path. Market-series reads additionally coalesce concurrent
+tooltip-currency requests into one bounded history-row scan. Portfolio and address valuation
+series rank all requested quote currencies in one database query rather than one query per
+currency.
 
 - Decimal quantities and values are stored as strings and calculated with `decimal.js`.
 - UTC epoch milliseconds are used for bucket keys; API and export metadata include UTC timestamps.

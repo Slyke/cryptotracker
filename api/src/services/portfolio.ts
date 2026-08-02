@@ -10,7 +10,8 @@ import { createId } from '../utils/ids.js';
 import {
   chartDenominationsAt,
   enabledChartDenominations,
-  historicalPriceLookup
+  historicalPriceLookup,
+  historicalPriceLookups
 } from './chart-values.js';
 import { addressEvents, krakenEvents } from './event-markers.js';
 
@@ -385,18 +386,15 @@ export class PortfolioService {
       ...allAssetIds,
       ...denominationOptions.map((option) => option.id)
     ])];
-    const lookups = new Map(await Promise.all(currencies.map(async (currency) => [
-      currency,
-      await historicalPriceLookup({
-        db: this.db,
-        assetIds: priceAssetIds,
-        quoteCurrency: currency,
-        fromMs: effectiveFromMs,
-        toMs,
-        queryGranularitySeconds: resolvedGranularitySeconds,
-        disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
-      })
-    ] as const)));
+    const lookups = await historicalPriceLookups({
+      db: this.db,
+      assetIds: priceAssetIds,
+      quoteCurrencies: currencies,
+      fromMs: effectiveFromMs,
+      toMs,
+      queryGranularitySeconds: resolvedGranularitySeconds,
+      disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
+    });
     const points = snapshots.map((snapshot) => {
       const timestampMs = Number(snapshot.captured_at_ms);
       const quantities = parseRecord(snapshot.quantities_json);

@@ -225,7 +225,9 @@ that page:
 The graph switches between cumulative return and drawdown. Market performance has its own time
 range, including a custom rolling lookback in hours, days, weeks, months, or years, and can be saved
 to the Dashboard. Each market series uses only that asset's cached price; other tokens and portfolio
-balances are not included. Address and Kraken analytics use observed portfolio value, so deposits
+balances are not included. When a saved display has explicit visible lines, initial chart reads load
+those lines plus any crypto-denomination axes instead of scanning every enabled market asset.
+Address and Kraken analytics use observed portfolio value, so deposits
 and withdrawals are not removed; they are not cash-flow-adjusted or time-weighted returns.
 
 ## Shared chart controls

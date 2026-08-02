@@ -14,7 +14,7 @@ import { createId } from '../utils/ids.js';
 import {
   chartDenominationsAt,
   enabledChartDenominations,
-  historicalPriceLookup
+  historicalPriceLookups
 } from './chart-values.js';
 import { addressEvents } from './event-markers.js';
 
@@ -1318,18 +1318,15 @@ export class AddressService {
       ...selectedAssetIds,
       ...denominationOptions.map((option) => option.id)
     ];
-    const quoteLookups = new Map(await Promise.all(resolvedQuoteCurrencies.map(async (currency) => [
-      currency,
-      await historicalPriceLookup({
-        db: this.db,
-        assetIds: priceAssetIds,
-        quoteCurrency: currency,
-        fromMs: effectiveFromMs,
-        toMs,
-        queryGranularitySeconds: resolvedGranularitySeconds,
-        disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
-      })
-    ] as const)));
+    const quoteLookups = await historicalPriceLookups({
+      db: this.db,
+      assetIds: priceAssetIds,
+      quoteCurrencies: resolvedQuoteCurrencies,
+      fromMs: effectiveFromMs,
+      toMs,
+      queryGranularitySeconds: resolvedGranularitySeconds,
+      disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
+    });
     const denominationsAt = ({
       quoteValues,
       timestampMs

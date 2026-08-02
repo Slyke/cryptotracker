@@ -16,6 +16,7 @@
   import { bucketChartSeries } from '$lib/chart-data';
   import { configuredCurrencies } from '$lib/currencies';
   import { normalizeChartSeriesLineStyles } from '$lib/chart-line-styles';
+  import { queueDashboardGraphLoad } from '$lib/dashboard-load-queue';
   import {
     transformPerformanceSeries,
     type PerformanceMode
@@ -217,8 +218,17 @@
           || currencies.includes(rightYAxisUnit.toUpperCase());
         const tooltipCryptoIds = savedTooltipUnits()
           .filter((unit) => unit !== '%' && !/^[A-Z]{3}$/.test(unit));
+        const savedVisibleAssetIds = stringArrayConfig(
+          'visibleSeriesIds',
+          stringArrayConfig('seriesIds', assetIds)
+        ) ?? assetIds;
+        const plottedAssetIds = savedVisibleAssetIds.length > 0
+          ? savedVisibleAssetIds.filter((assetId) => assetIds.includes(assetId))
+          : assetIds;
         const requestedAssetIds = [...new Set([
-          ...assetIds,
+          ...plottedAssetIds,
+          ...(stringArrayConfig('leftYAxisSeriesIds', []) ?? []),
+          ...(stringArrayConfig('rightYAxisSeriesIds', []) ?? []),
           ...(yAxisIsFiat ? [] : [yAxisUnit]),
           ...(rightYAxisIsFiat ? [] : [rightYAxisUnit]),
           ...tooltipCryptoIds
@@ -278,7 +288,7 @@
           };
         });
         series = payload.data.series
-          .filter((item) => assetIds.includes(item.id))
+          .filter((item) => plottedAssetIds.includes(item.id))
           .map((item) => ({
             ...item,
             points: item.points.map((point) => {
@@ -384,7 +394,13 @@
   };
 
   onMount(() => {
-    void load();
+    let destroyed = false;
+    void queueDashboardGraphLoad(async () => {
+      if (!destroyed) await load();
+    });
+    return () => {
+      destroyed = true;
+    };
   });
 </script>
 

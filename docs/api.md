@@ -101,7 +101,8 @@ providers. `chartMode` is `line` or `candlestick`.
 The market, portfolio, address, Kraken, and Kraken Earn series routes retain successful identical
 reads for five seconds in a bounded per-API-process cache and coalesce matching in-flight reads.
 Each replica owns its cache independently and reads the database through its normal service on a
-miss.
+miss. Concurrent market-series reads for the same assets, range, source, and granularity share one
+multi-currency history scan inside that API process.
 
 ## Addresses
 

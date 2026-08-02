@@ -407,25 +407,67 @@
     return params;
   };
 
+  const requestedMarketAssetIds = ({
+    visibleSeriesIds,
+    leftYAxisSeriesIds,
+    rightYAxisSeriesIds,
+    units = []
+  }: {
+    visibleSeriesIds: string[] | null;
+    leftYAxisSeriesIds: string[] | null;
+    rightYAxisSeriesIds: string[];
+    units?: string[];
+  }) => [...new Set([
+    ...(visibleSeriesIds?.length ? visibleSeriesIds : [...enabledChartAssetIds]),
+    ...(leftYAxisSeriesIds ?? []),
+    ...rightYAxisSeriesIds,
+    ...units.filter((unit) => enabledChartAssetIds.has(unit))
+  ])].filter((assetId) => enabledChartAssetIds.has(assetId));
+
+  const watchedMarketAssetIds = () => requestedMarketAssetIds({
+    visibleSeriesIds: watchedDisplayState.visibleSeriesIds,
+    leftYAxisSeriesIds: watchedDisplayState.leftYAxisSeriesIds,
+    rightYAxisSeriesIds: watchedDisplayState.rightYAxisSeriesIds,
+    units: [
+      watchedDisplayState.yAxisUnit,
+      watchedDisplayState.rightYAxisUnit,
+      ...watchedDisplayState.tooltipUnits
+    ]
+  });
+
+  const performanceMarketAssetIds = () => requestedMarketAssetIds({
+    visibleSeriesIds: performanceDisplayState.visibleSeriesIds,
+    leftYAxisSeriesIds: performanceDisplayState.leftYAxisSeriesIds,
+    rightYAxisSeriesIds: performanceDisplayState.rightYAxisSeriesIds
+  });
+
+  const withMarketSeriesOptions = (loaded: ChartSeries[]) => {
+    const byId = new Map(loaded.map((item) => [item.id, item]));
+    return enabledAssets.map((asset) => byId.get(asset.canonicalId) ?? {
+      id: asset.canonicalId,
+      label: `${asset.symbol} · ${asset.name}`,
+      points: []
+    });
+  };
+
   const fetchMarketSeries = async ({
     fromMs,
     toMs,
     granularityOverride,
-    chartModeOverride
+    chartModeOverride,
+    assetIds = [...enabledChartAssetIds]
   }: {
     fromMs?: number;
     toMs?: number;
     granularityOverride?: string;
     chartModeOverride?: 'line' | 'candlestick';
+    assetIds?: string[];
   } = {}) => {
     const currencies = configuredCurrencies({
       primaryCurrency,
       listedCurrencies: [...tooltipCurrencies, 'USD']
     });
-    const requestedAssetIds = [...new Set([
-      ...enabledChartAssetIds,
-      ...enabledAssets.map((asset) => asset.canonicalId)
-    ])].slice(0, 50);
+    const requestedAssetIds = [...new Set(assetIds)].slice(0, 50);
     return Promise.all(currencies.map(async (currency): Promise<CurrencyMarketSeries> => {
       const params = buildQuery({
         currency,
@@ -509,10 +551,12 @@
     loading = true;
     error = '';
     try {
-      const payloads = await fetchMarketSeries();
+      const payloads = await fetchMarketSeries({
+        assetIds: watchedMarketAssetIds()
+      });
       if (requestId !== seriesRequestId) return;
       const primary = payloads.find((payload) => payload.currency === primaryCurrency) ?? payloads[0]!;
-      overviewSeries = decorateMarketSeries(payloads);
+      overviewSeries = withMarketSeriesOptions(decorateMarketSeries(payloads));
       series = overviewSeries;
       partial = primary.data.partial || primary.data.mixedGranularity;
       const missingIntervals = primary.data.missingIntervals ?? [];
@@ -563,10 +607,11 @@
         fromMs: performanceFromMs,
         toMs: performanceToMs,
         granularityOverride: 'auto',
-        chartModeOverride: 'line'
+        chartModeOverride: 'line',
+        assetIds: performanceMarketAssetIds()
       });
       if (requestId !== performanceRequestId) return;
-      performanceSeries = decorateMarketSeries(payloads);
+      performanceSeries = withMarketSeriesOptions(decorateMarketSeries(payloads));
     } catch (caught) {
       if (requestId !== performanceRequestId) return;
       error = caught instanceof Error ? caught.message : 'Market performance failed.';
@@ -614,7 +659,8 @@
     try {
       const payloads = await fetchMarketSeries({
         fromMs: event.detail.fromMs,
-        toMs: event.detail.toMs
+        toMs: event.detail.toMs,
+        assetIds: watchedMarketAssetIds()
       });
       if (requestId !== zoomRequestId) return;
       series = mergeDetailedWindow({
@@ -739,7 +785,8 @@
       }
       await loadShell();
       if (enabled) await queueInitialAssetHistory(canonicalId);
-      await Promise.all([loadSeries(), loadPerformanceSeries()]);
+      await loadSeries();
+      await loadPerformanceSeries();
       const asset = catalog.find((candidate) => candidate.canonicalId === canonicalId);
       message = `${asset?.symbol ?? canonicalId} is ${enabled ? 'enabled' : 'disabled'}.`
         + (enabled
@@ -986,6 +1033,7 @@
   const performanceDisplayChanged = async (
     event: CustomEvent<PerformanceChartDisplayState>
   ) => {
+    const previousAssetIds = performanceMarketAssetIds().sort().join('\u0000');
     performanceDisplayState = { ...event.detail };
     graphDefaults = {
       ...graphDefaults,
@@ -993,6 +1041,9 @@
       marketsPerformanceDisplayState: performanceDisplayState
     };
     await savePreferences({ graphDefaults });
+    if (performanceMarketAssetIds().sort().join('\u0000') !== previousAssetIds) {
+      void loadPerformanceSeries();
+    }
   };
 
   const savePerformanceGraph = async (event: CustomEvent<{
@@ -1105,12 +1156,16 @@
   };
 
   const graphViewChanged = async (event: CustomEvent<ChartDisplayState>) => {
+    const previousAssetIds = watchedMarketAssetIds().sort().join('\u0000');
     watchedDisplayState = { ...event.detail };
     graphDefaults = {
       ...graphDefaults,
       marketsWatchedDisplayState: watchedDisplayState
     };
     await savePreferences({ graphDefaults });
+    if (watchedMarketAssetIds().sort().join('\u0000') !== previousAssetIds) {
+      void loadSeries();
+    }
   };
 
   onMount(async () => {
@@ -1119,8 +1174,11 @@
       if (location.hash === '#asset-catalog') {
         focusCatalogFilter();
       }
+      // Let the primary watched-market chart complete before starting the two
+      // secondary history scans. On a one-core PostgreSQL pod, launching all
+      // three together makes every chart inherit the latency of the slowest.
+      await loadSeries();
       await Promise.all([
-        loadSeries(),
         loadPerformanceSeries(),
         loadPortfolioSeries()
       ]);

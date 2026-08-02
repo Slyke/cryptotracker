@@ -11,6 +11,7 @@ import { lifecycleAndDisputeEvents } from './event-markers.js';
 import type { JobQueue } from '../jobs/queue.js';
 import { marketProviderInternals, type MarketPair, type MarketProviderAdapter } from '../providers/market.js';
 import { createId } from '../utils/ids.js';
+import { ReadThroughCache } from '../utils/read-through-cache.js';
 import { getBuiltInCatalog } from './bootstrap.js';
 import { aggregateCachedMarketRows, deriveQuoteFallbackRows } from './market-aggregation.js';
 
@@ -99,6 +100,19 @@ const asAsset = (row: AssetRow) => ({
 });
 
 export class MarketService {
+  private readonly seriesRowsCache = new ReadThroughCache({
+    ttlMs: 5_000,
+    maxEntries: 32,
+    maxSize: 64 * 1_024 * 1_024,
+    sizeOf: (value) => Array.isArray(value) ? value.length * 512 : 0
+  });
+  private readonly seriesMetadataCache = new ReadThroughCache({
+    ttlMs: 5_000,
+    maxEntries: 64,
+    maxSize: 8 * 1_024 * 1_024,
+    sizeOf: (value) => Array.isArray(value) ? value.length * 256 : 0
+  });
+
   constructor(
     private readonly db: AppDatabase,
     private readonly runtime: LoadedRuntime,
@@ -850,6 +864,67 @@ export class MarketService {
     });
   }
 
+  private queryOverviewRows({
+    assetIds,
+    source,
+    overviewGranularity,
+    bucketMs,
+    rangeStartMs,
+    rangeEndMs
+  }: {
+    assetIds: string[];
+    source: 'combined' | 'coingecko' | 'coinbase' | 'kraken';
+    overviewGranularity: number;
+    bucketMs: number;
+    rangeStartMs: number;
+    rangeEndMs: number;
+  }) {
+    const placeholders = assetIds.map(() => '?').join(', ');
+    return this.db.query<MarketPointRow>({
+      sql: `
+        WITH candidates AS (
+          SELECT *,
+            MAX(CASE WHEN granularity_seconds <= ? THEN granularity_seconds END)
+              OVER (
+                PARTITION BY provider, canonical_asset_id, quote_currency,
+                  CAST(bucket_start_ms / ? AS INTEGER)
+              ) AS best_fine_granularity,
+            MIN(CASE WHEN granularity_seconds > ? THEN granularity_seconds END)
+              OVER (
+                PARTITION BY provider, canonical_asset_id, quote_currency,
+                  CAST(bucket_start_ms / ? AS INTEGER)
+              ) AS best_coarse_granularity
+          FROM market_points
+          WHERE canonical_asset_id IN (${placeholders})
+            AND bucket_start_ms >= ?
+            AND bucket_start_ms <= ?
+            ${source === 'combined' ? '' : "AND (provider = ? OR provider = 'coingecko')"}
+        )
+        SELECT
+          provider, canonical_asset_id, quote_currency, bucket_start_ms,
+          granularity_seconds, data_kind, open_value, high_value, low_value,
+          close_value, volume_value, sample_count, finalized, retrieved_at_ms,
+          provenance_json
+        FROM candidates
+        WHERE granularity_seconds = COALESCE(
+          best_fine_granularity,
+          best_coarse_granularity
+        )
+        ORDER BY canonical_asset_id, quote_currency, bucket_start_ms, provider, data_kind
+      `,
+      parameters: [
+        overviewGranularity,
+        bucketMs,
+        overviewGranularity,
+        bucketMs,
+        ...assetIds,
+        rangeStartMs,
+        rangeEndMs,
+        ...(source === 'combined' ? [] : [source])
+      ]
+    });
+  }
+
   async getSeries({
     assetIds,
     quoteCurrency,
@@ -910,67 +985,63 @@ export class MarketService {
     const bridgeCurrency = 'USD';
     const quoteCurrencies = [...new Set([quoteCurrency.toUpperCase(), bridgeCurrency])];
     const quotePlaceholders = quoteCurrencies.map(() => '?').join(', ');
-    const rows = await this.db.query<MarketPointRow>({
-      sql: `
-        WITH candidates AS (
-          SELECT *,
-            MAX(CASE WHEN granularity_seconds <= ? THEN granularity_seconds END)
-              OVER (
-                PARTITION BY provider, canonical_asset_id, quote_currency,
-                  CAST(bucket_start_ms / ? AS INTEGER)
-              ) AS best_fine_granularity,
-            MIN(CASE WHEN granularity_seconds > ? THEN granularity_seconds END)
-              OVER (
-                PARTITION BY provider, canonical_asset_id, quote_currency,
-                  CAST(bucket_start_ms / ? AS INTEGER)
-              ) AS best_coarse_granularity
-          FROM market_points
-          WHERE canonical_asset_id IN (${placeholders})
-            AND quote_currency IN (${quotePlaceholders})
-            AND bucket_start_ms >= ?
-            AND bucket_start_ms <= ?
-            ${source === 'combined' ? '' : "AND (provider = ? OR provider = 'coingecko')"}
-        )
-        SELECT
-          provider, canonical_asset_id, quote_currency, bucket_start_ms,
-          granularity_seconds, data_kind, open_value, high_value, low_value,
-          close_value, volume_value, sample_count, finalized, retrieved_at_ms,
-          provenance_json
-        FROM candidates
-        WHERE granularity_seconds = COALESCE(
-          best_fine_granularity,
-          best_coarse_granularity
-        )
-        ORDER BY canonical_asset_id, bucket_start_ms, provider, data_kind
-      `,
-      parameters: [
-        overviewGranularity,
-        bucketMs,
-        overviewGranularity,
-        bucketMs,
-        ...assetIds,
-        ...quoteCurrencies,
-        rangeStartMs,
-        rangeEndMs,
-        ...(source === 'combined' ? [] : [source])
-      ]
+    const labelsPromise = this.seriesMetadataCache.get({
+      key: 'watchlist-labels',
+      load: () => this.listWatchlist()
     });
+    const eventsPromise = this.seriesMetadataCache.get({
+      key: `events:${JSON.stringify({
+        assetIds: [...assetIds].sort(),
+        fromSecond: Math.floor(fromMs / 1_000),
+        toSecond: Math.floor(toMs / 1_000)
+      })}`,
+      load: () => lifecycleAndDisputeEvents({
+        db: this.db,
+        assetIds,
+        fromMs,
+        toMs
+      })
+    });
+    // Dashboard market charts request the same assets once per tooltip currency.
+    // Read every locally stored currency in one scan so those concurrent calls
+    // coalesce here instead of repeating the expensive window query for each one.
+    const rows = await this.seriesRowsCache.get<MarketPointRow[]>({
+      key: JSON.stringify({
+        assetIds: [...assetIds].sort(),
+        source,
+        overviewGranularity,
+        bucketMs,
+        rangeStartMs,
+        rangeEndMs
+      }),
+      load: () => this.queryOverviewRows({
+        assetIds,
+        source,
+        overviewGranularity,
+        bucketMs,
+        rangeStartMs,
+        rangeEndMs
+      })
+    });
+    const requestedRows = rows.filter((row) => (
+      quoteCurrencies.includes(row.quote_currency.toUpperCase())
+    ));
     const aggregatedRows = deriveQuoteFallbackRows({
       rows: aggregateCachedMarketRows({
-        rows,
+        rows: requestedRows,
         granularitySeconds: overviewGranularity
       }),
       quoteCurrency,
       bridgeCurrency
     }).filter((row) => source === 'combined' || row.provider === source);
     const sourceGranularities = [...new Set(
-      rows.map((row) => Number(row.granularity_seconds))
+      requestedRows.map((row) => Number(row.granularity_seconds))
     )].sort((left, right) => left - right);
     const mixedGranularity = sourceGranularities.some(
       (sourceGranularity) => sourceGranularity > resolvedGranularity
     ) || overviewGranularity > resolvedGranularity;
     const labels = new Map(
-      (await this.listWatchlist()).map((asset) => [asset.canonicalId, `${asset.symbol} · ${asset.name}`])
+      (await labelsPromise).map((asset) => [asset.canonicalId, `${asset.symbol} · ${asset.name}`])
     );
     const series = assetIds.map((assetId) => {
       const assetRows = aggregatedRows.filter((row) => row.canonical_asset_id === assetId);
@@ -1074,12 +1145,7 @@ export class MarketService {
       }
     }
     const [events, cursorRows] = await Promise.all([
-      lifecycleAndDisputeEvents({
-        db: this.db,
-        assetIds,
-        fromMs,
-        toMs
-      }),
+      eventsPromise,
       this.db.query<{ last_success_at_ms: number | string | null }>({
         sql: `
           SELECT last_success_at_ms FROM market_sync_cursors
