@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import type { LoadedRuntime } from '../config/load.js';
 import type { AppDatabase, DatabaseExecutor } from '../db/index.js';
@@ -141,6 +142,34 @@ export class AddressService {
     private readonly adapters: Map<AddressNetwork, ChainAdapter>,
     private readonly jobs: JobQueue
   ) {}
+
+  private async graphFingerprint({ addressId }: { addressId: string }) {
+    const [events, points] = await Promise.all([
+      this.db.query<Record<string, string | number | null>>({
+        sql: `
+          SELECT canonical_asset_id, transaction_id, occurred_at_ms, ordering_key,
+                 quantity_delta, fee_quantity, event_type, finalized
+          FROM address_balance_events
+          WHERE address_id = ?
+          ORDER BY canonical_asset_id, occurred_at_ms, ordering_key, event_type
+        `,
+        parameters: [addressId]
+      }),
+      this.db.query<Record<string, string | number | null>>({
+        sql: `
+          SELECT canonical_asset_id, bucket_start_ms, granularity_seconds,
+                 quantity, value_currency, value_amount, price_coverage
+          FROM address_balance_points
+          WHERE address_id = ?
+          ORDER BY canonical_asset_id, bucket_start_ms, granularity_seconds
+        `,
+        parameters: [addressId]
+      })
+    ]);
+    return createHash('sha256')
+      .update(JSON.stringify({ events, points }))
+      .digest('hex');
+  }
 
   async networkOptions() {
     const enabledAssets = await this.db.query<{
@@ -771,6 +800,12 @@ export class AddressService {
             canonicalAssetId: selection.canonicalAssetId,
             contractOrMint: selection.contractOrMint
           }));
+        const captureGraphChanges = typeof this.jobs.shouldCaptureGraphDataChanges === 'function'
+          ? await this.jobs.shouldCaptureGraphDataChanges()
+          : false;
+        const graphFingerprintBefore = captureGraphChanges
+          ? await this.graphFingerprint({ addressId })
+          : null;
         await updateProgress({ current: 0, total: 1 });
         const [result, currentBalances] = await Promise.all([
           adapter.fetchHistory({
@@ -1014,19 +1049,35 @@ export class AddressService {
         const cursorAdvanced = JSON.stringify(result.cursor) !== JSON.stringify(
           JSON.parse(address.cursor_json ?? '{}') as Record<string, unknown>
         );
+        const graphChanged = graphFingerprintBefore !== null
+          && graphFingerprintBefore !== await this.graphFingerprint({ addressId });
+        const graphDataChanges = graphChanged
+          ? [{
+              domain: 'addresses' as const,
+              assetIds: [...new Set([
+                ...selections.map((selection) => selection.canonicalAssetId),
+                ...result.events.map((event) => event.canonicalAssetId),
+                ...currentBalances.observations.map((observation) => observation.canonicalAssetId)
+              ])]
+            }]
+          : [];
         if (
           result.completeness === 'partial'
           && !historyUnavailable
           && cursorAdvanced
         ) {
           return {
-            jobType: 'address.sync',
-            resourceKey: `address:${addressId}`,
-            idempotencyKey: `address:${addressId}:continuation:${job.id}`,
-            priority: 20,
-            payload: { addressId }
+            continuation: {
+              jobType: 'address.sync',
+              resourceKey: `address:${addressId}`,
+              idempotencyKey: `address:${addressId}:continuation:${job.id}`,
+              priority: 20,
+              payload: { addressId }
+            },
+            graphDataChanges
           };
         }
+        return graphDataChanges.length > 0 ? { graphDataChanges } : undefined;
       }
     });
   }

@@ -42,6 +42,7 @@
     retentionDays: number | null;
     marketHistoryBackfillDays: number | null;
     failedJobRetentionHours: number | null;
+    dashboardCacheInactivityMinutes: 10 | 20 | 30 | 60 | 120 | 360 | 1_440 | 10_080;
     pollingIntervalsMinutes: {
       marketCoinGecko: number;
       marketCoinbase: number;
@@ -144,6 +145,7 @@
     retentionDays: null,
     marketHistoryBackfillDays: 5 * 365,
     failedJobRetentionHours: 720,
+    dashboardCacheInactivityMinutes: 60,
     pollingIntervalsMinutes: {
       marketCoinGecko: 30,
       marketCoinbase: 15,
@@ -221,6 +223,16 @@
     { minutes: 1_440, label: 'Every day' },
     { minutes: 10_080, label: 'Every week' }
   ];
+  const dashboardCacheInactivityOptions = [
+    { minutes: 10, label: '10 minutes' },
+    { minutes: 20, label: '20 minutes' },
+    { minutes: 30, label: '30 minutes' },
+    { minutes: 60, label: '60 minutes' },
+    { minutes: 120, label: '2 hours' },
+    { minutes: 360, label: '6 hours' },
+    { minutes: 1_440, label: '1 day' },
+    { minutes: 10_080, label: '7 days' }
+  ] as const;
   const defaultPageOrder = ['preferences', 'sync', 'storage', 'graphs', 'export', 'providers'];
   let pageOrder = [...defaultPageOrder];
 
@@ -415,6 +427,7 @@
           retentionDays,
           marketHistoryBackfillDays,
           failedJobRetentionHours,
+          dashboardCacheInactivityMinutes: settings.dashboardCacheInactivityMinutes,
           pollingIntervalsMinutes: settings.pollingIntervalsMinutes
         }
       });
@@ -840,10 +853,19 @@
                   </select>
                 </div>
               </div>
+              <div class="field cache-inactivity-field">
+                <label for="dashboard-cache-inactivity">Stop dashboard cache updates after no dashboard requests for</label>
+                <select id="dashboard-cache-inactivity" bind:value={settings.dashboardCacheInactivityMinutes}>
+                  {#each dashboardCacheInactivityOptions as option}
+                    <option value={option.minutes}>{option.label}</option>
+                  {/each}
+                </select>
+              </div>
               <p class="muted retention-copy">
                 Five minutes is the minimum and the default for Kraken account and Earn state,
                 which has no upstream history to recover between observations. Saved changes take
-                effect on the next scheduler check.
+                effect on the next scheduler check. When optional Redis caching is enabled, only
+                saved dashboard chart plans stay warm, and warming pauses after the inactivity window.
               </p>
             </fieldset>
 

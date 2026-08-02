@@ -190,6 +190,12 @@ export class KrakenService {
           'trade-volume',
           'credit-lines'
         ] as const;
+        const captureGraphChanges = typeof this.jobs.shouldCaptureGraphDataChanges === 'function'
+          ? await this.jobs.shouldCaptureGraphDataChanges()
+          : false;
+        const graphFingerprintBefore = captureGraphChanges
+          ? await this.graphActivityFingerprint()
+          : null;
         await updateProgress({ current: 0, total: endpoints.length });
         await this.syncTrades();
         await updateProgress({ current: 1, total: endpoints.length, cursor: { endpoint: 'trades' } });
@@ -210,7 +216,10 @@ export class KrakenService {
         await this.syncTradeVolume();
         await updateProgress({ current: 9, total: endpoints.length, cursor: { endpoint: 'trade-volume' } });
         await this.syncCreditLines();
-        await this.writeSnapshot({ balances });
+        const snapshot = await this.writeSnapshot({
+          balances,
+          detectChanges: captureGraphChanges
+        });
         await updateProgress({ current: 10, total: endpoints.length, cursor: { endpoint: 'complete' } });
         await this.jobs.enqueue({
           jobType: 'transfers.reconcile',
@@ -219,8 +228,61 @@ export class KrakenService {
           priority: 30,
           payload: { reason: 'kraken-sync' }
         });
+        const graphChanged = snapshot.changed
+          || (
+            graphFingerprintBefore !== null
+            && graphFingerprintBefore !== await this.graphActivityFingerprint()
+          );
+        return graphChanged
+          ? {
+              graphDataChanges: [{
+                domain: 'kraken' as const,
+                assetIds: snapshot.assetIds
+              }]
+            }
+          : undefined;
       }
     });
+  }
+
+  private async graphActivityFingerprint() {
+    const [trades, ledgers, allocations, rates] = await Promise.all([
+      this.db.query<Record<string, string | number | null>>({
+        sql: `
+          SELECT kraken_id, asset_in_id, asset_out_id, pair_raw, side,
+                 occurred_at_ms, quantity, price, cost, fee
+          FROM kraken_trades
+          ORDER BY occurred_at_ms, kraken_id
+        `
+      }),
+      this.db.query<Record<string, string | number | null>>({
+        sql: `
+          SELECT kraken_id, asset_raw, canonical_asset_id, event_type, subtype,
+                 occurred_at_ms, amount, fee, transaction_id
+          FROM kraken_ledgers
+          ORDER BY occurred_at_ms, kraken_id
+        `
+      }),
+      this.db.query<Record<string, string | number | null>>({
+        sql: `
+          SELECT allocation_id, asset_raw, canonical_asset_id, product_id,
+                 quantity, reward_quantity, state
+          FROM kraken_earn_allocations
+          ORDER BY allocation_id
+        `
+      }),
+      this.db.query<Record<string, string | number | null>>({
+        sql: `
+          SELECT strategy_id, asset_raw, canonical_asset_id, captured_at_ms,
+                 apy_low_percent, apy_high_percent
+          FROM kraken_earn_strategy_rates
+          ORDER BY captured_at_ms, strategy_id
+        `
+      })
+    ]);
+    return createHash('sha256')
+      .update(serializeCanonicalJson({ value: { trades, ledgers, allocations, rates } }))
+      .digest('hex');
   }
 
   private async recordObservation({
@@ -1629,7 +1691,13 @@ export class KrakenService {
     }).value;
   }
 
-  private async writeSnapshot({ balances }: { balances: Record<string, string> }) {
+  private async writeSnapshot({
+    balances,
+    detectChanges = false
+  }: {
+    balances: Record<string, string>;
+    detectChanges?: boolean;
+  }) {
     const capturedAtMs = Math.floor(Date.now() / (30 * 60_000)) * (30 * 60_000);
     const id = createId({ prefix: 'ksn' });
     const primaryCurrency = await this.primaryCurrency();
@@ -1665,6 +1733,65 @@ export class KrakenService {
         value
       });
     }
+    const existingSnapshot = detectChanges
+      ? await this.db.one<{
+          id: string;
+          total_value_currency: string;
+          total_value: string;
+          price_coverage: string;
+        }>({
+          sql: `
+            SELECT id, total_value_currency, total_value, price_coverage
+            FROM kraken_snapshots
+            WHERE captured_at_ms = ?
+          `,
+          parameters: [capturedAtMs]
+        })
+      : null;
+    const existingBalances = existingSnapshot
+      ? await this.db.query<{
+          asset_raw: string;
+          canonical_asset_id: string;
+          category: string;
+          quantity: string;
+          value_amount: string | null;
+        }>({
+          sql: `
+            SELECT asset_raw, canonical_asset_id, category, quantity, value_amount
+            FROM kraken_snapshot_balances
+            WHERE snapshot_id = ?
+            ORDER BY asset_raw, category
+          `,
+          parameters: [existingSnapshot.id]
+        })
+      : [];
+    const coverage = countable === 0
+      ? '100'
+      : new Decimal(priced).dividedBy(countable).times(100).toString();
+    const decimalEquals = (left: string | null, right: string | null) => (
+      left === null || right === null
+        ? left === right
+        : new Decimal(left).equals(right)
+    );
+    const expectedBalances = [...valued].sort((left, right) => (
+      left.assetRaw.localeCompare(right.assetRaw) || left.category.localeCompare(right.category)
+    ));
+    const changed = detectChanges && (
+      !existingSnapshot
+        || existingSnapshot.total_value_currency !== primaryCurrency
+        || !decimalEquals(existingSnapshot.total_value, total.toString())
+        || !decimalEquals(existingSnapshot.price_coverage, coverage)
+        || existingBalances.length !== expectedBalances.length
+        || expectedBalances.some((balance, index) => {
+          const existing = existingBalances[index];
+          return !existing
+            || existing.asset_raw !== balance.assetRaw
+            || existing.canonical_asset_id !== balance.canonicalAssetId
+            || existing.category !== balance.category
+            || !decimalEquals(existing.quantity, balance.quantity)
+            || !decimalEquals(existing.value_amount, balance.value);
+        })
+    );
     await this.db.transaction({
       task: async (executor) => {
         await executor.run({
@@ -1682,7 +1809,7 @@ export class KrakenService {
             capturedAtMs,
             primaryCurrency,
             total.toString(),
-            countable === 0 ? '100' : new Decimal(priced).dividedBy(countable).times(100).toString(),
+            coverage,
             JSON.stringify({
               marketSource: this.runtime.config.ui.defaultMarketSource,
               capturedBy: 'kraken.read-only'
@@ -1723,6 +1850,10 @@ export class KrakenService {
         }
       }
     });
+    return {
+      changed,
+      assetIds: [...new Set(valued.map((balance) => balance.canonicalAssetId))]
+    };
   }
 
   private async updateCursor({

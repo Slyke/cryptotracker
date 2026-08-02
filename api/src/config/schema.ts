@@ -353,6 +353,29 @@ const configBaseSchema = z.object({
     },
     postgres: null
   }),
+  cache: z.object({
+    redis: z.object({
+      enabled: z.boolean().default(false),
+      url: urlSchema.default('redis://redis:6379'),
+      keyPrefix: z.string().regex(/^[A-Za-z0-9:_-]+$/).default('cryptotracker'),
+      resultTtlSeconds: z.number().int().min(300).max(31_536_000).default(2_592_000),
+      connectTimeoutMs: z.number().int().min(100).max(60_000).default(2_000)
+    }).prefault({
+      enabled: false,
+      url: 'redis://redis:6379',
+      keyPrefix: 'cryptotracker',
+      resultTtlSeconds: 2_592_000,
+      connectTimeoutMs: 2_000
+    })
+  }).prefault({
+    redis: {
+      enabled: false,
+      url: 'redis://redis:6379',
+      keyPrefix: 'cryptotracker',
+      resultTtlSeconds: 2_592_000,
+      connectTimeoutMs: 2_000
+    }
+  }),
   providers: z.object({
     market: z.object({
       coinGecko: coinGeckoProviderSchema.prefault({
@@ -621,7 +644,8 @@ export const secretsSchema = z.object({
     (entries) => new Set(entries.map((entry) => entry.name.toLowerCase())).size === entries.length,
     { message: 'API key names must be unique.' }
   ).default([]),
-  postgresPassword: nullableSecretSchema
+  postgresPassword: nullableSecretSchema,
+  redisPassword: nullableSecretSchema
 });
 
 export type RuntimeConfig = z.infer<typeof configSchema>;

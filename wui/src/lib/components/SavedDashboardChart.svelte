@@ -17,6 +17,7 @@
   import { configuredCurrencies } from '$lib/currencies';
   import { normalizeChartSeriesLineStyles } from '$lib/chart-line-styles';
   import { queueDashboardGraphLoad } from '$lib/dashboard-load-queue';
+  import { graphCacheIdentity, graphCacheQuery } from '$lib/graph-cache';
   import {
     transformPerformanceSeries,
     type PerformanceMode
@@ -175,6 +176,12 @@
       fallbackTooltipCurrencies = [...tooltipCurrencies];
       if (graph.type === 'portfolio') {
         const currencies = configuredTooltipCurrencies();
+        const cache = graphCacheQuery(graphCacheIdentity({
+          graph,
+          scope: 'portfolio',
+          primaryCurrency: currentPrimaryCurrency,
+          tooltipCurrencies: fallbackTooltipCurrencies
+        }));
         const payload = await apiRequest<{
           data: {
             series: ChartSeries[];
@@ -185,7 +192,7 @@
             granularitySeconds: number;
           };
         }>({
-          url: `/api/portfolio/series?from=${from}&to=${to}&granularitySeconds=${stringConfig('granularity', 'auto')}&quoteCurrencies=${encodeURIComponent(currencies.join(','))}`
+          url: `/api/portfolio/series?from=${from}&to=${to}&granularitySeconds=${stringConfig('granularity', 'auto')}&quoteCurrencies=${encodeURIComponent(currencies.join(','))}&${cache}`
         });
         const selectedGranularity = Number(stringConfig('granularity', 'auto'));
         resolvedGranularity = Number.isFinite(selectedGranularity)
@@ -209,7 +216,12 @@
         }
         const currency = currentPrimaryCurrency
           || stringConfig('primaryCurrency', 'CAD').toUpperCase();
-        const currencies = configuredTooltipCurrencies();
+        const currencies = isPerformanceChart()
+          ? configuredCurrencies({
+              primaryCurrency: currentPrimaryCurrency,
+              listedCurrencies: ['USD']
+            })
+          : configuredTooltipCurrencies();
         const requestCurrencies = [...new Set([...currencies, 'USD'])];
         const yAxisUnit = stringConfig('yAxisUnit', currency);
         const yAxisIsFiat = currencies.includes(yAxisUnit.toUpperCase());
@@ -252,7 +264,14 @@
             from: String(from),
             to: String(to),
             granularity: stringConfig('granularity', 'auto'),
-            chartMode: stringConfig('chartMode', 'line')
+            chartMode: stringConfig('chartMode', 'line'),
+            ...Object.fromEntries(new URLSearchParams(graphCacheQuery(graphCacheIdentity({
+              graph,
+              scope: 'market',
+              suffix: quoteCurrency,
+              primaryCurrency: currentPrimaryCurrency,
+              tooltipCurrencies: fallbackTooltipCurrencies
+            }))))
           });
           return [
             quoteCurrency,
@@ -342,6 +361,12 @@
         resolvedGranularity = payload.data.overviewGranularity;
       } else if (graph.type === 'kraken') {
         const tooltipCurrencyQuery = encodeURIComponent(configuredTooltipCurrencies().join(','));
+        const cache = graphCacheQuery(graphCacheIdentity({
+          graph,
+          scope: 'kraken',
+          primaryCurrency: currentPrimaryCurrency,
+          tooltipCurrencies: fallbackTooltipCurrencies
+        }));
         const payload = await apiRequest<{
           data: {
             series: ChartSeries[];
@@ -351,7 +376,7 @@
             granularitySeconds: number;
           };
         }>({
-          url: `/api/kraken/series?from=${from}&to=${to}&granularitySeconds=${stringConfig('granularity', 'auto')}&quoteCurrencies=${tooltipCurrencyQuery}`
+          url: `/api/kraken/series?from=${from}&to=${to}&granularitySeconds=${stringConfig('granularity', 'auto')}&quoteCurrencies=${tooltipCurrencyQuery}&${cache}`
         });
         const configured = Array.isArray(graph.config.seriesIds)
           ? graph.config.seriesIds.map(String)
@@ -366,6 +391,12 @@
         const currency = currentPrimaryCurrency || stringConfig('currency', 'CAD');
         const granularity = stringConfig('granularity', 'auto');
         const tooltipCurrencyQuery = encodeURIComponent(configuredTooltipCurrencies().join(','));
+        const cache = graphCacheQuery(graphCacheIdentity({
+          graph,
+          scope: 'addresses',
+          primaryCurrency: currentPrimaryCurrency,
+          tooltipCurrencies: fallbackTooltipCurrencies
+        }));
         const payload = await apiRequest<{
           data: {
             series: ChartSeries[];
@@ -376,7 +407,7 @@
             denominationOptions: ChartDenominationOption[];
           };
         }>({
-          url: `/api/addresses/series?quoteCurrency=${currency}&quoteCurrencies=${tooltipCurrencyQuery}&from=${from}&to=${to}&granularitySeconds=${granularity}`
+          url: `/api/addresses/series?quoteCurrency=${currency}&quoteCurrencies=${tooltipCurrencyQuery}&from=${from}&to=${to}&granularitySeconds=${granularity}&${cache}`
         });
         series = payload.data.series;
         events = payload.data.events;

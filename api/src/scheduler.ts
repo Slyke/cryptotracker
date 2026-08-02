@@ -7,6 +7,7 @@ import type { MarketService } from './services/market.js';
 import type { PortfolioService } from './services/portfolio.js';
 import type { RetentionService } from './services/retention.js';
 import type { SettingsService } from './services/settings.js';
+import type { GraphDataChange } from './jobs/queue.js';
 
 const DAY_MS = 24 * 60 * 60_000;
 const HOUR_HISTORY_DAYS = 90;
@@ -81,7 +82,9 @@ export class Scheduler {
     private readonly portfolio: PortfolioService,
     private readonly settings: SettingsService,
     private readonly retention: RetentionService,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly onGraphDataChange: ((changes: GraphDataChange[]) => Promise<void>) | null = null,
+    private readonly shouldCaptureGraphDataChanges: (() => Promise<boolean>) | null = null
   ) {}
 
   private due({
@@ -120,7 +123,22 @@ export class Scheduler {
         });
       }
       if (this.due({ key: 'portfolio-snapshot', intervalMinutes: 30, now })) {
-        await this.portfolio.capture();
+        const captureGraphChanges = await this.shouldCaptureGraphDataChanges?.() ?? false;
+        const snapshot = await this.portfolio.capture({
+          detectChanges: captureGraphChanges
+        });
+        if (snapshot.changed) {
+          void this.onGraphDataChange?.([{
+            domain: 'portfolio',
+            assetIds: Object.keys(snapshot.quantities)
+          }]).catch((error) => {
+            this.logger.error({
+              caller: 'scheduler::graphCache',
+              message: 'Portfolio graph cache refresh failed.',
+              error
+            });
+          });
+        }
       }
       const quoteCurrencies = [...new Set([
         settings.primaryCurrency,

@@ -24,6 +24,7 @@ describe('per-integration polling settings', () => {
       });
       expect(defaults.marketHistoryBackfillDays).toBe(5 * 365);
       expect(defaults.failedJobRetentionHours).toBe(720);
+      expect(defaults.dashboardCacheInactivityMinutes).toBe(60);
 
       await service.patch({
         changes: {
@@ -34,7 +35,8 @@ describe('per-integration polling settings', () => {
             assetCatalog: 10_080,
             addresses: 15,
             krakenAccount: 5
-          }
+          },
+          dashboardCacheInactivityMinutes: 360
         }
       });
 
@@ -46,6 +48,7 @@ describe('per-integration polling settings', () => {
         addresses: 15,
         krakenAccount: 5
       });
+      expect((await service.get()).dashboardCacheInactivityMinutes).toBe(360);
     } finally {
       await db.close();
     }

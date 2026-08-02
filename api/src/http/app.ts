@@ -21,6 +21,7 @@ import type { Logger } from '../logging/logger.js';
 import type { Scheduler } from '../scheduler.js';
 import type { AddressService } from '../services/addresses.js';
 import type { DiagnosticsService } from '../services/diagnostics.js';
+import type { GraphCachePlan, GraphCacheService, GraphCacheScope } from '../services/graph-cache.js';
 import {
   serializeSeriesCsv,
   serializeSeriesJson,
@@ -33,7 +34,6 @@ import type { PortfolioService } from '../services/portfolio.js';
 import type { RetentionService } from '../services/retention.js';
 import type { SettingsService, UserSettings } from '../services/settings.js';
 import type { TransferService } from '../services/transfers.js';
-import { ReadThroughCache } from '../utils/read-through-cache.js';
 import { loadHttpsCertificates } from './certificates.js';
 
 export interface AppContext {
@@ -53,6 +53,7 @@ export interface AppContext {
   retention: RetentionService;
   jobs: JobQueue;
   scheduler: Scheduler;
+  graphCache: GraphCacheService;
 }
 
 const asyncRoute = (handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown>): RequestHandler => (
@@ -255,6 +256,71 @@ const makeSeriesRequest = ({
   };
 };
 
+const graphCacheRequest = ({ req }: { req: Request }) => {
+  const parsed = z.object({
+    cachePlan: z.string().regex(/^[A-Za-z0-9:_-]+$/).max(300).optional(),
+    cacheRevision: z.string().regex(/^[A-Za-z0-9_-]+$/).max(100).optional(),
+    cacheSliding: z.enum(['0', '1']).default('1')
+  }).safeParse(req.query);
+  if (!parsed.success || !parsed.data.cachePlan || !parsed.data.cacheRevision) return null;
+  return {
+    id: parsed.data.cachePlan,
+    revision: parsed.data.cacheRevision,
+    sliding: parsed.data.cacheSliding === '1'
+  };
+};
+
+const graphCachePlanBase = {
+  id: z.string().regex(/^[A-Za-z0-9:_-]+$/).max(300),
+  revision: z.string().regex(/^[A-Za-z0-9_-]+$/).max(100),
+  sliding: z.boolean()
+};
+const graphRangeInputBase = {
+  fromMs: z.number().int().nonnegative(),
+  toMs: z.number().int().positive()
+};
+const graphCurrencyArray = z.array(
+  z.string().length(3).transform((value) => value.toUpperCase())
+).min(1).max(6);
+const graphCachePlanSchema = z.discriminatedUnion('scope', [
+  z.object({
+    ...graphCachePlanBase,
+    scope: z.literal('market'),
+    input: z.object({
+      ...graphRangeInputBase,
+      assetIds: z.array(z.string().min(1).max(200)).min(1).max(100),
+      quoteCurrency: z.string().length(3).transform((value) => value.toUpperCase()),
+      source: z.enum(['combined', 'coingecko', 'coinbase', 'kraken']),
+      granularity: z.union([z.literal('auto'), z.number().int().positive()]),
+      chartMode: z.enum(['line', 'candlestick'])
+    }).strict()
+  }).strict(),
+  ...(['portfolio', 'kraken', 'kraken-earn'] as const).map((scope) => z.object({
+    ...graphCachePlanBase,
+    scope: z.literal(scope),
+    input: z.object({
+      ...graphRangeInputBase,
+      quoteCurrencies: graphCurrencyArray,
+      granularitySeconds: scope === 'kraken-earn'
+        ? z.number().int().min(60)
+        : z.union([z.literal('auto'), z.number().int().positive()])
+    }).strict()
+  }).strict()),
+  z.object({
+    ...graphCachePlanBase,
+    scope: z.literal('addresses'),
+    input: z.object({
+      ...graphRangeInputBase,
+      quoteCurrency: z.string().length(3).transform((value) => value.toUpperCase()),
+      quoteCurrencies: graphCurrencyArray,
+      granularitySeconds: z.union([
+        z.literal('auto'),
+        z.number().int().positive()
+      ])
+    }).strict()
+  }).strict()
+]);
+
 const registerRoutes = ({
   app,
   context
@@ -262,29 +328,30 @@ const registerRoutes = ({
   app: express.Express;
   context: AppContext;
 }) => {
-  // This cache intentionally lives in one API process. Each replica reads from
-  // its normal database-backed service on a miss and keeps only a brief result.
-  const graphSeriesCache = new ReadThroughCache({
-    ttlMs: 5_000,
-    maxEntries: 256,
-    maxSize: 64 * 1_024 * 1_024,
-    sizeOf: (value) => Buffer.byteLength(String(value))
-  });
   const sendCachedGraphSeries = async <T>({
+    req,
     res,
     scope,
     input,
     load
   }: {
+    req: Request;
     res: Response;
-    scope: string;
-    input: unknown;
+    scope: GraphCacheScope;
+    input: Record<string, unknown>;
     load: () => Promise<T>;
   }) => {
-    const body = await graphSeriesCache.get({
-      key: `${scope}:${JSON.stringify(input)}`,
-      load: async () => JSON.stringify({ ok: true, data: await load() })
-    });
+    const cacheRequest = graphCacheRequest({ req });
+    const body = cacheRequest
+      ? await context.graphCache.getOrLoad({
+          plan: {
+            ...cacheRequest,
+            scope,
+            input
+          },
+          load
+        })
+      : JSON.stringify({ ok: true, data: await load() });
     res.type('application/json').send(body);
   };
 
@@ -376,6 +443,34 @@ const registerRoutes = ({
   app.get('/api/settings', asyncRoute(async (_req, res) => {
     res.json({ ok: true, settings: await context.settings.get() });
   }));
+  app.post('/api/graph-cache/activity', requireCsrf, asyncRoute(async (req, res) => {
+    const input = parse({
+      schema: z.object({
+        plans: z.array(graphCachePlanSchema).max(100),
+        registeredPlanIds: z.array(
+          z.string().regex(/^[A-Za-z0-9:_-]+$/).max(300)
+        ).max(1_200),
+        replacePlans: z.boolean()
+      }).strict(),
+      value: req.body
+    }) as {
+      plans: GraphCachePlan[];
+      registeredPlanIds: string[];
+      replacePlans: boolean;
+    };
+    const settings = await context.settings.get();
+    await context.graphCache.activate({
+      plans: input.plans,
+      inactivityMinutes: settings.dashboardCacheInactivityMinutes,
+      registeredPlanIds: input.registeredPlanIds,
+      replacePlans: input.replacePlans
+    });
+    res.status(202).json({
+      ok: true,
+      enabled: context.graphCache.enabled,
+      registeredPlans: input.plans.length
+    });
+  }));
   app.patch('/api/settings', requireCsrf, asyncRoute(async (req, res) => {
     const changes = parse({
       schema: z.object({
@@ -456,6 +551,16 @@ const registerRoutes = ({
         retentionDays: z.number().int().min(1).max(36_500).nullable().optional(),
         marketHistoryBackfillDays: z.number().int().min(1).max(36_500).nullable().optional(),
         failedJobRetentionHours: z.number().int().min(1).max(87_600).nullable().optional(),
+        dashboardCacheInactivityMinutes: z.union([
+          z.literal(10),
+          z.literal(20),
+          z.literal(30),
+          z.literal(60),
+          z.literal(120),
+          z.literal(360),
+          z.literal(1_440),
+          z.literal(10_080)
+        ]).optional(),
         pollingIntervalsMinutes: z.object({
           marketCoinGecko: z.number().int().min(5).max(10_080),
           marketCoinbase: z.number().int().min(5).max(10_080),
@@ -680,6 +785,7 @@ const registerRoutes = ({
   app.get('/api/market/series', asyncRoute(async (req, res) => {
     const input = makeSeriesRequest({ req });
     await sendCachedGraphSeries({
+      req,
       res,
       scope: 'market',
       input,
@@ -738,6 +844,7 @@ const registerRoutes = ({
       } : {})
     };
     await sendCachedGraphSeries({
+      req,
       res,
       scope: 'portfolio',
       input,
@@ -940,6 +1047,7 @@ const registerRoutes = ({
       granularitySeconds: query.granularitySeconds
     };
     await sendCachedGraphSeries({
+      req,
       res,
       scope: 'addresses',
       input,
@@ -1003,6 +1111,7 @@ const registerRoutes = ({
       } : {})
     };
     await sendCachedGraphSeries({
+      req,
       res,
       scope: 'kraken-earn',
       input,
@@ -1042,6 +1151,7 @@ const registerRoutes = ({
       } : {})
     };
     await sendCachedGraphSeries({
+      req,
       res,
       scope: 'kraken',
       input,

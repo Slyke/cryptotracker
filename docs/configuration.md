@@ -72,6 +72,10 @@ preferences that have already been saved.
 | `auth.header.signedIdentity.*` | disabled | HS256 header, issuer, audience, 0–300 second clock skew, and 60–31,536,000 second maximum token lifetime. |
 | `database.sqlite.busyTimeoutMs` / `synchronous` | `5000` / `FULL` | SQLite lock wait and durability (`OFF`, `NORMAL`, `FULL`, or `EXTRA`). |
 | `database.postgres` | `null` | Host, port, database, user, pool maximum, TLS enablement, and certificate verification. Required in Postgres mode. |
+| `cache.redis.enabled` | `false` | Enables the optional shared saved-dashboard graph materialization cache. PostgreSQL remains the source of truth. |
+| `cache.redis.url` / `keyPrefix` | `redis://redis:6379` / `cryptotracker` | Redis endpoint and namespace shared by every API replica. |
+| `cache.redis.resultTtlSeconds` | `2592000` | Hard expiry for materialized responses, registered plans, and dashboard activity. |
+| `cache.redis.connectTimeoutMs` | `2000` | Redis connection timeout before a request falls through to PostgreSQL. |
 
 API-key entries in the secrets file have unique names, a minimum 16-character key, and a `read` or
 `readwrite` role. An entry may use `keyFile`; it is resolved and normalized before the runtime
@@ -118,6 +122,24 @@ default spacing/burst/refill policy than the generic provider default.
 | `providers.subscanApiKey` | Polkadot history. |
 | `kraken.apiKey` and `kraken.apiSecret` | Kraken account integration; both or neither. |
 | `postgresPassword` | PostgreSQL mode. |
+| `redisPassword` | Optional when Redis caching is enabled; omit it for an unauthenticated in-cluster Redis service. |
+
+### Optional Redis dashboard graph cache
+
+Redis is an optional L2 cache for saved chart requests across every dashboard index. A dashboard
+request registers the current chart query settings and refreshes a shared activity timestamp. Cache
+misses, expired entries, connection failures, and setting revisions all fall through to PostgreSQL;
+Redis is never treated as authoritative data.
+
+While a dashboard is active, successful scheduled or manual synchronization jobs refresh only
+registered plans affected by graph-visible database changes. Warming stops after the database-backed
+dashboard inactivity preference (60 minutes by default) and resumes on the next dashboard request.
+The first request after an inactive window intentionally invalidates the old materializations so it
+may be slower while current values are rebuilt.
+
+Direct deployment overrides are `CRYPTOTRACKER_REDIS_ENABLED`, `CRYPTOTRACKER_REDIS_URL`,
+`CRYPTOTRACKER_REDIS_KEY_PREFIX`, `CRYPTOTRACKER_REDIS_RESULT_TTL_SECONDS`,
+`CRYPTOTRACKER_REDIS_CONNECT_TIMEOUT_MS`, and `CRYPTOTRACKER_REDIS_PASSWORD`.
 
 ## File selection and database
 

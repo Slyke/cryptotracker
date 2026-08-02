@@ -23,6 +23,13 @@ describe('configuration', () => {
     expect(config.providers.chains.ethereum.baseUrl).toBe('https://api.etherscan.io');
     expect(config.api.port).toBe(8_192);
     expect(config.api.https.port).toBe(8_194);
+    expect(config.cache.redis).toEqual({
+      enabled: false,
+      url: 'redis://redis:6379',
+      keyPrefix: 'cryptotracker',
+      resultTtlSeconds: 2_592_000,
+      connectTimeoutMs: 2_000
+    });
     expect(() => configSchema.parse({
       api: {
         port: 8_192,
@@ -83,6 +90,28 @@ describe('configuration', () => {
       key: 'environment-api-key-with-32-characters',
       role: 'read'
     }]);
+  });
+
+  it('loads optional Redis graph cache deployment overrides', async () => {
+    const runtime = await loadRuntime({
+      env: {
+        ...requiredEnvironment,
+        CRYPTOTRACKER_REDIS_ENABLED: 'true',
+        CRYPTOTRACKER_REDIS_URL: 'redis://cache.internal:6380',
+        CRYPTOTRACKER_REDIS_KEY_PREFIX: 'tracker-test',
+        CRYPTOTRACKER_REDIS_RESULT_TTL_SECONDS: '3600',
+        CRYPTOTRACKER_REDIS_CONNECT_TIMEOUT_MS: '750',
+        CRYPTOTRACKER_REDIS_PASSWORD: 'redis-secret'
+      }
+    });
+    expect(runtime.config.cache.redis).toEqual({
+      enabled: true,
+      url: 'redis://cache.internal:6380',
+      keyPrefix: 'tracker-test',
+      resultTtlSeconds: 3_600,
+      connectTimeoutMs: 750
+    });
+    expect(runtime.secrets.redisPassword).toBe('redis-secret');
   });
 
   it('loads an API key from a file relative to the secrets file', async () => {

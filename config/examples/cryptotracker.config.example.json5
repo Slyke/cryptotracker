@@ -76,6 +76,17 @@
       rejectUnauthorized: true,
     },
   },
+  // Optional shared materialized cache for saved dashboard charts. PostgreSQL
+  // remains the source of truth and is used automatically on cache misses.
+  cache: {
+    redis: {
+      enabled: false,
+      url: 'redis://redis:6379',
+      keyPrefix: 'cryptotracker',
+      resultTtlSeconds: 2592000,
+      connectTimeoutMs: 2000,
+    },
+  },
   providers: {
     market: {
       coinGecko: {

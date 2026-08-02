@@ -36,6 +36,30 @@ export interface JobContinuation {
   maxAttempts?: number;
 }
 
+export type GraphDataChange =
+  | {
+      domain: 'market';
+      assetIds: string[];
+      quoteCurrencies: string[];
+    }
+  | {
+      domain: 'addresses';
+      assetIds: string[];
+    }
+  | {
+      domain: 'kraken';
+      assetIds: string[];
+    }
+  | {
+      domain: 'portfolio';
+      assetIds: string[];
+    };
+
+export interface JobHandlerOutcome {
+  continuation?: JobContinuation;
+  graphDataChanges?: GraphDataChange[];
+}
+
 export type JobHandler = ({
   job,
   updateProgress
@@ -50,10 +74,12 @@ export type JobHandler = ({
     total?: number | null;
     cursor?: unknown;
   }) => Promise<void>;
-}) => Promise<JobContinuation | void>;
+}) => Promise<JobContinuation | JobHandlerOutcome | void>;
 
 export class JobQueue {
   private readonly handlers = new Map<string, JobHandler>();
+  private readonly graphDataChangeListeners = new Set<(changes: GraphDataChange[]) => Promise<void>>();
+  private readonly graphDataChangeActiveChecks = new Set<() => Promise<boolean>>();
   private timer: NodeJS.Timeout | null = null;
   private tickPromise: Promise<void> | null = null;
   private active = 0;
@@ -68,6 +94,29 @@ export class JobQueue {
 
   register({ jobType, handler }: { jobType: string; handler: JobHandler }) {
     this.handlers.set(jobType, handler);
+  }
+
+  onGraphDataChange(
+    listener: (changes: GraphDataChange[]) => Promise<void>,
+    active: () => Promise<boolean> = async () => true
+  ) {
+    this.graphDataChangeListeners.add(listener);
+    this.graphDataChangeActiveChecks.add(active);
+    return () => {
+      this.graphDataChangeListeners.delete(listener);
+      this.graphDataChangeActiveChecks.delete(active);
+    };
+  }
+
+  async shouldCaptureGraphDataChanges() {
+    for (const active of this.graphDataChangeActiveChecks) {
+      try {
+        if (await active()) return true;
+      } catch {
+        continue;
+      }
+    }
+    return false;
   }
 
   async enqueue({
@@ -165,7 +214,7 @@ export class JobQueue {
         reason: `No handler is registered for ${job.job_type}.`
       });
     }
-    const continuation = await handler({
+    const outcome = await handler({
       job,
       updateProgress: async ({ current, total = null, cursor = {} }) => {
         await this.db.run({
@@ -186,8 +235,26 @@ export class JobQueue {
       `,
       parameters: [Date.now(), Date.now(), job.id]
     });
+    const continuation = outcome && 'jobType' in outcome
+      ? outcome
+      : outcome?.continuation;
+    const graphDataChanges = outcome && !('jobType' in outcome)
+      ? outcome.graphDataChanges ?? []
+      : [];
     if (continuation) {
       await this.enqueue(continuation);
+    }
+    if (graphDataChanges.length > 0) {
+      for (const listener of this.graphDataChangeListeners) {
+        void listener(graphDataChanges).catch((error) => {
+          this.logger.error({
+            caller: 'jobs::graphDataChange',
+            message: 'A graph cache refresh listener failed.',
+            error,
+            context: { jobId: job.id, jobType: job.job_type }
+          });
+        });
+      }
     }
   }
 

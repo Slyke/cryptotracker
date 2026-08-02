@@ -62,6 +62,7 @@ export interface UserSettings {
   retentionDays: number | null;
   marketHistoryBackfillDays: number | null;
   failedJobRetentionHours: number | null;
+  dashboardCacheInactivityMinutes: 10 | 20 | 30 | 60 | 120 | 360 | 1_440 | 10_080;
   pollingIntervalsMinutes: {
     marketCoinGecko: number;
     marketCoinbase: number;
@@ -116,6 +117,7 @@ export class SettingsService {
       retentionDays: null,
       marketHistoryBackfillDays: 5 * 365,
       failedJobRetentionHours: 720,
+      dashboardCacheInactivityMinutes: 60,
       pollingIntervalsMinutes: {
         marketCoinGecko: 30,
         marketCoinbase: 15,

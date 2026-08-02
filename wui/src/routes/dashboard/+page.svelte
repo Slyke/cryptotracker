@@ -9,6 +9,7 @@
   import { persistAccordionState } from '$lib/accordion-state';
   import { configuredCurrencies } from '$lib/currencies';
   import { dashboardMinimalMode } from '$lib/dashboard-display';
+  import { dashboardGraphCachePlans } from '$lib/graph-cache';
   import strings from '$lib/i18n/en-CA.json';
   import {
     dashboardNumberFromSearch,
@@ -231,6 +232,40 @@
     try {
       const settingsPayload = await apiRequest<{ settings: typeof settings }>({ url: '/api/settings' });
       settings = settingsPayload.settings;
+      settings.dashboards = normalizeDashboards({
+        dashboards: settings.dashboards,
+        legacyRows: settings.dashboardRows ?? [],
+        savedGraphs: settings.savedGraphs,
+        defaultColumns: settings.dashboardGraphColumns
+      });
+      const dashboardGraphIds = new Set(settings.dashboards.flatMap((dashboard) => (
+        dashboard.rows.flatMap((row) => row.itemIds)
+      )));
+      const cachePlans = dashboardGraphCachePlans({
+        graphs: settings.savedGraphs.filter((graph) => dashboardGraphIds.has(graph.id)),
+        primaryCurrency: settings.primaryCurrency,
+        tooltipCurrencies: settings.tooltipCurrencies,
+        now: Date.now()
+      });
+      const cacheActivation = (async () => {
+        const planIds = cachePlans.map((plan) => plan.id);
+        const batches = cachePlans.length === 0
+          ? [[]]
+          : Array.from({ length: Math.ceil(cachePlans.length / 100) }, (_, index) => (
+              cachePlans.slice(index * 100, (index + 1) * 100)
+            ));
+        for (const [index, plans] of batches.entries()) {
+          await apiRequest({
+            url: '/api/graph-cache/activity',
+            method: 'POST',
+            body: {
+              plans,
+              registeredPlanIds: planIds,
+              replacePlans: index === 0
+            }
+          });
+        }
+      })().catch(() => undefined);
       const currencies = configuredCurrencies({
         primaryCurrency: settings.primaryCurrency,
         listedCurrencies: settings.tooltipCurrencies ?? []
@@ -245,7 +280,8 @@
           url: `/api/kraken/summary?quoteCurrencies=${currencyQuery}`
         }),
         apiRequest<{ providers: Record<string, unknown> }>({ url: '/api/providers/status' }),
-        apiRequest<{ progress: { jobs: typeof jobs } }>({ url: '/api/sync/progress' })
+        apiRequest<{ progress: { jobs: typeof jobs } }>({ url: '/api/sync/progress' }),
+        cacheActivation
       ]);
       watchlist = watchlistPayload.assets;
       holdings = holdingsPayload.holdings;
@@ -281,12 +317,6 @@
       jobs = jobsPayload.progress.jobs;
       const summaryBlockIds = currencies.map((currency) => `summary:${currency}`);
       dashboardPageDefaults = [...summaryBlockIds, ...defaultContentOrder];
-      settings.dashboards = normalizeDashboards({
-        dashboards: settings.dashboards,
-        legacyRows: settings.dashboardRows ?? [],
-        savedGraphs: settings.savedGraphs,
-        defaultColumns: settings.dashboardGraphColumns
-      });
       const requestedDashboard = dashboardNumberFromSearch({
         search: window.location.search,
         count: settings.dashboards.length

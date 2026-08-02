@@ -231,7 +231,7 @@ export class PortfolioService {
     };
   }
 
-  async capture() {
+  async capture({ detectChanges = false }: { detectChanges?: boolean } = {}) {
     const capturedAtMs = Date.now();
     const bucketMs = 30 * 60_000;
     const bucketStartMs = Math.floor(capturedAtMs / bucketMs) * bucketMs;
@@ -276,6 +276,22 @@ export class PortfolioService {
     const serializedQuantities = Object.fromEntries(
       [...quantities.entries()].map(([assetId, quantity]) => [assetId, quantity.toString()])
     );
+    const serializedValues = JSON.stringify(values);
+    const serializedQuantityValues = JSON.stringify(serializedQuantities);
+    const existing = detectChanges
+      ? await this.db.one<PortfolioSnapshotRow>({
+          sql: 'SELECT * FROM portfolio_snapshots WHERE captured_at_ms = ?',
+          parameters: [bucketStartMs]
+        })
+      : null;
+    const changed = detectChanges && (
+      !existing
+        || existing.primary_currency !== currencyConfig.primaryCurrency
+        || existing.values_json !== serializedValues
+        || existing.quantities_json !== serializedQuantityValues
+        || !new Decimal(existing.priced_coverage_percent).equals(coverage)
+        || Number(existing.incomplete_balance_count) !== incompleteBalanceCount
+    );
     const id = createId({ prefix: 'portfolio' });
     await this.db.run({
       sql: `
@@ -296,8 +312,8 @@ export class PortfolioService {
         id,
         bucketStartMs,
         currencyConfig.primaryCurrency,
-        JSON.stringify(values),
-        JSON.stringify(serializedQuantities),
+        serializedValues,
+        serializedQuantityValues,
         coverage.toString(),
         incompleteBalanceCount,
         JSON.stringify({
@@ -310,6 +326,7 @@ export class PortfolioService {
     });
     return {
       capturedAtMs: bucketStartMs,
+      changed,
       values,
       quantities: serializedQuantities,
       coveragePercent: coverage.toString(),

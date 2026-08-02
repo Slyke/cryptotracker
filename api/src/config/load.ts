@@ -192,7 +192,9 @@ const applyConfigOverrides = ({
     ['CRYPTOTRACKER_DEFAULT_LOCALE', ['ui', 'locale']],
     ['CRYPTOTRACKER_DEFAULT_TIMEZONE', ['ui', 'timezone']],
     ['CRYPTOTRACKER_DEFAULT_PRIMARY_CURRENCY', ['ui', 'defaultPrimaryCurrency']],
-    ['CRYPTOTRACKER_DEFAULT_MARKET_SOURCE', ['ui', 'defaultMarketSource']]
+    ['CRYPTOTRACKER_DEFAULT_MARKET_SOURCE', ['ui', 'defaultMarketSource']],
+    ['CRYPTOTRACKER_REDIS_URL', ['cache', 'redis', 'url']],
+    ['CRYPTOTRACKER_REDIS_KEY_PREFIX', ['cache', 'redis', 'keyPrefix']]
   ];
   const booleanOverrides: Array<[string, string[]]> = [
     ['CRYPTOTRACKER_AUTH_LOCAL_ENABLED', ['auth', 'local', 'enabled']],
@@ -201,7 +203,8 @@ const applyConfigOverrides = ({
     ['CRYPTOTRACKER_HTTPS_GENERATE_SELF_SIGNED', ['api', 'https', 'generateSelfSigned']],
     ['CRYPTOTRACKER_AUTH_HEADER_ENABLED', ['auth', 'header', 'enabled']],
     ['CRYPTOTRACKER_AUTH_SIGNED_IDENTITY_ENABLED', ['auth', 'header', 'signedIdentity', 'enabled']],
-    ['LOG_K8S_METADATA_ENABLED', ['logging', 'kubernetes', 'enabled']]
+    ['LOG_K8S_METADATA_ENABLED', ['logging', 'kubernetes', 'enabled']],
+    ['CRYPTOTRACKER_REDIS_ENABLED', ['cache', 'redis', 'enabled']]
   ];
   const csvOverrides: Array<[string, string[]]> = [
     ['CRYPTOTRACKER_AUTH_HEADER_TRUSTED_CIDRS', ['auth', 'header', 'trustedCidrs']],
@@ -248,6 +251,18 @@ const applyConfigOverrides = ({
       })
     });
   }
+  for (const [key, path] of [
+    ['CRYPTOTRACKER_REDIS_RESULT_TTL_SECONDS', ['cache', 'redis', 'resultTtlSeconds']],
+    ['CRYPTOTRACKER_REDIS_CONNECT_TIMEOUT_MS', ['cache', 'redis', 'connectTimeoutMs']]
+  ] as Array<[string, string[]]>) {
+    if (env[key] !== undefined && env[key] !== '') {
+      setPath({
+        target: rawConfig,
+        path,
+        value: parseNumber({ key, value: env[key]! })
+      });
+    }
+  }
   for (const [key, path] of booleanOverrides) {
     if (env[key] !== undefined && env[key] !== '') {
       setPath({
@@ -285,7 +300,8 @@ const applySecretOverrides = ({
     ['CRYPTOTRACKER_HELIUS_API_KEY', ['providers', 'heliusApiKey']],
     ['CRYPTOTRACKER_KRAKEN_API_KEY', ['kraken', 'apiKey']],
     ['CRYPTOTRACKER_KRAKEN_API_SECRET', ['kraken', 'apiSecret']],
-    ['CRYPTOTRACKER_POSTGRES_PASSWORD', ['postgresPassword']]
+    ['CRYPTOTRACKER_POSTGRES_PASSWORD', ['postgresPassword']],
+    ['CRYPTOTRACKER_REDIS_PASSWORD', ['redisPassword']]
   ];
 
   for (const [key, path] of overrides) {

@@ -301,6 +301,53 @@ describe('database migrations and persistent jobs', () => {
     }
   });
 
+  it('publishes graph-visible data changes after the job commits', async () => {
+    const { db, runtime } = await openMigratedTestDatabase();
+    const queue = new JobQueue(db, createTestLogger({ runtime }), 1);
+    const observed: unknown[] = [];
+    queue.onGraphDataChange(async (changes) => {
+      const job = await db.one<{ status: string }>({
+        sql: "SELECT status FROM jobs WHERE job_type = 'fixture-graph-change'"
+      });
+      observed.push({ changes, status: job?.status });
+    });
+    queue.register({
+      jobType: 'fixture-graph-change',
+      handler: async () => ({
+        graphDataChanges: [{
+          domain: 'market',
+          assetIds: ['solana'],
+          quoteCurrencies: ['CAD']
+        }]
+      })
+    });
+    try {
+      const queued = await queue.enqueue({
+        jobType: 'fixture-graph-change',
+        resourceKey: 'solana:CAD',
+        idempotencyKey: 'fixture:graph-change',
+        priority: 10
+      });
+      await queue.start();
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && observed.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(await queue.getJob({ id: queued.job.id })).toMatchObject({ status: 'completed' });
+      expect(observed).toEqual([{
+        status: 'completed',
+        changes: [{
+          domain: 'market',
+          assetIds: ['solana'],
+          quoteCurrencies: ['CAD']
+        }]
+      }]);
+    } finally {
+      await queue.stop();
+      await db.close();
+    }
+  });
+
   it('waits for a provider circuit cooldown without consuming the job attempt budget', async () => {
     const { db, runtime } = await openMigratedTestDatabase();
     const queue = new JobQueue(db, createTestLogger({ runtime }), 1);

@@ -42,6 +42,7 @@ export interface PersonalizationSettings {
   retentionDays: number | null;
   marketHistoryBackfillDays: number | null;
   failedJobRetentionHours: number | null;
+  dashboardCacheInactivityMinutes: 10 | 20 | 30 | 60 | 120 | 360 | 1_440 | 10_080;
 }
 
 export type RelativeRangeUnit = 'hours' | 'days' | 'weeks' | 'months' | 'years';

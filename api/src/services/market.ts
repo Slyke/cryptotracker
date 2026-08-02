@@ -11,7 +11,7 @@ import { lifecycleAndDisputeEvents } from './event-markers.js';
 import type { JobQueue } from '../jobs/queue.js';
 import { marketProviderInternals, type MarketPair, type MarketProviderAdapter } from '../providers/market.js';
 import { createId } from '../utils/ids.js';
-import { ReadThroughCache } from '../utils/read-through-cache.js';
+import { SingleFlight } from '../utils/single-flight.js';
 import { getBuiltInCatalog } from './bootstrap.js';
 import { aggregateCachedMarketRows, deriveQuoteFallbackRows } from './market-aggregation.js';
 
@@ -100,18 +100,7 @@ const asAsset = (row: AssetRow) => ({
 });
 
 export class MarketService {
-  private readonly seriesRowsCache = new ReadThroughCache({
-    ttlMs: 5_000,
-    maxEntries: 32,
-    maxSize: 64 * 1_024 * 1_024,
-    sizeOf: (value) => Array.isArray(value) ? value.length * 512 : 0
-  });
-  private readonly seriesMetadataCache = new ReadThroughCache({
-    ttlMs: 5_000,
-    maxEntries: 64,
-    maxSize: 8 * 1_024 * 1_024,
-    sizeOf: (value) => Array.isArray(value) ? value.length * 256 : 0
-  });
+  private readonly seriesRequests = new SingleFlight();
 
   constructor(
     private readonly db: AppDatabase,
@@ -481,7 +470,8 @@ export class MarketService {
     quoteCurrency,
     fromMs,
     toMs,
-    granularitySeconds
+    granularitySeconds,
+    detectChanges = false
   }: {
     provider: string;
     canonicalAssetId: string;
@@ -489,6 +479,7 @@ export class MarketService {
     fromMs: number;
     toMs: number;
     granularitySeconds: number;
+    detectChanges?: boolean;
   }) {
     const adapter = this.providers.get(provider);
     if (!adapter) {
@@ -509,6 +500,62 @@ export class MarketService {
       toMs,
       granularitySeconds
     });
+    const existingRows = !detectChanges || candles.length === 0
+      ? []
+      : await this.db.query<Pick<MarketPointRow,
+        | 'bucket_start_ms'
+        | 'granularity_seconds'
+        | 'data_kind'
+        | 'open_value'
+        | 'high_value'
+        | 'low_value'
+        | 'close_value'
+        | 'volume_value'
+        | 'sample_count'
+        | 'finalized'
+      >>({
+        sql: `
+          SELECT bucket_start_ms, granularity_seconds, data_kind, open_value,
+                 high_value, low_value, close_value, volume_value, sample_count, finalized
+          FROM market_points
+          WHERE provider = ? AND canonical_asset_id = ? AND quote_currency = ?
+            AND bucket_start_ms >= ? AND bucket_start_ms <= ?
+        `,
+        parameters: [
+          provider,
+          canonicalAssetId,
+          pair.quoteCurrency.toUpperCase(),
+          Math.min(...candles.map((candle) => candle.bucketStartMs)),
+          Math.max(...candles.map((candle) => candle.bucketStartMs))
+        ]
+      });
+    const existingByKey = new Map(existingRows.map((row) => [
+      `${row.bucket_start_ms}:${row.granularity_seconds}:${row.data_kind}`,
+      row
+    ]));
+    const decimalEquals = (left: string | number | null, right: string | number | null) => {
+      if (left === null || right === null) return left === right;
+      try {
+        return new Decimal(left).equals(right);
+      } catch {
+        return String(left) === String(right);
+      }
+    };
+    const changed = candles.filter((candle) => {
+      const existing = existingByKey.get(
+        `${candle.bucketStartMs}:${candle.granularitySeconds}:${candle.dataKind}`
+      );
+      if (!existing) return true;
+      return !decimalEquals(existing.open_value, candle.open)
+        || !decimalEquals(existing.high_value, candle.high)
+        || !decimalEquals(existing.low_value, candle.low)
+        || !decimalEquals(existing.close_value, candle.close)
+        || !decimalEquals(existing.volume_value, candle.volume)
+        || Number(existing.sample_count) !== Number(
+          candle.provenance.nativePointSamples ?? candle.provenance.tradeCount ?? 1
+        )
+        || Boolean(Number(existing.finalized)) !== candle.finalized;
+    }).length;
     const now = Date.now();
     await this.db.transaction({
       task: async (executor) => {
@@ -583,7 +630,7 @@ export class MarketService {
         });
       }
     });
-    return { insertedOrUpdated: candles.length };
+    return { insertedOrUpdated: candles.length, changed };
   }
 
   async synchronizeRange({
@@ -816,14 +863,23 @@ export class MarketService {
         };
         if (await cancelIfDisabled()) return;
         const windows = this.planSynchronizationWindows(payload);
+        const captureGraphChanges = typeof this.jobs.shouldCaptureGraphDataChanges === 'function'
+          ? await this.jobs.shouldCaptureGraphDataChanges()
+          : false;
         await updateProgress({
           current: 0,
           total: windows.length,
           cursor: { fromMs: payload.fromMs }
         });
+        let changed = 0;
         for (const [index, window] of windows.entries()) {
           if (await cancelIfDisabled()) return;
-          await this.synchronizeWindow({ ...payload, ...window });
+          const synchronized = await this.synchronizeWindow({
+            ...payload,
+            ...window,
+            detectChanges: captureGraphChanges
+          });
+          changed += synchronized.changed;
           await updateProgress({
             current: index + 1,
             total: windows.length,
@@ -860,6 +916,15 @@ export class MarketService {
             ]
           });
         }
+        return captureGraphChanges && changed > 0
+          ? {
+              graphDataChanges: [{
+                domain: 'market' as const,
+                assetIds: [payload.canonicalAssetId],
+                quoteCurrencies: [payload.quoteCurrency.toUpperCase()]
+              }]
+            }
+          : undefined;
       }
     });
   }
@@ -985,11 +1050,11 @@ export class MarketService {
     const bridgeCurrency = 'USD';
     const quoteCurrencies = [...new Set([quoteCurrency.toUpperCase(), bridgeCurrency])];
     const quotePlaceholders = quoteCurrencies.map(() => '?').join(', ');
-    const labelsPromise = this.seriesMetadataCache.get({
+    const labelsPromise = this.seriesRequests.run({
       key: 'watchlist-labels',
       load: () => this.listWatchlist()
     });
-    const eventsPromise = this.seriesMetadataCache.get({
+    const eventsPromise = this.seriesRequests.run({
       key: `events:${JSON.stringify({
         assetIds: [...assetIds].sort(),
         fromSecond: Math.floor(fromMs / 1_000),
@@ -1002,10 +1067,9 @@ export class MarketService {
         toMs
       })
     });
-    // Dashboard market charts request the same assets once per tooltip currency.
-    // Read every locally stored currency in one scan so those concurrent calls
-    // coalesce here instead of repeating the expensive window query for each one.
-    const rows = await this.seriesRowsCache.get<MarketPointRow[]>({
+    // Concurrent currency requests share only the active database promise. The
+    // result is discarded immediately after completion; Redis is the sole cache.
+    const rows = await this.seriesRequests.run<MarketPointRow[]>({
       key: JSON.stringify({
         assetIds: [...assetIds].sort(),
         source,

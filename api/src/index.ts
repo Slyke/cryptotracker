@@ -13,6 +13,7 @@ import { AddressService } from './services/addresses.js';
 import { bootstrapApplicationData } from './services/bootstrap.js';
 import { DiagnosticsService } from './services/diagnostics.js';
 import { ApplicationExportService } from './services/exports.js';
+import { GraphCacheService } from './services/graph-cache.js';
 import { KrakenService } from './services/kraken.js';
 import { MarketService } from './services/market.js';
 import { PortfolioService } from './services/portfolio.js';
@@ -61,12 +62,44 @@ const main = async () => {
   const exports = new ApplicationExportService(db, runtime, jobs, buildInfo, userId);
   const retention = new RetentionService(db);
   const diagnostics = new DiagnosticsService(db, runtime, market, addresses, kraken);
-  const scheduler = new Scheduler(db, runtime, market, addresses, kraken, portfolio, settings, retention, logger);
+  const graphCache = new GraphCacheService(runtime, logger, async (plan) => {
+    switch (plan.scope) {
+      case 'market':
+        return market.getSeries(plan.input as unknown as Parameters<typeof market.getSeries>[0]);
+      case 'portfolio':
+        return portfolio.series(plan.input as unknown as Parameters<typeof portfolio.series>[0]);
+      case 'addresses':
+        return addresses.series(plan.input as unknown as Parameters<typeof addresses.series>[0]);
+      case 'kraken':
+        return kraken.series(plan.input as unknown as Parameters<typeof kraken.series>[0]);
+      case 'kraken-earn':
+        return kraken.earnOverview(plan.input as unknown as Parameters<typeof kraken.earnOverview>[0]);
+    }
+  });
+  const refreshGraphCache = (changes: Parameters<typeof graphCache.refreshAffected>[0]) => (
+    graphCache.refreshAffected(changes)
+  );
+  const scheduler = new Scheduler(
+    db,
+    runtime,
+    market,
+    addresses,
+    kraken,
+    portfolio,
+    settings,
+    retention,
+    logger,
+    graphCache.enabled ? refreshGraphCache : null,
+    graphCache.enabled ? () => graphCache.isActive() : null
+  );
   market.registerJobs();
   addresses.registerJobs();
   kraken.registerJobs();
   transfers.registerJobs({ jobs });
   exports.registerJobs();
+  if (graphCache.enabled) {
+    jobs.onGraphDataChange(refreshGraphCache, () => graphCache.isActive());
+  }
   const context: AppContext = {
     runtime,
     buildInfo,
@@ -83,8 +116,10 @@ const main = async () => {
     exports,
     retention,
     jobs,
-    scheduler
+    scheduler,
+    graphCache
   };
+  await graphCache.initialize();
   const { server, secureServer } = createHttpServer({ context });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -156,6 +191,7 @@ const main = async () => {
         new Promise<void>((resolve) => secureServer.close(() => resolve()))
       ] : [])
     ]);
+    await graphCache.close();
     await db.close();
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
