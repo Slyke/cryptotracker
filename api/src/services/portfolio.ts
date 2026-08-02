@@ -445,6 +445,12 @@ export class PortfolioService {
         ...denominationValues
       };
     });
+    const firstVisiblePointIndex = points.findIndex((point) => (
+      point.value === null || !new Decimal(point.value).isZero()
+    ));
+    const visiblePoints = firstVisiblePointIndex === -1
+      ? []
+      : points.slice(firstVisiblePointIndex);
     const addressIds = (await this.db.query<{ id: string }>({
       sql: `
         SELECT id FROM tracked_addresses
@@ -488,7 +494,7 @@ export class PortfolioService {
       series: [{
         id: 'combined-portfolio',
         label: 'Combined portfolio',
-        points
+        points: visiblePoints
       }]
     };
   }

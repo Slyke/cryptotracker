@@ -24,6 +24,8 @@
   export let graph: SavedGraph;
   export let minimalChrome = false;
   export let hideActions = false;
+  export let primaryCurrency = '';
+  export let tooltipCurrencies: string[] = [];
 
   const dispatch = createEventDispatcher<{
     hide: { id: string };
@@ -37,8 +39,8 @@
   let partial = false;
   let stale = false;
   let resolvedGranularity = 86_400;
-  let fallbackTooltipCurrencies: string[] = [];
-  let currentPrimaryCurrency = '';
+  let fallbackTooltipCurrencies: string[] = [...tooltipCurrencies];
+  let currentPrimaryCurrency = primaryCurrency.toUpperCase();
 
   const stringConfig = (key: string, fallback: string) => (
     typeof graph.config[key] === 'string' ? String(graph.config[key]) : fallback
@@ -166,14 +168,9 @@
     error = '';
     const { from, to } = rangeWindow();
     try {
-      const settingsPayload = await apiRequest<{
-        settings: {
-          primaryCurrency: string;
-          tooltipCurrencies: string[];
-        };
-      }>({ url: '/api/settings' });
-      currentPrimaryCurrency = settingsPayload.settings.primaryCurrency.toUpperCase();
-      fallbackTooltipCurrencies = settingsPayload.settings.tooltipCurrencies ?? [];
+      currentPrimaryCurrency = primaryCurrency.trim().toUpperCase()
+        || stringConfig('primaryCurrency', stringConfig('currency', 'CAD')).toUpperCase();
+      fallbackTooltipCurrencies = [...tooltipCurrencies];
       if (graph.type === 'portfolio') {
         const currencies = configuredTooltipCurrencies();
         const payload = await apiRequest<{

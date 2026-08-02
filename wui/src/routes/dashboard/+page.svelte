@@ -801,6 +801,8 @@
                           graph={item}
                           minimalChrome={hideFluff}
                           hideActions={minimalMode}
+                          primaryCurrency={settings.primaryCurrency}
+                          tooltipCurrencies={settings.tooltipCurrencies}
                           on:hide={hideGraph}
                           on:remove={removeGraph}
                         />

@@ -111,4 +111,62 @@ describe('combined portfolio snapshots', () => {
       await db.close();
     }
   });
+
+  it('omits only leading zero-value points from the portfolio series', async () => {
+    const runtime = await createTestRuntime();
+    const { db } = await openMigratedTestDatabase({ runtime });
+    try {
+      await bootstrapApplicationData({ db, runtime });
+      const bucketMs = 1_800_000;
+      const firstTimestampMs = Math.floor((Date.now() - 4 * bucketMs) / bucketMs) * bucketMs;
+      const values = ['0', '0', '100', '0'];
+
+      for (const [index, value] of values.entries()) {
+        const timestampMs = firstTimestampMs + index * bucketMs;
+        await db.run({
+          sql: `
+            INSERT INTO market_points(
+              id, provider, canonical_asset_id, quote_currency,
+              bucket_start_ms, granularity_seconds, data_kind,
+              close_value, retrieved_at_ms
+            ) VALUES (?, 'fixture', 'bitcoin', 'CAD', ?, 300, 'native', ?, ?)
+          `,
+          parameters: [`price-${index}`, timestampMs, value, timestampMs]
+        });
+        await db.run({
+          sql: `
+            INSERT INTO portfolio_snapshots(
+              id, captured_at_ms, primary_currency, values_json, quantities_json,
+              priced_coverage_percent, incomplete_balance_count, provenance_json
+            ) VALUES (?, ?, 'CAD', ?, '{"bitcoin":"1"}', '100', 0, '{}')
+          `,
+          parameters: [
+            `portfolio-${index}`,
+            timestampMs,
+            JSON.stringify({ CAD: value })
+          ]
+        });
+      }
+
+      const result = await new PortfolioService(db, runtime).series({
+        fromMs: firstTimestampMs,
+        toMs: firstTimestampMs + 3 * bucketMs,
+        quoteCurrencies: ['CAD'],
+        granularitySeconds: 1_800
+      });
+
+      expect(result.series[0]?.points.map((point) => ({
+        timestampMs: point.timestampMs,
+        value: point.value
+      }))).toEqual([
+        { timestampMs: firstTimestampMs + 2 * bucketMs, value: '100' },
+        { timestampMs: firstTimestampMs + 3 * bucketMs, value: '0' }
+      ]);
+      expect(await db.one<{ count: number }>({
+        sql: 'SELECT COUNT(*) AS count FROM portfolio_snapshots'
+      })).toEqual({ count: 4 });
+    } finally {
+      await db.close();
+    }
+  });
 });

@@ -171,6 +171,19 @@ describe('database migrations and persistent jobs', () => {
       })).toEqual({
         close_value: '123456789.123456789123456789'
       });
+      expect(await db.query<{ name: string }>({
+        sql: `
+          SELECT name FROM sqlite_master
+          WHERE type = 'index' AND name IN (
+            'market_points_asset_quote_time_idx',
+            'market_points_disputed_asset_time_idx'
+          )
+          ORDER BY name
+        `
+      })).toEqual([
+        { name: 'market_points_asset_quote_time_idx' },
+        { name: 'market_points_disputed_asset_time_idx' }
+      ]);
     } finally {
       await db.close();
     }
