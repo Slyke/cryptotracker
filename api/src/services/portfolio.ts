@@ -10,7 +10,6 @@ import { createId } from '../utils/ids.js';
 import {
   chartDenominationsAt,
   enabledChartDenominations,
-  historicalPriceLookup,
   historicalPriceLookups
 } from './chart-values.js';
 import { addressEvents, krakenEvents } from './event-markers.js';
@@ -26,6 +25,13 @@ interface PortfolioSnapshotRow {
   provenance_json: string;
 }
 
+interface CurrentPortfolioQuantities {
+  quantities: Map<string, Decimal>;
+  incompleteBalanceCount: number;
+  addressCount: number;
+  krakenAssetRowCount: number;
+}
+
 const parseRecord = (value: string): Record<string, string> => {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -38,6 +44,23 @@ const parseRecord = (value: string): Record<string, string> => {
   } catch {
     return {};
   }
+};
+
+const decimalRecordsEqual = (
+  left: Record<string, string | null | undefined>,
+  right: Record<string, string | null | undefined>
+) => {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return [...keys].every((key) => {
+    const leftValue = left[key];
+    const rightValue = right[key];
+    if (leftValue === null || leftValue === undefined) {
+      return rightValue === null || rightValue === undefined;
+    }
+    return rightValue !== null
+      && rightValue !== undefined
+      && new Decimal(leftValue).equals(rightValue);
+  });
 };
 
 const addQuantity = ({
@@ -101,7 +124,7 @@ export class PortfolioService {
     };
   }
 
-  private async currentQuantities() {
+  private async currentQuantities(): Promise<CurrentPortfolioQuantities> {
     const quantities = new Map<string, Decimal>();
     let incompleteBalanceCount = 0;
     const [addressSelections, addressEventsRows, addressObservations, krakenRows] = await Promise.all([
@@ -231,6 +254,101 @@ export class PortfolioService {
     };
   }
 
+  private async valueQuantitiesAt({
+    current,
+    currencies,
+    primaryCurrency,
+    timestampMs,
+    additionalPriceAssetIds = []
+  }: {
+    current: CurrentPortfolioQuantities;
+    currencies: string[];
+    primaryCurrency: string;
+    timestampMs: number;
+    additionalPriceAssetIds?: string[];
+  }) {
+    const assetIds = [...new Set([
+      ...current.quantities.keys(),
+      ...additionalPriceAssetIds
+    ])];
+    const lookups = await historicalPriceLookups({
+      db: this.db,
+      assetIds,
+      quoteCurrencies: currencies,
+      fromMs: timestampMs,
+      toMs: timestampMs,
+      queryGranularitySeconds: 300,
+      disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
+    });
+    let primaryPricedAssets = 0;
+    const pricedAssetCounts: Record<string, number> = {};
+    const values = Object.fromEntries(currencies.map((currency) => {
+      let total = new Decimal(0);
+      let currencyPricedAssets = 0;
+      for (const [assetId, quantity] of current.quantities) {
+        if (quantity.isZero()) continue;
+        const price = assetId === currency.toLowerCase()
+          ? '1'
+          : lookups.get(currency)!({ assetId, timestampMs });
+        if (price === null) continue;
+        total = total.plus(quantity.times(price));
+        currencyPricedAssets += 1;
+      }
+      if (currency === primaryCurrency) primaryPricedAssets = currencyPricedAssets;
+      pricedAssetCounts[currency] = currencyPricedAssets;
+      return [currency, total.toString()];
+    }));
+    const nonZeroAssetCount = [...current.quantities.values()]
+      .filter((quantity) => !quantity.isZero()).length;
+    const coverage = nonZeroAssetCount + current.incompleteBalanceCount === 0
+      ? new Decimal(100)
+      : new Decimal(primaryPricedAssets)
+        .dividedBy(nonZeroAssetCount + current.incompleteBalanceCount)
+        .times(100);
+    return { values, coverage, lookups, nonZeroAssetCount, pricedAssetCounts };
+  }
+
+  async current({
+    quoteCurrencies
+  }: {
+    quoteCurrencies?: string[];
+  } = {}) {
+    const capturedAtMs = Date.now();
+    const [current, currencyConfig] = await Promise.all([
+      this.currentQuantities(),
+      this.configuredCurrencies()
+    ]);
+    const currencies = [...new Set([
+      currencyConfig.primaryCurrency,
+      'USD',
+      ...(quoteCurrencies ?? currencyConfig.currencies)
+        .map((currency) => currency.toUpperCase())
+        .filter((currency) => /^[A-Z]{3}$/.test(currency))
+    ])];
+    const valuation = await this.valueQuantitiesAt({
+      current,
+      currencies,
+      primaryCurrency: currencyConfig.primaryCurrency,
+      timestampMs: capturedAtMs
+    });
+    return {
+      capturedAtMs,
+      primaryCurrency: currencyConfig.primaryCurrency,
+      values: Object.fromEntries(currencies.map((currency) => [
+        currency,
+        valuation.nonZeroAssetCount > 0 && valuation.pricedAssetCounts[currency] === 0
+          ? null
+          : valuation.values[currency]
+      ])),
+      quantities: Object.fromEntries(
+        [...current.quantities.entries()]
+          .map(([assetId, quantity]) => [assetId, quantity.toString()])
+      ),
+      coveragePercent: valuation.coverage.toString(),
+      incompleteBalanceCount: current.incompleteBalanceCount
+    };
+  }
+
   async capture({ detectChanges = false }: { detectChanges?: boolean } = {}) {
     const capturedAtMs = Date.now();
     const bucketMs = 30 * 60_000;
@@ -239,40 +357,19 @@ export class PortfolioService {
       this.currentQuantities(),
       this.configuredCurrencies()
     ]);
-    const assetIds = [...quantities.keys()];
-    const lookups = new Map(await Promise.all(currencyConfig.currencies.map(async (currency) => [
-      currency,
-      await historicalPriceLookup({
-        db: this.db,
-        assetIds,
-        quoteCurrency: currency,
-        fromMs: bucketStartMs,
-        toMs: capturedAtMs,
-        disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
-      })
-    ] as const)));
-    let pricedAssets = 0;
-    const values = Object.fromEntries(currencyConfig.currencies.map((currency) => {
-      let total = new Decimal(0);
-      let currencyPricedAssets = 0;
-      for (const [assetId, quantity] of quantities) {
-        if (quantity.isZero()) continue;
-        const price = assetId === currency.toLowerCase()
-          ? '1'
-          : lookups.get(currency)!({ assetId, timestampMs: capturedAtMs });
-        if (price === null) continue;
-        total = total.plus(quantity.times(price));
-        currencyPricedAssets += 1;
-      }
-      if (currency === currencyConfig.primaryCurrency) pricedAssets = currencyPricedAssets;
-      return [currency, total.toString()];
-    }));
-    const nonZeroAssetCount = [...quantities.values()].filter((quantity) => !quantity.isZero()).length;
-    const coverage = nonZeroAssetCount + incompleteBalanceCount === 0
-      ? new Decimal(100)
-      : new Decimal(pricedAssets)
-        .dividedBy(nonZeroAssetCount + incompleteBalanceCount)
-        .times(100);
+    const valuation = await this.valueQuantitiesAt({
+      current: {
+        quantities,
+        incompleteBalanceCount,
+        addressCount,
+        krakenAssetRowCount
+      },
+      currencies: currencyConfig.currencies,
+      primaryCurrency: currencyConfig.primaryCurrency,
+      timestampMs: capturedAtMs
+    });
+    const values = valuation.values;
+    const coverage = valuation.coverage;
     const serializedQuantities = Object.fromEntries(
       [...quantities.entries()].map(([assetId, quantity]) => [assetId, quantity.toString()])
     );
@@ -395,7 +492,13 @@ export class PortfolioService {
       `,
       parameters: [bucketMs, effectiveFromMs, toMs]
     });
-    const denominationOptions = await enabledChartDenominations({ db: this.db });
+    const requestNowMs = Date.now();
+    const liveTimestampMs = Math.min(toMs, requestNowMs);
+    const includeCurrent = toMs >= requestNowMs - 5 * 60_000;
+    const [denominationOptions, current] = await Promise.all([
+      enabledChartDenominations({ db: this.db }),
+      includeCurrent ? this.currentQuantities() : Promise.resolve(null)
+    ]);
     const allAssetIds = [...new Set(snapshots.flatMap((snapshot) => (
       Object.keys(parseRecord(snapshot.quantities_json))
     )))];
@@ -403,15 +506,26 @@ export class PortfolioService {
       ...allAssetIds,
       ...denominationOptions.map((option) => option.id)
     ])];
-    const lookups = await historicalPriceLookups({
-      db: this.db,
-      assetIds: priceAssetIds,
-      quoteCurrencies: currencies,
-      fromMs: effectiveFromMs,
-      toMs,
-      queryGranularitySeconds: resolvedGranularitySeconds,
-      disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
-    });
+    const [lookups, currentValuation] = await Promise.all([
+      historicalPriceLookups({
+        db: this.db,
+        assetIds: priceAssetIds,
+        quoteCurrencies: currencies,
+        fromMs: effectiveFromMs,
+        toMs,
+        queryGranularitySeconds: resolvedGranularitySeconds,
+        disagreementThresholdPercent: this.runtime.config.ui.defaultProviderDisagreementThresholdPercent
+      }),
+      current
+        ? this.valueQuantitiesAt({
+            current,
+            currencies,
+            primaryCurrency: currencyConfig.primaryCurrency,
+            timestampMs: liveTimestampMs,
+            additionalPriceAssetIds: denominationOptions.map((option) => option.id)
+          })
+        : Promise.resolve(null)
+    ]);
     const points = snapshots.map((snapshot) => {
       const timestampMs = Number(snapshot.captured_at_ms);
       const quantities = parseRecord(snapshot.quantities_json);
@@ -466,6 +580,59 @@ export class PortfolioService {
     const visiblePoints = firstVisiblePointIndex === -1
       ? []
       : points.slice(firstVisiblePointIndex);
+    const currentQuantities = current
+      ? Object.fromEntries(
+          [...current.quantities.entries()]
+            .map(([assetId, quantity]) => [assetId, quantity.toString()])
+        )
+      : null;
+    const currentPoint = current && currentValuation && currentQuantities
+      ? (() => {
+          const quotes = Object.fromEntries(currencies.map((currency) => [
+            currency,
+            currentValuation.nonZeroAssetCount > 0
+              && currentValuation.pricedAssetCounts[currency] === 0
+              ? null
+              : currentValuation.values[currency] ?? null
+          ]));
+          const denominationValues = chartDenominationsAt({
+            denominationOptions,
+            quoteValues: quotes,
+            primaryCurrency: currencyConfig.primaryCurrency,
+            timestampMs: liveTimestampMs,
+            priceAt: ({ assetId, quoteCurrency, timestampMs }) => (
+              currentValuation.lookups.get(quoteCurrency)?.({ assetId, timestampMs }) ?? null
+            )
+          });
+          return {
+            timestampMs: liveTimestampMs,
+            value: quotes[currencyConfig.primaryCurrency] ?? null,
+            quotes,
+            quantities: currentQuantities,
+            coveragePercent: currentValuation.coverage.toString(),
+            ...denominationValues
+          };
+        })()
+      : null;
+    const lastVisiblePoint = visiblePoints.at(-1);
+    const hasCurrentHoldings = current
+      ? [...current.quantities.values()].some((quantity) => !quantity.isZero())
+      : false;
+    const currentDiffers = currentPoint && (
+      !lastVisiblePoint
+      || !decimalRecordsEqual(lastVisiblePoint.quotes ?? {}, currentPoint.quotes)
+      || !decimalRecordsEqual(lastVisiblePoint.quantities ?? {}, currentPoint.quantities)
+    );
+    const showCurrentPoint = Boolean(
+      currentPoint
+      && currentDiffers
+      && (visiblePoints.length > 0 || hasCurrentHoldings)
+    );
+    const displayedPoints = showCurrentPoint
+      ? lastVisiblePoint?.timestampMs === liveTimestampMs
+        ? [...visiblePoints.slice(0, -1), currentPoint!]
+        : [...visiblePoints, currentPoint!]
+      : visiblePoints;
     const addressIds = (await this.db.query<{ id: string }>({
       sql: `
         SELECT id FROM tracked_addresses
@@ -502,14 +669,22 @@ export class PortfolioService {
       partial: snapshots.some((snapshot) => (
         new Decimal(snapshot.priced_coverage_percent).lessThan(100)
         || Number(snapshot.incomplete_balance_count) > 0
-      )),
+      )) || Boolean(
+        showCurrentPoint
+        && current
+        && currentValuation
+        && (
+          currentValuation.coverage.lessThan(100)
+          || current.incompleteBalanceCount > 0
+        )
+      ),
       stale: snapshots.length > 0
         && Number(snapshots.at(-1)!.captured_at_ms) < Date.now() - this.runtime.config.sync.staleAfterMinutes * 60_000,
       backfilled: false,
       series: [{
         id: 'combined-portfolio',
         label: 'Combined portfolio',
-        points: visiblePoints
+        points: displayedPoints
       }]
     };
   }

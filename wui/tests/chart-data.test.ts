@@ -68,4 +68,21 @@ describe('chart valued observations', () => {
       { timestampMs: 900_000, value: '12' }
     ]);
   });
+
+  it('can retain the live portfolio tail timestamp while bucketing earlier points', () => {
+    expect(bucketChartSeries({
+      granularitySeconds: 1_800,
+      preserveLatestTimestamp: true,
+      series: [{
+        id: 'portfolio',
+        label: 'Portfolio',
+        points: [
+          { timestampMs: 1_800_000, value: '100' },
+          { timestampMs: 2_640_000, value: '110' }
+        ]
+      }]
+    })[0]?.points).toEqual([
+      { timestampMs: 2_640_000, value: '110' }
+    ]);
+  });
 });

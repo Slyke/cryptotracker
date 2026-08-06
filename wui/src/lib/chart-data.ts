@@ -48,10 +48,12 @@ export const closestCandidateWithinRadius = <
 
 export const bucketChartSeries = ({
   series,
-  granularitySeconds
+  granularitySeconds,
+  preserveLatestTimestamp = false
 }: {
   series: ChartSeries[];
   granularitySeconds: number;
+  preserveLatestTimestamp?: boolean;
 }) => {
   const bucketMs = Math.max(1, Math.floor(granularitySeconds)) * 1_000;
   return series.map((item) => {
@@ -67,7 +69,12 @@ export const bucketChartSeries = ({
       ...item,
       points: [...byBucket.entries()]
         .sort(([left], [right]) => left - right)
-        .map(([timestampMs, point]) => ({ ...point, timestampMs }))
+        .map(([timestampMs, point], index, points) => ({
+          ...point,
+          timestampMs: preserveLatestTimestamp && index === points.length - 1
+            ? point.timestampMs
+            : timestampMs
+        }))
     };
   });
 };

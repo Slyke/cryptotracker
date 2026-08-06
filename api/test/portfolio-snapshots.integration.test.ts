@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { bootstrapApplicationData } from '../src/services/bootstrap.js';
 import { PortfolioService } from '../src/services/portfolio.js';
 import { createTestRuntime, openMigratedTestDatabase } from './helpers.js';
@@ -166,6 +166,102 @@ describe('combined portfolio snapshots', () => {
         sql: 'SELECT COUNT(*) AS count FROM portfolio_snapshots'
       })).toEqual({ count: 4 });
     } finally {
+      await db.close();
+    }
+  });
+
+  it('adds the shared current valuation when a live range is newer than its last snapshot', async () => {
+    const now = Date.UTC(2026, 7, 5, 16, 44);
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const runtime = await createTestRuntime();
+    const { db } = await openMigratedTestDatabase({ runtime });
+    try {
+      await bootstrapApplicationData({ db, runtime });
+      const bucketMs = 1_800_000;
+      const bucketStartMs = Math.floor(now / bucketMs) * bucketMs;
+      await db.run({
+        sql: `
+          INSERT INTO tracked_addresses(
+            id, network, address, normalized_address, label,
+            enabled, created_at_ms, updated_at_ms
+          ) VALUES ('address-live', 'bitcoin', 'fixture-live', 'fixture-live', 'Live address', 1, ?, ?)
+        `,
+        parameters: [now, now]
+      });
+      await db.run({
+        sql: `
+          INSERT INTO address_asset_selections(
+            id, address_id, canonical_asset_id, contract_or_mint,
+            enabled, created_at_ms, updated_at_ms
+          ) VALUES ('selection-live', 'address-live', 'bitcoin', NULL, 1, ?, ?)
+        `,
+        parameters: [now, now]
+      });
+      await db.run({
+        sql: `
+          INSERT INTO address_sync_state(
+            address_id, status, cursor_json, provider_boundary_json,
+            warnings_json, last_success_at_ms, updated_at_ms
+          ) VALUES ('address-live', 'complete', '{}', '{}', '[]', ?, ?)
+        `,
+        parameters: [now, now]
+      });
+      await db.run({
+        sql: `
+          INSERT INTO address_balance_points(
+            id, address_id, canonical_asset_id, bucket_start_ms,
+            granularity_seconds, quantity, price_coverage
+          ) VALUES ('address-point-live', 'address-live', 'bitcoin', ?, 0, '1', 'balance_observed')
+        `,
+        parameters: [now]
+      });
+      await db.run({
+        sql: `
+          INSERT INTO portfolio_snapshots(
+            id, captured_at_ms, primary_currency, values_json, quantities_json,
+            priced_coverage_percent, incomplete_balance_count, provenance_json
+          ) VALUES ('portfolio-live', ?, 'CAD', '{"CAD":"100"}', '{"bitcoin":"1"}', '100', 0, '{}')
+        `,
+        parameters: [bucketStartMs]
+      });
+      for (const [id, timestampMs, value] of [
+        ['price-snapshot', bucketStartMs, '100'],
+        ['price-current', bucketStartMs + 300_000, '110']
+      ] as const) {
+        await db.run({
+          sql: `
+            INSERT INTO market_points(
+              id, provider, canonical_asset_id, quote_currency,
+              bucket_start_ms, granularity_seconds, data_kind,
+              close_value, retrieved_at_ms
+            ) VALUES (?, 'fixture', 'bitcoin', 'CAD', ?, 300, 'native', ?, ?)
+          `,
+          parameters: [id, timestampMs, value, timestampMs]
+        });
+      }
+
+      const service = new PortfolioService(db, runtime);
+      await expect(service.current({ quoteCurrencies: ['CAD'] })).resolves.toMatchObject({
+        capturedAtMs: now,
+        values: { CAD: '110' },
+        quantities: { bitcoin: '1' }
+      });
+      const result = await service.series({
+        fromMs: bucketStartMs,
+        toMs: now,
+        quoteCurrencies: ['CAD'],
+        granularitySeconds: 1_800
+      });
+      expect(result.series[0]?.points.map((point) => ({
+        timestampMs: point.timestampMs,
+        value: point.value,
+        cad: point.quotes.CAD
+      }))).toEqual([
+        { timestampMs: bucketStartMs, value: '100', cad: '100' },
+        { timestampMs: now, value: '110', cad: '110' }
+      ]);
+    } finally {
+      nowSpy.mockRestore();
       await db.close();
     }
   });

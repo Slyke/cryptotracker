@@ -812,6 +812,25 @@ const registerRoutes = ({
       })
     });
   }));
+  app.get('/api/portfolio/current', asyncRoute(async (req, res) => {
+    const query = parse({
+      schema: z.object({
+        quoteCurrencies: z.string().optional()
+      }),
+      value: req.query
+    });
+    res.json({
+      ok: true,
+      current: await context.portfolio.current({
+        ...(query.quoteCurrencies ? {
+          quoteCurrencies: query.quoteCurrencies.split(',')
+            .map((currency) => currency.trim().toUpperCase())
+            .filter((currency) => /^[A-Z]{3}$/.test(currency))
+            .slice(0, 6)
+        } : {})
+      })
+    });
+  }));
   app.get('/api/portfolio/series', asyncRoute(async (req, res) => {
     const query = parse({
       schema: z.object({

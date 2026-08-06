@@ -200,7 +200,8 @@
           : payload.data.granularitySeconds;
         series = bucketChartSeries({
           series: payload.data.series,
-          granularitySeconds: resolvedGranularity
+          granularitySeconds: resolvedGranularity,
+          preserveLatestTimestamp: true
         });
         events = payload.data.events;
         denominationOptions = payload.data.denominationOptions;

@@ -80,7 +80,7 @@ CoinGecko quote conversion for other display currencies; provenance remains visi
 The page contains:
 
 - a combined tracked-address plus Kraken portfolio-history chart based on locally retained
-  snapshots;
+  snapshots, with a current tail value when the newest cached prices or balances have changed;
 - a watched-price chart for up to ten selected enabled assets;
 - price-return analytics for the currently loaded market series;
 - a searchable top-100 CoinGecko catalog used to enable or disable assets.

@@ -271,13 +271,25 @@
         listedCurrencies: settings.tooltipCurrencies ?? []
       });
       const currencyQuery = encodeURIComponent(currencies.join(','));
-      const [watchlistPayload, holdingsPayload, krakenPayload, providerPayload, jobsPayload] = await Promise.all([
+      const [
+        watchlistPayload,
+        holdingsPayload,
+        krakenPayload,
+        currentPortfolioPayload,
+        providerPayload,
+        jobsPayload
+      ] = await Promise.all([
         apiRequest<{ assets: typeof watchlist }>({ url: '/api/watchlist/assets' }),
         apiRequest<{ holdings: typeof holdings }>({
           url: `/api/addresses/holdings?quoteCurrency=${settings.primaryCurrency}&quoteCurrencies=${currencyQuery}`
         }),
         apiRequest<{ summary: typeof kraken }>({
           url: `/api/kraken/summary?quoteCurrencies=${currencyQuery}`
+        }),
+        apiRequest<{
+          current: { values: Record<string, string | null> };
+        }>({
+          url: `/api/portfolio/current?quoteCurrencies=${currencyQuery}`
         }),
         apiRequest<{ providers: Record<string, unknown> }>({ url: '/api/providers/status' }),
         apiRequest<{ progress: { jobs: typeof jobs } }>({ url: '/api/sync/progress' }),
@@ -303,16 +315,10 @@
           currency === kraken.currency ? kraken.totalCurrentValue : null
         )
       ]));
-      knownValues = Object.fromEntries(currencies.map((currency) => {
-        const addressValue = addressValues[currency];
-        const krakenValue = krakenValues[currency];
-        return [
-          currency,
-          addressValue === null && krakenValue === null
-            ? null
-            : (Number(addressValue ?? 0) + Number(krakenValue ?? 0)).toString()
-        ];
-      }));
+      knownValues = Object.fromEntries(currencies.map((currency) => [
+        currency,
+        currentPortfolioPayload.current.values[currency] ?? null
+      ]));
       providers = providerPayload.providers;
       jobs = jobsPayload.progress.jobs;
       const summaryBlockIds = currencies.map((currency) => `summary:${currency}`);
