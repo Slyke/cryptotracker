@@ -15,6 +15,12 @@ export interface GraphCachePlan {
 }
 
 type RedisClient = ReturnType<typeof createClient>;
+type GraphCacheMissReason =
+  | 'redis_unavailable'
+  | 'plan_not_registered'
+  | 'plan_changed'
+  | 'result_not_found'
+  | 'redis_error';
 
 const pause = (milliseconds: number) => new Promise<void>((resolve) => {
   const timeout = setTimeout(resolve, milliseconds);
@@ -38,6 +44,29 @@ export class GraphCacheService {
 
   get enabled() {
     return this.redisConfig.enabled;
+  }
+
+  private logRequestMiss({
+    plan,
+    reason,
+    resolution
+  }: {
+    plan: GraphCachePlan;
+    reason: GraphCacheMissReason;
+    resolution: 'postgresql_fallback' | 'materialize_or_await';
+  }) {
+    this.logger.info({
+      caller: 'graphCache::getOrLoad',
+      loggerKey: 'GRAPH_CACHE_MISS',
+      message: `Redis dashboard graph cache miss: ${reason}.`,
+      context: {
+        cacheOutcome: 'miss',
+        reason,
+        resolution,
+        planId: plan.id,
+        scope: plan.scope
+      }
+    });
   }
 
   private key(suffix: string) {
@@ -167,13 +196,29 @@ export class GraphCacheService {
     plan: GraphCachePlan;
     load: () => Promise<unknown>;
   }) {
+    let missLogged = false;
+    const logMiss = (
+      reason: GraphCacheMissReason,
+      resolution: 'postgresql_fallback' | 'materialize_or_await'
+    ) => {
+      if (missLogged) return;
+      missLogged = true;
+      this.logRequestMiss({ plan, reason, resolution });
+    };
     const client = await this.readyClient();
-    if (!client) return JSON.stringify({ ok: true, data: await load() });
+    if (!client) {
+      if (this.enabled) logMiss('redis_unavailable', 'postgresql_fallback');
+      return JSON.stringify({ ok: true, data: await load() });
+    }
     try {
       const registeredRaw = await client.hGet(this.key('plans'), plan.id);
-      if (!registeredRaw) return JSON.stringify({ ok: true, data: await load() });
+      if (!registeredRaw) {
+        logMiss('plan_not_registered', 'postgresql_fallback');
+        return JSON.stringify({ ok: true, data: await load() });
+      }
       const registered = JSON.parse(registeredRaw) as GraphCachePlan;
       if (registered.revision !== plan.revision || registered.scope !== plan.scope) {
+        logMiss('plan_changed', 'postgresql_fallback');
         return JSON.stringify({ ok: true, data: await load() });
       }
       const cached = await client.get(this.resultKey(plan));
@@ -181,6 +226,7 @@ export class GraphCacheService {
         await client.hSet(this.key('plans'), plan.id, JSON.stringify(this.normalizePlan(plan)));
         return cached;
       }
+      logMiss('result_not_found', 'materialize_or_await');
       const materialized = await this.materialize({ client, plan, load });
       if (materialized !== null) return materialized;
       for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -188,7 +234,18 @@ export class GraphCacheService {
         const shared = await client.get(this.resultKey(plan));
         if (shared !== null) return shared;
       }
+      this.logger.warn({
+        caller: 'graphCache::getOrLoad',
+        loggerKey: 'GRAPH_CACHE_FILL_TIMEOUT',
+        message: 'Redis dashboard graph cache fill wait timed out; loading the graph from PostgreSQL.',
+        context: {
+          waitMs: 10_000,
+          planId: plan.id,
+          scope: plan.scope
+        }
+      });
     } catch (error) {
+      logMiss('redis_error', 'postgresql_fallback');
       this.logger.error({
         caller: 'graphCache::getOrLoad',
         message: 'Redis graph lookup failed; loading the graph from PostgreSQL.',
