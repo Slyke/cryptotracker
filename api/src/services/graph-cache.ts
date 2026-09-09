@@ -88,6 +88,10 @@ export class GraphCacheService {
     return this.key(`lock:${digest}`);
   }
 
+  private refreshKey(plan: Pick<GraphCachePlan, 'id' | 'revision'>) {
+    return `${this.resultKey(plan)}:refresh`;
+  }
+
   async initialize() {
     if (!this.enabled || this.client?.isReady) return;
     if (Date.now() < this.nextConnectionAttemptAt) return;
@@ -154,7 +158,7 @@ export class GraphCacheService {
     };
   }
 
-  private async releaseLock(client: RedisClient, key: string, owner: string) {
+  private async deleteIfUnchanged(client: RedisClient, key: string, owner: string) {
     await client.eval(
       'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end',
       { keys: [key], arguments: [owner] }
@@ -191,6 +195,8 @@ export class GraphCacheService {
     const acquired = await client.set(lockKey, owner, { NX: true, PX: 120_000 });
     if (!acquired) return null;
     try {
+      const refreshKey = this.refreshKey(normalized);
+      const refreshToken = await client.get(refreshKey);
       const data = await (load ? load() : this.loadPlan(normalized));
       const body = JSON.stringify({ ok: true, data });
       await Promise.all([
@@ -198,9 +204,11 @@ export class GraphCacheService {
         client.hSet(this.key('plans'), normalized.id, JSON.stringify(normalized)),
         client.expire(this.key('plans'), this.redisConfig.resultTtlSeconds)
       ]);
+      // A change arriving during this query must still trigger another refresh.
+      if (refreshToken !== null) await this.deleteIfUnchanged(client, refreshKey, refreshToken);
       return body;
     } finally {
-      await this.releaseLock(client, lockKey, owner);
+      await this.deleteIfUnchanged(client, lockKey, owner);
     }
   }
 
@@ -318,6 +326,22 @@ export class GraphCacheService {
     for (const plan of plans) {
       transaction.hSet(plansKey, plan.id, JSON.stringify(this.normalizePlan(plan)));
     }
+    if (reactivating) {
+      // Mark later activation batches too, without removing their cached bodies.
+      const refreshPlans = [...plans];
+      const retainedIds = replacePlans ? nextIds : new Set(plans.map((plan) => plan.id));
+      for (const id of retainedIds) {
+        if (!current[id]) continue;
+        try {
+          refreshPlans.push(JSON.parse(current[id]!) as GraphCachePlan);
+        } catch {
+          continue;
+        }
+      }
+      for (const plan of refreshPlans) {
+        transaction.setEx(this.refreshKey(plan), this.redisConfig.resultTtlSeconds, randomUUID());
+      }
+    }
     if (removedIds.length > 0) transaction.hDel(plansKey, removedIds);
     transaction.expire(plansKey, this.redisConfig.resultTtlSeconds);
     await transaction.exec();
@@ -329,10 +353,10 @@ export class GraphCacheService {
         continue;
       }
     }
-    void this.warmPlans(plans, reactivating).catch((error) => {
+    void this.warmPlans(plans).catch((error) => {
       this.logger.error({
         caller: 'graphCache::activate',
-        message: 'Dashboard graph cache warm-up failed; requests will continue through PostgreSQL.',
+        message: 'Dashboard graph cache warm-up failed; existing results remain available and pending refreshes will retry on activation.',
         error
       });
     });
@@ -373,7 +397,7 @@ export class GraphCacheService {
     });
   }
 
-  private async warmPlans(plans: GraphCachePlan[], refreshExisting = false) {
+  private async warmPlans(plans: GraphCachePlan[]) {
     const client = await this.readyClient();
     if (!client) return;
     const pending = [...plans];
@@ -382,7 +406,8 @@ export class GraphCacheService {
         const plan = pending.shift();
         if (!plan) return;
         const existing = await client.get(this.resultKey(plan));
-        if (refreshExisting || existing === null) await this.materialize({ client, plan });
+        const refreshToken = await client.get(this.refreshKey(plan));
+        if (refreshToken !== null || existing === null) await this.materialize({ client, plan });
       }
     };
     await Promise.all([worker(), worker()]);
@@ -421,7 +446,10 @@ export class GraphCacheService {
         const plan = pending.shift();
         if (!plan) return;
         // Keep the last successful result available until materialize replaces it.
+        await client.setEx(this.refreshKey(plan), this.redisConfig.resultTtlSeconds, randomUUID());
         for (let attempt = 0; attempt < 60; attempt += 1) {
+          const pendingFill = this.fills.get(this.resultKey(plan));
+          if (pendingFill) await pendingFill.catch(() => null);
           if (await this.materialize({ client, plan }) !== null) break;
           await pause(500);
         }
