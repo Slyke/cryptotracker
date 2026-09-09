@@ -29,6 +29,7 @@ const pause = (milliseconds: number) => new Promise<void>((resolve) => {
 
 export class GraphCacheService {
   private client: RedisClient | null = null;
+  private readonly fills = new Map<string, Promise<string | null>>();
   private nextConnectionAttemptAt = 0;
   private readonly redisConfig;
   private readonly baseKey: string;
@@ -160,7 +161,21 @@ export class GraphCacheService {
     ).catch(() => undefined);
   }
 
-  private async materialize({
+  private materialize(input: {
+    client: RedisClient;
+    plan: GraphCachePlan;
+    load?: () => Promise<unknown>;
+  }): Promise<string | null> {
+    const key = this.resultKey(input.plan);
+    if (this.fills.has(key)) return Promise.resolve(null);
+    const pending = this.runMaterialize(input).finally(() => {
+      this.fills.delete(key);
+    });
+    this.fills.set(key, pending);
+    return pending;
+  }
+
+  private async runMaterialize({
     client,
     plan,
     load
@@ -227,7 +242,9 @@ export class GraphCacheService {
         return cached;
       }
       logMiss('result_not_found', 'materialize_or_await');
-      const materialized = await this.materialize({ client, plan, load });
+      // Share a fill running in this process, even when it takes over ten seconds.
+      const materialized = await (this.fills.get(this.resultKey(plan))
+        ?? this.materialize({ client, plan, load }));
       if (materialized !== null) return materialized;
       for (let attempt = 0; attempt < 50; attempt += 1) {
         await pause(200);
@@ -300,19 +317,6 @@ export class GraphCacheService {
     }));
     for (const plan of plans) {
       transaction.hSet(plansKey, plan.id, JSON.stringify(this.normalizePlan(plan)));
-      if (reactivating) transaction.del(this.resultKey(plan));
-    }
-    if (reactivating) {
-      const invalidateIds = replacePlans ? nextIds : new Set(plans.map((plan) => plan.id));
-      for (const id of invalidateIds) {
-        const previous = current[id];
-        if (!previous) continue;
-        try {
-          transaction.del(this.resultKey(JSON.parse(previous) as GraphCachePlan));
-        } catch {
-          continue;
-        }
-      }
     }
     if (removedIds.length > 0) transaction.hDel(plansKey, removedIds);
     transaction.expire(plansKey, this.redisConfig.resultTtlSeconds);
@@ -325,7 +329,7 @@ export class GraphCacheService {
         continue;
       }
     }
-    void this.warmPlans(plans).catch((error) => {
+    void this.warmPlans(plans, reactivating).catch((error) => {
       this.logger.error({
         caller: 'graphCache::activate',
         message: 'Dashboard graph cache warm-up failed; requests will continue through PostgreSQL.',
@@ -369,7 +373,7 @@ export class GraphCacheService {
     });
   }
 
-  private async warmPlans(plans: GraphCachePlan[]) {
+  private async warmPlans(plans: GraphCachePlan[], refreshExisting = false) {
     const client = await this.readyClient();
     if (!client) return;
     const pending = [...plans];
@@ -378,7 +382,7 @@ export class GraphCacheService {
         const plan = pending.shift();
         if (!plan) return;
         const existing = await client.get(this.resultKey(plan));
-        if (existing === null) await this.materialize({ client, plan });
+        if (refreshExisting || existing === null) await this.materialize({ client, plan });
       }
     };
     await Promise.all([worker(), worker()]);
@@ -416,7 +420,7 @@ export class GraphCacheService {
       for (;;) {
         const plan = pending.shift();
         if (!plan) return;
-        await client.del(this.resultKey(plan));
+        // Keep the last successful result available until materialize replaces it.
         for (let attempt = 0; attempt < 60; attempt += 1) {
           if (await this.materialize({ client, plan }) !== null) break;
           await pause(500);
