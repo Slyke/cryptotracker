@@ -2,7 +2,7 @@ import { createServer as createNodeServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Request } from 'express';
 import { SignJWT } from 'jose';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from '../src/auth/service.js';
 import { bootstrapApplicationData } from '../src/services/bootstrap.js';
 import { SettingsService } from '../src/services/settings.js';
@@ -393,13 +393,27 @@ describe('HTTP ingress', () => {
     await auth.synchronizeLocalUser();
     const { userId } = await bootstrapApplicationData({ db, runtime });
     const settings = new SettingsService(db, runtime, userId);
+    const summaryCache = {
+      getOrLoad: vi.fn().mockResolvedValue({ values: { CAD: '123.4567890123456789', USD: '91' } }),
+      invalidate: vi.fn().mockResolvedValue(undefined)
+    };
+    const rawCurrent = vi.fn();
+    const rawSummary = vi.fn();
+    const syncProgress = vi.fn(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      return { jobs: [], generatedAt: '2026-09-09T00:00:00.000Z' };
+    });
     const context = {
       runtime,
       buildInfo: { version: '1.0.0', buildHash: 'fixture' },
       db,
       logger,
       auth,
-      settings
+      settings,
+      summaryCache,
+      portfolio: { current: rawCurrent },
+      kraken: { summary: rawSummary },
+      diagnostics: { syncProgress }
     } as unknown as AppContext;
     const { server } = createHttpServer({ context });
     const baseUrl = await listen(server);
@@ -429,6 +443,43 @@ describe('HTTP ingress', () => {
       expect(login.status).toBe(200);
       const loginPayload = await login.json() as { csrfToken: string };
       const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+      for (const [path, scope, field] of [
+        ['/api/portfolio/current', 'portfolio', 'current'],
+        ['/api/kraken/summary', 'kraken', 'summary']
+      ]) {
+        const response = await fetch(`${baseUrl}${path}?quoteCurrencies=cad,USD,invalid`, { headers: { cookie } });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          ok: true, [field!]: { values: { CAD: '123.4567890123456789', USD: '91' } }
+        });
+        expect(summaryCache.getOrLoad).toHaveBeenLastCalledWith({ scope, quoteCurrencies: ['CAD', 'USD'] });
+      }
+      expect(rawCurrent).not.toHaveBeenCalled();
+      expect(rawSummary).not.toHaveBeenCalled();
+      const warn = vi.spyOn(logger, 'warn');
+      runtime.config.logging.slowOperationThresholdMs = 5;
+      const progressResponse = await fetch(`${baseUrl}/api/sync/progress`, { headers: { cookie } });
+      expect(progressResponse.status).toBe(200);
+      expect(await progressResponse.json()).toEqual({
+        ok: true, progress: { jobs: [], generatedAt: '2026-09-09T00:00:00.000Z' }
+      });
+      expect(syncProgress).toHaveBeenCalledExactlyOnceWith({
+        failedQuery: '', failedType: '', failedPage: 1, failedPageSize: 10
+      });
+      expect(warn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        loggerKey: 'SYNC_PROGRESS_SLOW',
+        context: expect.objectContaining({ method: 'GET', path: '/api/sync/progress', thresholdMs: 5 })
+      }));
+      runtime.config.logging.slowOperationThresholdMs = 30_000;
+      warn.mockRestore();
+      const currencyPatch = await fetch(`${baseUrl}/api/settings`, {
+        method: 'PATCH',
+        headers: { cookie, origin: 'http://localhost:8192',
+          'x-csrf-token': loginPayload.csrfToken, 'content-type': 'application/json' },
+        body: JSON.stringify({ primaryCurrency: 'CAD' })
+      });
+      expect(currencyPatch.status).toBe(200);
+      expect(summaryCache.invalidate).toHaveBeenCalledExactlyOnceWith(['portfolio', 'kraken']);
       expect(await fetch(`${baseUrl}/api/settings`, {
         headers: { cookie }
       })).toMatchObject({ status: 200 });

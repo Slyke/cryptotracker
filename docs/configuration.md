@@ -99,6 +99,7 @@ secrets schema is validated.
 | `exports.restoreBodyLimit` | `128mb` | Compressed ZIP request limit. |
 | `exports.restoreMaxUncompressedBytes` | `536870912` | Independent expanded archive-content ceiling. |
 | `logging.logTextFormat` | documented schema default | Template for text sinks. |
+| `logging.slowOperationThresholdMs` | `30000` | Slow-warning threshold in milliseconds (integer 1–3,600,000) for summary requests/background calculations and `/api/sync/progress`. Does not cancel requests or change cache freshness. |
 | `logging.sinks` | console text enabled | Console, file, HTTP, and UDP/TCP/TLS syslog destinations with enablement, format, and level filters. |
 | `logging.gates` | `{}` | Named event gates that can override level and per-sink routing. |
 | `logging.kubernetes.enabled` | `false` | Adds Kubernetes-oriented log metadata. |
@@ -141,6 +142,40 @@ Direct deployment overrides are `CRYPTOTRACKER_REDIS_ENABLED`, `CRYPTOTRACKER_RE
 `CRYPTOTRACKER_REDIS_KEY_PREFIX`, `CRYPTOTRACKER_REDIS_RESULT_TTL_SECONDS`,
 `CRYPTOTRACKER_REDIS_CONNECT_TIMEOUT_MS`, and `CRYPTOTRACKER_REDIS_PASSWORD`.
 
+### Slow dashboard operations
+
+For slow dashboard diagnostics, set `logging.slowOperationThresholdMs: 1000` in the JSON5 config
+or set `CRYPTOTRACKER_SLOW_OPERATION_THRESHOLD_MS=1000` on the API container. The environment
+override takes precedence. Restart the API after changing either value; this setting is not hot-reloaded.
+`SUMMARY_CACHE_SLOW` and `SYNC_PROGRESS_SLOW` warnings contain the configured `thresholdMs` and
+observed `elapsedMs`. Fast operations remain silent. A warning may fire while work is still running,
+so `elapsedMs` is the elapsed time when the warning fired, not necessarily the final request duration.
+
+### Provider and job failure diagnostics
+
+Provider failures enrich the existing custom-logger error entries; no per-request, cache-hit,
+or internal-retry log is added. `PROVIDER_REQUEST_FAILED`, `PROVIDER_RATE_LIMITED`, and
+`PROVIDER_CIRCUIT_OPEN` retain the upstream provider, host, HTTP method, and known RPC method
+or allowlisted operation. Job failures also retain `jobId`, `jobType`, `attempts`, `maxAttempts`,
+`terminal`, and `nextRetryAtMs`, alongside the provider/database context.
+
+HTTP failures include upstream `status`, response byte count, allowlisted content type and
+Cloudflare request/error identifiers when present, numeric `retryAfterSeconds`, and
+`responseHints` such as `ip_restricted`, `region_restricted`, `browser_challenge`, or
+`rate_limited`. Hints classify text in the first 16 KiB; they are clues from the rejection,
+not independent proof of a provider outage or IP ban. Raw response bodies, request headers,
+credentials, query strings, arbitrary URL paths, and wallet/RPC parameters are not added to logs
+or persisted job error details. Unrecognized body text is deliberately omitted.
+
+Transport failures expose allowlisted `networkErrorCodes` from nested causes (for example
+`ECONNRESET`, `ENOTFOUND`, or `UND_ERR_CONNECT_TIMEOUT`) instead of only "fetch failed".
+Timeouts retain `failureKind: "timeout"` and `timeoutMs`; circuit cooldowns retain
+`cooldownUntilMs`. Existing error-key gates continue to control these entries.
+
+`JOBS_RECOVERED` emits one informational entry at startup only if interrupted jobs were
+actually requeued, with `recoveredJobs`. It can be disabled using
+`logging.gates.JOBS_RECOVERED.enabled: false`. Normal successful jobs remain silent.
+
 ## File selection and database
 
 | Variable | Meaning | Default |
@@ -167,6 +202,7 @@ Postgres host, port, database, user, pool maximum, TLS, and certificate verifica
 | `CRYPTOTRACKER_DEFAULT_PRIMARY_CURRENCY` | `ui.defaultPrimaryCurrency` |
 | `CRYPTOTRACKER_DEFAULT_MARKET_SOURCE` | `ui.defaultMarketSource` |
 | `LOG_K8S_METADATA_ENABLED` | `logging.kubernetes.enabled` |
+| `CRYPTOTRACKER_SLOW_OPERATION_THRESHOLD_MS` | `logging.slowOperationThresholdMs` |
 
 The production launcher also accepts `CRYPTOTRACKER_WUI_HOST`, `CRYPTOTRACKER_WUI_PORT`, and `BUILD_INFO_PATH`.
 

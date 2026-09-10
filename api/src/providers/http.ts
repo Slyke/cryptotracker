@@ -1,4 +1,5 @@
 import { AppError } from '../errors.js';
+import { bufferProviderResponse, providerBodyHints, providerRequestContext } from './diagnostics.js';
 import { ProviderRateLimiter } from './rate-limiter.js';
 
 interface ProviderRequest {
@@ -50,6 +51,7 @@ export const createProviderHttpClient = ({
     }
     const response = await limiter.execute<Response>({
       requestKey: requestKey ?? `${method}:${path}:${JSON.stringify(query)}:${JSON.stringify(jsonBody ?? body ?? null)}`,
+      context: providerRequestContext({ url, method, jsonBody }),
       task: async (signal) => {
         const fetched = await fetch(url, {
           method,
@@ -65,27 +67,10 @@ export const createProviderHttpClient = ({
           },
           body: jsonBody === undefined ? body : JSON.stringify(jsonBody)
         });
-        const buffered = await fetched.arrayBuffer();
-        return new Response(buffered, {
-          status: fetched.status,
-          statusText: fetched.statusText,
-          headers: fetched.headers
-        });
+        return bufferProviderResponse(fetched);
       }
     });
     const text = await response.text();
-    if (!response.ok) {
-      throw new AppError({
-        errorKey: response.status === 429 ? 'PROVIDER_RATE_LIMITED' : 'PROVIDER_REQUEST_FAILED',
-        reason: `${provider} request failed with HTTP ${response.status}.`,
-        status: response.status === 429 ? 429 : 502,
-        context: {
-          provider,
-          status: response.status,
-          responsePreview: text.slice(0, 300)
-        }
-      });
-    }
     return text;
   };
 
@@ -102,7 +87,10 @@ export const createProviderHttpClient = ({
           status: 502,
           context: {
             provider,
-            responsePreview: text.slice(0, 300)
+            ...providerRequestContext({
+              url: new URL(baseUrl), method: input.method ?? 'GET', jsonBody: input.jsonBody
+            }),
+            responseHints: providerBodyHints(text)
           },
           cause: error
         });

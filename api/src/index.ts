@@ -14,6 +14,7 @@ import { bootstrapApplicationData } from './services/bootstrap.js';
 import { DiagnosticsService } from './services/diagnostics.js';
 import { ApplicationExportService } from './services/exports.js';
 import { GraphCacheService } from './services/graph-cache.js';
+import { SummaryCacheService } from './services/summary-cache.js';
 import { KrakenService } from './services/kraken.js';
 import { MarketService } from './services/market.js';
 import { PortfolioService } from './services/portfolio.js';
@@ -106,8 +107,14 @@ const main = async () => {
         return kraken.earnOverview(plan.input as unknown as Parameters<typeof kraken.earnOverview>[0]);
     }
   });
-  const refreshGraphCache = (changes: Parameters<typeof graphCache.refreshAffected>[0]) => (
-    graphCache.refreshAffected(changes)
+  const summaryCache = new SummaryCacheService(runtime, logger, () => graphCache.readyClient(), ({ scope, ...input }) => (
+    scope === 'portfolio' ? portfolio.current(input) : kraken.summary(input)
+  ));
+  const refreshGraphCache = async (changes: Parameters<typeof graphCache.refreshAffected>[0]) => {
+    await Promise.all([graphCache.refreshAffected(changes), summaryCache.refreshAffected(changes)]);
+  };
+  const cacheIsActive = async () => (
+    (await Promise.all([graphCache.isActive(), summaryCache.isActive()])).some(Boolean)
   );
   const scheduler = new Scheduler(
     db,
@@ -120,7 +127,7 @@ const main = async () => {
     retention,
     logger,
     graphCache.enabled ? refreshGraphCache : null,
-    graphCache.enabled ? () => graphCache.isActive() : null
+    graphCache.enabled ? cacheIsActive : null
   );
   market.registerJobs();
   addresses.registerJobs();
@@ -128,7 +135,7 @@ const main = async () => {
   transfers.registerJobs({ jobs });
   exports.registerJobs();
   if (graphCache.enabled) {
-    jobs.onGraphDataChange(refreshGraphCache, () => graphCache.isActive());
+    jobs.onGraphDataChange(refreshGraphCache, cacheIsActive);
   }
   const context: AppContext = {
     runtime,
@@ -147,7 +154,8 @@ const main = async () => {
     retention,
     jobs,
     scheduler,
-    graphCache
+    graphCache,
+    summaryCache
   };
   startupPhase = 'initializing optional Redis graph cache';
   await graphCache.initialize();
@@ -228,6 +236,7 @@ const main = async () => {
         new Promise<void>((resolve) => secureServer.close(() => resolve()))
       ] : [])
     ]);
+    await summaryCache.close();
     await graphCache.close();
     await db.close();
   };

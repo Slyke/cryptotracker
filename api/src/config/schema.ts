@@ -23,6 +23,7 @@ const logSinkBaseSchema = z.object({
 });
 
 const loggingSchema = z.object({
+  slowOperationThresholdMs: z.number().int().min(1).max(3_600_000).default(30_000),
   logTextFormat: z.string().default('[{$timestamp}] {$level} {$caller} {$message}'),
   sinks: z.object({
     console: logSinkBaseSchema.extend({

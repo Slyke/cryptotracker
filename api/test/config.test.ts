@@ -23,6 +23,7 @@ describe('configuration', () => {
     expect(config.providers.chains.ethereum.baseUrl).toBe('https://api.etherscan.io');
     expect(config.api.port).toBe(8_192);
     expect(config.api.https.port).toBe(8_194);
+    expect(config.logging.slowOperationThresholdMs).toBe(30_000);
     expect(config.cache.redis).toEqual({
       enabled: false,
       url: 'redis://redis:6379',
@@ -112,6 +113,22 @@ describe('configuration', () => {
       connectTimeoutMs: 750
     });
     expect(runtime.secrets.redisPassword).toBe('redis-secret');
+  });
+
+  it('loads the slow-operation threshold from JSON5 and gives the numeric environment override precedence', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cryptotracker-config-'));
+    const configPath = join(directory, 'config.json5');
+    await writeFile(configPath, '{ logging: { slowOperationThresholdMs: 7500 } }', 'utf8');
+    const env = { ...requiredEnvironment, CRYPTOTRACKER_CONFIG_PATH: configPath };
+    expect((await loadRuntime({ env })).config.logging.slowOperationThresholdMs).toBe(7_500);
+    expect((await loadRuntime({ env: { ...env, CRYPTOTRACKER_SLOW_OPERATION_THRESHOLD_MS: '1000' } }))
+      .config.logging.slowOperationThresholdMs).toBe(1_000);
+    await expect(loadRuntime({ env: { ...env, CRYPTOTRACKER_SLOW_OPERATION_THRESHOLD_MS: 'invalid' } }))
+      .rejects.toThrow();
+  });
+
+  it.each([0, -1, 0.5, 3_600_001, Infinity, NaN])('rejects invalid slow-operation threshold %s', (threshold) => {
+    expect(() => configSchema.parse({ logging: { slowOperationThresholdMs: threshold } })).toThrow();
   });
 
   it('loads an API key from a file relative to the secrets file', async () => {

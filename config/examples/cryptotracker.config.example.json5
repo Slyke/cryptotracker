@@ -154,6 +154,9 @@
     restoreMaxUncompressedBytes: 536870912,
   },
   logging: {
+    // Warn for summary requests/refreshes and sync-progress requests exceeding this duration.
+    // Milliseconds; default 30000. Lower to 1000 when investigating slow dashboard loads.
+    slowOperationThresholdMs: 30000,
     sinks: {
       console: {
         enabled: true,

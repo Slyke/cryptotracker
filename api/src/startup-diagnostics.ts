@@ -163,6 +163,7 @@ export const buildStartupDiagnostics = ({
       maxConcurrentJobs: config.sync.maxConcurrentJobs
     },
     logging: {
+      slowOperationThresholdMs: config.logging.slowOperationThresholdMs,
       console: config.logging.sinks.console.enabled,
       file: config.logging.sinks.file.enabled,
       http: config.logging.sinks.http.enabled,

@@ -1,6 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import type { RuntimeConfig, RuntimeSecrets } from '../config/schema.js';
 import { AppError } from '../errors.js';
+import { bufferProviderResponse } from './diagnostics.js';
 import { ProviderRateLimiter } from './rate-limiter.js';
 
 const readOnlyPrivatePaths = new Set([
@@ -126,6 +127,7 @@ export class KrakenReadOnlyClient {
       const signature = createHmac('sha512', secret).update(message).digest('base64');
       const response = await this.limiter.execute<Response>({
         requestKey: `${path}:${JSON.stringify(parameters)}`,
+        context: { host: new URL(this.config.baseUrl).hostname, httpMethod: 'POST', operation: path },
         task: async (signal) => {
           const fetched = await fetch(new URL(path, this.config.baseUrl), {
             method: 'POST',
@@ -138,12 +140,7 @@ export class KrakenReadOnlyClient {
             },
             body: encoded
           });
-          const buffered = await fetched.arrayBuffer();
-          return new Response(buffered, {
-            status: fetched.status,
-            statusText: fetched.statusText,
-            headers: fetched.headers
-          });
+          return bufferProviderResponse(fetched);
         }
       });
       const payload = await response.json() as { error?: string[]; result?: T };

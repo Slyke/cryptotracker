@@ -252,6 +252,7 @@ const applyConfigOverrides = ({
     });
   }
   for (const [key, path] of [
+    ['CRYPTOTRACKER_SLOW_OPERATION_THRESHOLD_MS', ['logging', 'slowOperationThresholdMs']],
     ['CRYPTOTRACKER_REDIS_RESULT_TTL_SECONDS', ['cache', 'redis', 'resultTtlSeconds']],
     ['CRYPTOTRACKER_REDIS_CONNECT_TIMEOUT_MS', ['cache', 'redis', 'connectTimeoutMs']]
   ] as Array<[string, string[]]>) {

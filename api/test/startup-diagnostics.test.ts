@@ -52,7 +52,7 @@ describe('startup diagnostics', () => {
     });
     const diagnostics = buildStartupDiagnostics({
       runtime,
-      buildInfo: { version: '0.1.8', buildHash: 'abc123' }
+      buildInfo: { version: '0.1.9', buildHash: 'abc123' }
     });
 
     expect(diagnostics.database).toMatchObject({
@@ -69,6 +69,7 @@ describe('startup diagnostics', () => {
       fallback: 'postgres'
     });
     expect(diagnostics.providers.market.coinGecko.credentialConfigured).toBe(true);
+    expect(diagnostics.logging.slowOperationThresholdMs).toBe(30_000);
     expect(diagnostics.providers.market.kraken.privateApiConfigured).toBe(true);
     expect(diagnostics.providers.chains.ethereum.credentialConfigured).toBe(true);
     expect(JSON.stringify(diagnostics)).not.toMatch(/postgres-secret|redis-secret|url-secret|query-secret|coingecko-secret|etherscan-secret|kraken-secret/);
@@ -86,7 +87,7 @@ describe('startup diagnostics', () => {
 
     const diagnostics = buildStartupDiagnostics({
       runtime: await createTestRuntime({ sqlitePath: '/data/tracker.sqlite' }),
-      buildInfo: { version: '0.1.8', buildHash: 'development' }
+      buildInfo: { version: '0.1.9', buildHash: 'development' }
     });
     expect(diagnostics.database).toMatchObject({
       kind: 'sqlite',

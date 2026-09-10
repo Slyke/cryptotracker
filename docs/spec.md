@@ -2130,7 +2130,7 @@ Health responses include:
 ```json
 {
   "ok": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "buildHash": "abc1234def56"
 }
 ```

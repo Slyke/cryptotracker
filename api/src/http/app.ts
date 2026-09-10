@@ -18,10 +18,12 @@ import type { AppDatabase } from '../db/index.js';
 import { AppError, asAppError, errorResponse } from '../errors.js';
 import type { JobQueue } from '../jobs/queue.js';
 import type { Logger } from '../logging/logger.js';
+import { withSlowOperationWarning } from '../logging/slow-operation.js';
 import type { Scheduler } from '../scheduler.js';
 import type { AddressService } from '../services/addresses.js';
 import type { DiagnosticsService } from '../services/diagnostics.js';
 import type { GraphCachePlan, GraphCacheService, GraphCacheScope } from '../services/graph-cache.js';
+import type { SummaryCacheService } from '../services/summary-cache.js';
 import {
   serializeSeriesCsv,
   serializeSeriesJson,
@@ -54,6 +56,7 @@ export interface AppContext {
   jobs: JobQueue;
   scheduler: Scheduler;
   graphCache: GraphCacheService;
+  summaryCache: SummaryCacheService;
 }
 
 const asyncRoute = (handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown>): RequestHandler => (
@@ -616,6 +619,10 @@ const registerRoutes = ({
       changes.dashboardRows = structuredClone(dashboards[0]?.rows ?? []);
     }
     const settings = await context.settings.patch({ changes });
+    if (['primaryCurrency', 'tooltipCurrencies', 'marketSource', 'providerDisagreementThresholdPercent']
+      .some((field) => Object.hasOwn(changes, field))) {
+      await context.summaryCache.invalidate(['portfolio', 'kraken']);
+    }
     const retention = Object.hasOwn(changes, 'retentionDays')
       ? await context.retention.apply({ retentionDays: settings.retentionDays })
       : null;
@@ -652,7 +659,15 @@ const registerRoutes = ({
     });
     res.json({
       ok: true,
-      progress: await context.diagnostics.syncProgress(query)
+      progress: await withSlowOperationWarning({
+        logger: context.logger,
+        thresholdMs: context.runtime.config.logging.slowOperationThresholdMs,
+        caller: 'http::syncProgress',
+        loggerKey: 'SYNC_PROGRESS_SLOW',
+        label: 'Synchronization progress request',
+        context: { method: req.method, path: req.path, correlationId: req.correlationId },
+        task: () => context.diagnostics.syncProgress(query)
+      })
     });
   }));
   app.get('/api/diagnostics/storage', asyncRoute(async (_req, res) => {
@@ -821,7 +836,8 @@ const registerRoutes = ({
     });
     res.json({
       ok: true,
-      current: await context.portfolio.current({
+      current: await context.summaryCache.getOrLoad({
+        scope: 'portfolio',
         ...(query.quoteCurrencies ? {
           quoteCurrencies: query.quoteCurrencies.split(',')
             .map((currency) => currency.trim().toUpperCase())
@@ -922,6 +938,7 @@ const registerRoutes = ({
       value: req.body
     });
     const address = await context.addresses.add(input);
+    await context.summaryCache.invalidate(['portfolio']);
     await auditMutation({
       context,
       req,
@@ -948,6 +965,7 @@ const registerRoutes = ({
       ...(input.label === undefined ? {} : { label: input.label }),
       ...(input.enabled === undefined ? {} : { enabled: input.enabled })
     });
+    if (input.enabled !== undefined) await context.summaryCache.invalidate(['portfolio']);
     await auditMutation({
       context,
       req,
@@ -960,6 +978,7 @@ const registerRoutes = ({
   }));
   app.delete('/api/addresses/:id', requireCsrf, asyncRoute(async (req, res) => {
     await context.addresses.delete({ id: String(req.params.id) });
+    await context.summaryCache.invalidate(['portfolio']);
     await auditMutation({
       context,
       req,
@@ -985,6 +1004,7 @@ const registerRoutes = ({
       assets: input.assets,
       includeNative: input.includeNative
     });
+    await context.summaryCache.invalidate(['portfolio']);
     await auditMutation({
       context,
       req,
@@ -1092,7 +1112,8 @@ const registerRoutes = ({
     const quoteCurrencies = z.string().optional().parse(req.query.quoteCurrencies);
     res.json({
       ok: true,
-      summary: await context.kraken.summary({
+      summary: await context.summaryCache.getOrLoad({
+        scope: 'kraken',
         ...(quoteCurrencies ? {
           quoteCurrencies: quoteCurrencies.split(',')
             .map((currency) => currency.trim().toUpperCase())

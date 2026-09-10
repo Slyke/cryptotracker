@@ -1,5 +1,6 @@
 import type { ProviderRateConfig } from '../config/schema.js';
 import { AppError } from '../errors.js';
+import { providerNetworkContext, providerResponseContext, type ProviderRequestContext } from './diagnostics.js';
 
 interface CircuitState {
   status: 'healthy' | 'degraded' | 'rate-limited' | 'unavailable';
@@ -147,19 +148,42 @@ export class ProviderRateLimiter {
 
   async execute<T>({
     requestKey,
-    task
+    task,
+    context
   }: {
     requestKey: string;
     task: (signal: AbortSignal) => Promise<T>;
+    context?: ProviderRequestContext;
   }): Promise<T> {
-    const existing = this.inFlight.get(requestKey) as Promise<T> | undefined;
-    if (existing) return existing;
-
-    const execution = this.executeWithRetry({ task }).finally(() => {
-      this.inFlight.delete(requestKey);
-    });
-    this.inFlight.set(requestKey, execution);
-    return execution;
+    let execution = this.inFlight.get(requestKey) as Promise<T> | undefined;
+    if (!execution) {
+      execution = this.executeWithRetry({ task }).finally(() => {
+        this.inFlight.delete(requestKey);
+      });
+      this.inFlight.set(requestKey, execution);
+    }
+    try {
+      const result = await execution;
+      // The fetch is shared, but a Response body is single-use. Every consumer
+      // (including the first) needs its own stream, also for Kraken private reads.
+      return result instanceof Response ? result.clone() as T : result;
+    } catch (error) {
+      const appError = error instanceof AppError ? error : null;
+      const failureContext = appError
+        ? appError.context && typeof appError.context === 'object' ? appError.context : {}
+        : { failureKind: 'network', ...providerNetworkContext(error) };
+      throw new AppError({
+        errorKey: appError?.errorKey ?? 'PROVIDER_REQUEST_FAILED',
+        reason: appError?.message ?? `${this.provider} request failed.`,
+        status: appError?.status ?? 502,
+        context: {
+          provider: this.provider,
+          ...context,
+          ...failureContext
+        },
+        cause: error
+      });
+    }
   }
 
   private async executeWithRetry<T>({
@@ -185,7 +209,8 @@ export class ProviderRateLimiter {
             status: rateLimited ? 429 : 502,
             context: {
               provider: this.provider,
-              status: result.status
+              status: result.status,
+              ...providerResponseContext(result)
             }
           });
           lastError = error;

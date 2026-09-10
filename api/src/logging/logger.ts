@@ -26,6 +26,16 @@ const sensitiveKeyPattern = /(secret|password|token|cookie|authorization|api[-_]
 const sensitiveUrlQueryPattern = /(api[_-]?key|key|token|signature|secret)=([^&]+)/gi;
 const supportedLevels: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 
+const mergeErrorContext = (operationContext: unknown, errorContext: unknown) => {
+  if (operationContext === undefined) return errorContext;
+  if (errorContext === null) return operationContext;
+  if (operationContext && typeof operationContext === 'object' && !Array.isArray(operationContext)
+    && errorContext && typeof errorContext === 'object' && !Array.isArray(errorContext)) {
+    return { ...operationContext, ...errorContext };
+  }
+  return { operationContext, errorContext };
+};
+
 const redactUrl = ({ value }: { value: string }) => (
   value.replace(sensitiveUrlQueryPattern, '$1=[REDACTED]')
 );
@@ -263,7 +273,9 @@ export class Logger {
         ? {
             errorKey: appError.errorKey,
             errorCode: appError.errorCode,
-            context: appError.context
+            // Keep the job/operation context supplied by the caller as well as
+            // the structured provider/database failure details.
+            context: mergeErrorContext(input.context, appError.context)
           }
         : {}),
       rootCause: error

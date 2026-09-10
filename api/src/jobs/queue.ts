@@ -315,7 +315,9 @@ export class JobQueue {
         jobId: job.id,
         jobType: job.job_type,
         attempts,
-        terminal
+        maxAttempts,
+        terminal,
+        nextRetryAtMs
       }
     });
   }
@@ -361,7 +363,7 @@ export class JobQueue {
   }
 
   async recoverInterrupted() {
-    await this.db.run({
+    const recovered = await this.db.run({
       sql: `
         UPDATE jobs
         SET status = 'retry', locked_at_ms = NULL, locked_by = NULL, next_retry_at_ms = ?, updated_at_ms = ?
@@ -369,6 +371,14 @@ export class JobQueue {
       `,
       parameters: [Date.now(), Date.now()]
     });
+    if (recovered.changes > 0) {
+      this.logger.info({
+        caller: 'jobs::recoverInterrupted',
+        loggerKey: 'JOBS_RECOVERED',
+        message: 'Interrupted jobs were queued for retry after startup.',
+        context: { recoveredJobs: recovered.changes }
+      });
+    }
   }
 
   async start() {

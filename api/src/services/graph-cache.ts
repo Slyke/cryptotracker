@@ -130,7 +130,7 @@ export class GraphCacheService {
     }
   }
 
-  private async readyClient() {
+  async readyClient() {
     if (!this.enabled) return null;
     if (!this.client?.isReady) await this.initialize();
     return this.client?.isReady ? this.client : null;
