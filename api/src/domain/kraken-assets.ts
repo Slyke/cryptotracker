@@ -1,3 +1,5 @@
+import { Decimal } from 'decimal.js';
+
 const krakenCanonicalIds: Record<string, string> = {
   BTC: 'bitcoin',
   XBT: 'bitcoin',
@@ -47,3 +49,38 @@ export const krakenAssetCategory = ({ raw }: { raw: string }) => (
     ? 'earn'
     : 'spot'
 );
+
+// Earn can also appear as suffixed Balance/BalanceEx entries. Only add the
+// allocation amount not already represented by those entries, across strategies.
+export const includeKrakenEarnBalances = ({
+  balances,
+  allocations
+}: {
+  balances: Record<string, string>;
+  allocations: Array<{ assetRaw: string; quantity: string }>;
+}) => {
+  const result = { ...balances };
+  const represented = new Map<string, Decimal>();
+  const allocated = new Map<string, { assetRaw: string; quantity: Decimal }>();
+  for (const [assetRaw, quantity] of Object.entries(balances)) {
+    if (krakenAssetCategory({ raw: assetRaw }) !== 'earn') continue;
+    const id = canonicalKrakenAsset({ raw: assetRaw });
+    represented.set(id, (represented.get(id) ?? new Decimal(0)).plus(quantity));
+  }
+  for (const allocation of allocations) {
+    const id = canonicalKrakenAsset({ raw: allocation.assetRaw });
+    const previous = allocated.get(id);
+    allocated.set(id, {
+      assetRaw: previous?.assetRaw ?? `${krakenAssetSymbol({ raw: allocation.assetRaw })}.B`,
+      quantity: (previous?.quantity ?? new Decimal(0)).plus(allocation.quantity)
+    });
+  }
+  for (const [id, allocation] of allocated) {
+    const missing = allocation.quantity.minus(represented.get(id) ?? 0);
+    if (missing.greaterThan(0)) {
+      result[allocation.assetRaw] = new Decimal(result[allocation.assetRaw] ?? 0)
+        .plus(missing).toString();
+    }
+  }
+  return result;
+};

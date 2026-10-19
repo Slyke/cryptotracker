@@ -9,6 +9,7 @@ import {
 } from '../domain/graphs.js';
 import {
   canonicalKrakenAsset,
+  includeKrakenEarnBalances,
   krakenAssetCategory
 } from '../domain/kraken-assets.js';
 import { combinePriceObservations } from '../domain/market.js';
@@ -203,7 +204,7 @@ export class KrakenService {
         await updateProgress({ current: 2, total: endpoints.length, cursor: { endpoint: 'ledgers' } });
         const balances = await this.syncExtendedBalances();
         await updateProgress({ current: 3, total: endpoints.length, cursor: { endpoint: 'balances' } });
-        await this.syncEarn();
+        const allocations = await this.syncEarn();
         await updateProgress({ current: 4, total: endpoints.length, cursor: { endpoint: 'earn' } });
         await this.syncMargin();
         await updateProgress({ current: 5, total: endpoints.length, cursor: { endpoint: 'margin' } });
@@ -217,7 +218,7 @@ export class KrakenService {
         await updateProgress({ current: 9, total: endpoints.length, cursor: { endpoint: 'trade-volume' } });
         await this.syncCreditLines();
         const snapshot = await this.writeSnapshot({
-          balances,
+          balances: includeKrakenEarnBalances({ balances, allocations }),
           detectChanges: captureGraphChanges
         });
         await updateProgress({ current: 10, total: endpoints.length, cursor: { endpoint: 'complete' } });
@@ -714,21 +715,22 @@ export class KrakenService {
   }
 
   private async syncEarn() {
-    const strategyIds = await this.syncEarnAllocations();
+    const { strategyIds, allocations } = await this.syncEarnAllocations();
     await this.syncEarnStrategies();
     await this.syncEarnOperationStatuses({ strategyIds });
+    return allocations;
   }
 
   private async syncEarnAllocations() {
-    const previous = await this.cursorState({ endpoint: 'earn' });
     const observedAtMs = Date.now();
     const observedStrategyIds = new Set<string>();
+    const allocations = new Map<string, { assetRaw: string; quantity: string }>();
     let recordedSummary = false;
-    let nextCursor = previous.completeness === 'syncing'
-      ? typeof previous.cursor.nextCursor === 'string' ? previous.cursor.nextCursor : null
-      : null;
+    // A balance snapshot needs a fresh, complete allocation set, never a resumed
+    // suffix of a previous read or stale rows from an already closed strategy.
+    let nextCursor: string | null = null;
     const startedAtBeginning = nextCursor === null;
-    let count = previous.completeness === 'syncing' ? Number(previous.cursor.count ?? 0) : 0;
+    let count = 0;
     let page = 0;
     while (page < 10_000) {
       let result: Record<string, unknown>;
@@ -747,7 +749,9 @@ export class KrakenService {
           cursor: { nextCursor },
           error
         });
-        return observedStrategyIds;
+        // Preserve the last valid portfolio snapshot instead of publishing a
+        // spot-only total when the Earn endpoint is unavailable.
+        throw error;
       }
       const items = Array.isArray(result.items) ? result.items as Array<Record<string, unknown>> : [];
       const providerNextCursor = typeof result.next_cursor === 'string' && result.next_cursor.length > 0
@@ -776,6 +780,7 @@ export class KrakenService {
               ?? `${assetRaw}:${String(item.status ?? 'active')}`
             );
             observedStrategyIds.add(allocationId);
+            allocations.set(allocationId, { assetRaw, quantity });
             await this.recordObservation({
               executor,
               endpoint: 'earn-allocations',
@@ -848,7 +853,7 @@ export class KrakenService {
           });
         }
       });
-      if (complete) return observedStrategyIds;
+      if (complete) return { strategyIds: observedStrategyIds, allocations: [...allocations.values()] };
       nextCursor = providerNextCursor;
       page += 1;
     }

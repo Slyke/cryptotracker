@@ -16,6 +16,8 @@ describe('Kraken read-only import', () => {
     const requests: Array<{ path: string; parameters: Record<string, string | number> }> = [];
     let failTradeSecondPage = true;
     let openOrderPresent = true;
+    let failEarn = false;
+    let includeEarn = true;
     const client: KrakenClientContract = {
       isConfigured: () => true,
       inspectPermissions: async () => ({
@@ -70,6 +72,8 @@ describe('Kraken read-only import', () => {
               }) as T;
         }
         if (path === '/0/private/Earn/Allocations') {
+          if (failEarn) throw new Error('Earn unavailable');
+          if (!includeEarn) return { items: [] } as T;
           return (parameters.cursor
             ? {
                 items: [{
@@ -331,6 +335,8 @@ describe('Kraken read-only import', () => {
         `
       })).toEqual([
         { asset_raw: 'DOT28.S', canonical_asset_id: 'polkadot', category: 'earn' },
+        { asset_raw: 'ETH.B', canonical_asset_id: 'ethereum', category: 'earn' },
+        { asset_raw: 'XXBT.B', canonical_asset_id: 'bitcoin', category: 'earn' },
         { asset_raw: 'XXDG', canonical_asset_id: 'dogecoin', category: 'spot' },
         { asset_raw: 'ZCAD', canonical_asset_id: 'cad', category: 'spot' }
       ]);
@@ -532,6 +538,19 @@ describe('Kraken read-only import', () => {
         `
       })).toEqual([{ present: 1 }, { present: 0 }]);
       expect(requests.map((request) => request.path).every((path) => path.startsWith('/0/private/'))).toBe(true);
+      const balancesBeforeFailure = await db.query({
+        sql: 'SELECT * FROM kraken_snapshot_balances ORDER BY snapshot_id, asset_raw'
+      });
+      failEarn = true;
+      await expect(handler()).rejects.toThrow('Earn unavailable');
+      expect(await db.query({ sql: 'SELECT * FROM kraken_snapshot_balances ORDER BY snapshot_id, asset_raw' }))
+        .toEqual(balancesBeforeFailure);
+      failEarn = false;
+      includeEarn = false;
+      await handler();
+      expect(await db.query({
+        sql: "SELECT asset_raw FROM kraken_snapshot_balances WHERE asset_raw IN ('XXBT.B', 'ETH.B')"
+      })).toEqual([]);
     } finally {
       await db.close();
     }
