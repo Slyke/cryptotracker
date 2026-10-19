@@ -52,7 +52,7 @@ describe('startup diagnostics', () => {
     });
     const diagnostics = buildStartupDiagnostics({
       runtime,
-      buildInfo: { version: '0.1.9', buildHash: 'abc123' }
+      buildInfo: { version: '0.1.10', buildHash: 'abc123' }
     });
 
     expect(diagnostics.database).toMatchObject({
@@ -87,7 +87,7 @@ describe('startup diagnostics', () => {
 
     const diagnostics = buildStartupDiagnostics({
       runtime: await createTestRuntime({ sqlitePath: '/data/tracker.sqlite' }),
-      buildInfo: { version: '0.1.9', buildHash: 'development' }
+      buildInfo: { version: '0.1.10', buildHash: 'development' }
     });
     expect(diagnostics.database).toMatchObject({
       kind: 'sqlite',
