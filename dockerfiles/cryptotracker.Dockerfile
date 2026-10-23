@@ -1,4 +1,4 @@
-FROM node:24.14.0-bookworm-slim AS dependencies
+FROM node:24.22.1-bookworm-slim AS dependencies
 
 WORKDIR /workspace
 
@@ -23,7 +23,7 @@ RUN node scripts/write-build-info.mjs --output /workspace/build-info.json \
   && npm run build:api \
   && npm run build:wui
 
-FROM node:24.14.0-bookworm-slim AS production
+FROM node:24.22.1-bookworm-slim AS production
 
 WORKDIR /app
 ENV NODE_ENV=production

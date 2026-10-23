@@ -1,4 +1,4 @@
-FROM node:24.14.0-bookworm-slim AS build
+FROM node:24.22.1-bookworm-slim AS build
 
 WORKDIR /workspace
 COPY package.json package-lock.json ./
@@ -8,7 +8,7 @@ RUN npm run check \
   && npm run test \
   && npm run build
 
-FROM node:24.14.0-bookworm-slim AS production
+FROM node:24.22.1-bookworm-slim AS production
 
 ARG BUILD_HASH=unknown
 ENV NODE_ENV=production
